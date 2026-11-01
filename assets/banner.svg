@@ -184,21 +184,21 @@
 
   <!-- ================= LOGO SHOWCASE POD (LEFT) ================= -->
   <!-- Dedicated High-Color Card Pod with Pristine Contrast for Black Hair & Strokes -->
-  <g transform="translate(30, 26)" filter="url(#podShadow)">
-    <rect x="0" y="0" width="380" height="368" rx="28" fill="url(#podBg)" stroke="url(#podBorder)" stroke-width="2.5" />
+  <g transform="translate(30, 30)" filter="url(#podShadow)">
+    <rect x="0" y="0" width="360" height="360" rx="28" fill="url(#podBg)" stroke="url(#podBorder)" stroke-width="2.5" />
     <!-- Inner Ambient Highlight Ring -->
-    <rect x="8" y="8" width="364" height="352" rx="22" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.8" />
+    <rect x="8" y="8" width="344" height="344" rx="22" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.8" />
     <!-- Floating Kawaii Decors on Pod Corners -->
     <circle cx="28" cy="28" r="6" fill="#F43F5E" />
     <circle cx="28" cy="28" r="3" fill="#FFFFFF" />
-    <circle cx="352" cy="28" r="6" fill="#8B5CF6" />
-    <circle cx="352" cy="28" r="3" fill="#FFFFFF" />
-    <circle cx="352" cy="340" r="6" fill="#06B6D4" />
-    <circle cx="352" cy="340" r="3" fill="#FFFFFF" />
+    <circle cx="332" cy="28" r="6" fill="#8B5CF6" />
+    <circle cx="332" cy="28" r="3" fill="#FFFFFF" />
+    <circle cx="332" cy="332" r="6" fill="#06B6D4" />
+    <circle cx="332" cy="332" r="3" fill="#FFFFFF" />
   </g>
 
-  <!-- Scaled Chibi Mascot from logo.svg on top of High-Color Pod -->
-  <g transform="translate(-105, -5) scale(0.92)" filter="url(#stickerShadow)">
+  <!-- Scaled Chibi Mascot from logo.svg, perfectly centered inside the showcase pod -->
+  <g transform="translate(-72.9, 60.6) scale(0.69)" filter="url(#stickerShadow)">
     <!-- Inner Dark Bob Layer (High Contrast against Pod!) -->
     <path class="outer-stroke hair-dark" d="
       M 285,220
