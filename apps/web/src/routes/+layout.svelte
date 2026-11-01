@@ -14,7 +14,8 @@
 		Sun,
 		Moon,
 		Bot,
-		User
+		User,
+		Trash2
 	} from 'lucide-svelte';
 
 	let { children } = $props();
@@ -85,6 +86,26 @@
 			agents = agents.map((a) => (a.id === agent.id ? updated : a));
 		} catch (e) {
 			console.error('Failed to toggle agent:', e);
+		}
+	}
+
+	async function deleteAgent(agent: Agent, event?: MouseEvent) {
+		if (event) {
+			event.preventDefault();
+			event.stopPropagation();
+		}
+		if (!confirm(`Are you sure you want to permanently delete agent "${agent.name}"? This action cannot be undone.`)) {
+			return;
+		}
+		try {
+			await api.agents.delete(agent.id);
+			agents = agents.filter((a) => a.id !== agent.id);
+			const currentAgentId = page.url.searchParams.get('agent_id');
+			if (currentAgentId === agent.id) {
+				window.location.href = '/';
+			}
+		} catch (e: any) {
+			alert('Failed to delete agent: ' + (e?.message || e));
 		}
 	}
 
@@ -192,22 +213,35 @@
 							{agent.name}
 						</a>
 
-						<!-- ON/OFF Toggle Switch -->
-						<button
-							type="button"
-							class="relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none {agent.is_active
-								? 'bg-emerald-500'
-								: 'bg-zinc-300 dark:bg-zinc-700'}"
-							onclick={(e) => toggleAgentActive(agent, e)}
-							title={agent.is_active ? 'Active (Click to turn OFF)' : 'Inactive (Click to turn ON)'}
-							aria-label="Toggle agent active state"
-						>
-							<span
-								class="pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out {agent.is_active
-									? 'translate-x-3'
-									: 'translate-x-0'}"
-							></span>
-						</button>
+						<div class="flex items-center gap-1.5">
+							<!-- Delete Agent Hover Button -->
+							<button
+								type="button"
+								class="opacity-0 group-hover:opacity-100 p-1 rounded-md text-zinc-400 hover:text-rose-500 hover:bg-rose-500/10 transition-all cursor-pointer"
+								onclick={(e) => deleteAgent(agent, e)}
+								title="Delete agent"
+								aria-label="Delete agent"
+							>
+								<Trash2 class="h-3.5 w-3.5" />
+							</button>
+
+							<!-- ON/OFF Toggle Switch -->
+							<button
+								type="button"
+								class="relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none {agent.is_active
+									? 'bg-emerald-500'
+									: 'bg-zinc-300 dark:bg-zinc-700'}"
+								onclick={(e) => toggleAgentActive(agent, e)}
+								title={agent.is_active ? 'Active (Click to turn OFF)' : 'Inactive (Click to turn ON)'}
+								aria-label="Toggle agent active state"
+							>
+								<span
+									class="pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out {agent.is_active
+										? 'translate-x-3'
+										: 'translate-x-0'}"
+								></span>
+							</button>
+						</div>
 					</div>
 				{/each}
 			{/if}

@@ -243,6 +243,20 @@
 		}
 	}
 
+	async function deleteAgent() {
+		if (!agent) return;
+		const name = agent.name;
+		if (!confirm(`Are you sure you want to permanently delete agent "${name}"? This action cannot be undone.`)) {
+			return;
+		}
+		try {
+			await api.agents.delete(agent.id);
+			window.location.href = '/';
+		} catch (e: any) {
+			alert('Failed to delete agent: ' + (e?.message || e));
+		}
+	}
+
 	function showSavedBadge() {
 		saveIndicator = true;
 		if (saveTimeout) clearTimeout(saveTimeout);
@@ -344,8 +358,8 @@
 				</button>
 			</div>
 
-			<!-- Auto-save notification badge -->
-			<div class="flex items-center gap-2">
+			<!-- Auto-save notification badge & Delete Agent -->
+			<div class="flex items-center gap-2.5">
 				{#if isSaving}
 					<span class="text-xs text-zinc-400 animate-pulse">Saving...</span>
 				{:else if saveIndicator}
@@ -353,6 +367,16 @@
 						<CheckCircle2 class="h-3.5 w-3.5" /> Saved
 					</span>
 				{/if}
+
+				<button
+					type="button"
+					onclick={deleteAgent}
+					class="flex items-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 transition-all cursor-pointer shadow-2xs"
+					title="Delete this agent"
+				>
+					<Trash2 class="h-3.5 w-3.5" />
+					<span>Delete Agent</span>
+				</button>
 			</div>
 		</header>
 
@@ -814,6 +838,29 @@
 						{/each}
 					</div>
 				{/if}
+			</section>
+
+			<!-- ⚠️ Danger Zone -->
+			<section id="agent-danger-section" class="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 space-y-2">
+				<div class="flex items-center justify-between">
+					<div>
+						<span class="text-xs font-semibold uppercase tracking-wider text-rose-700 dark:text-rose-400">
+							Danger Zone
+						</span>
+						<p class="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+							Permanently delete this agent, its memory, running history, and configuration.
+						</p>
+					</div>
+
+					<button
+						type="button"
+						onclick={deleteAgent}
+						class="flex items-center gap-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5 text-xs font-medium shadow-xs transition-colors cursor-pointer"
+					>
+						<Trash2 class="h-3.5 w-3.5" />
+						<span>Delete Agent</span>
+					</button>
+				</div>
 			</section>
 
 			<!-- 💬 FLOATING PROMPT PILL BAR (Reference Image 2 / Grok Feel) -->
