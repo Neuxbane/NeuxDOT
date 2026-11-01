@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 450" width="100%" height="100%">
+  <defs>
+    <style>
+      .outer-stroke {
+        stroke: #000000;
+        stroke-width: 11;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .inner-stroke {
+        stroke: #000000;
+        stroke-width: 8.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .face-stroke {
+        stroke: #000000;
+        stroke-width: 7.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .white { fill: #FFFFFF; }
+      .black { fill: #000000; }
+      .none  { fill: none; }
+    </style>
+  </defs>
+
+
+  <!-- ================= INNER BLACK BOB LAYER (TWO-TONE UNDER-HAIR) ================= -->
+  <path class="outer-stroke black" d="
+    M 285,220
+    C 265,285 280,358 338,385
+    C 358,394 378,385 382,368
+    C 358,350 348,310 352,265
+    L 468,265
+    C 472,310 462,350 438,368
+    C 442,385 462,394 482,385
+    C 540,358 555,285 535,220
+    Z
+  " />
+
+  <!-- ================= MAIN FLUFFY HAIR CANOPY & SIDE LOCKS ================= -->
+  <path class="outer-stroke white" d="
+    M 410,65
+    C 332,65 282,102 268,152
+    C 232,158 202,172 188,188
+    C 210,204 242,208 266,202
+    C 246,248 248,318 282,362
+    C 286,342 292,322 300,305
+    C 298,332 308,358 328,374
+    C 318,335 318,285 326,235
+    L 494,235
+    C 502,285 502,335 492,374
+    C 512,358 522,332 520,305
+    C 528,322 534,342 538,362
+    C 572,318 574,248 554,202
+    C 578,208 610,204 632,188
+    C 618,172 588,158 552,152
+    C 538,102 488,65 410,65
+    Z
+  " />
+
+  <!-- Black Tips on Side Fluff Ears -->
+  <path class="inner-stroke black" d="
+    M 188,188
+    C 208,202 235,205 256,202
+    C 246,188 228,178 206,176
+    Z
+  " />
+  <path class="inner-stroke black" d="
+    M 632,188
+    C 612,202 585,205 564,202
+    C 574,188 592,178 614,176
+    Z
+  " />
+
+  <!-- ================= OWO BOT SQUISHY CHUBBY CHEEKS & JAWLINE ================= -->
+  <path class="outer-stroke white" d="
+    M 315,195
+    C 305,232 296,262 308,292
+    C 322,326 362,338 410,338
+    C 458,338 498,326 512,292
+    C 524,262 515,232 505,195
+    Z
+  " />
+
+  <!-- ================= OWO BOT BIG BLANK EYES & 'w' CAT MOUTH ================= -->
+  <!-- Left Eye: Large tilted hollow circle -->
+  <ellipse class="face-stroke white" cx="350" cy="256" rx="25" ry="27" transform="rotate(-6 350 256)" />
+
+  <!-- Right Eye: Large tilted hollow circle -->
+  <ellipse class="face-stroke white" cx="470" cy="256" rx="25" ry="27" transform="rotate(6 470 256)" />
+
+  <!-- Classic OwO 'w' Mouth Sitting High Between the Eyes/Cheeks -->
+  <path class="face-stroke none" d="
+    M 390,282
+    C 392,293 406,293 410,283
+    C 414,293 428,293 430,282
+  " />
+
+  <!-- ================= OWO BOT FLUFFY PARTED BANGS ================= -->
+  <!-- Solid White Fill Mask for the Forehead Volume -->
+  <path class="white" d="
+    M 292,165
+    C 285,205 282,232 288,250
+    C 318,248 368,232 398,185
+    C 394,212 408,232 435,238
+    C 430,224 428,210 432,198
+    C 455,228 492,248 532,250
+    C 538,232 535,205 528,165
+    L 495,120
+    L 325,120
+    Z
+  " />
+
+  <!-- Sweeping Fluffy Fringe Outlines (Matches OwO Bot's Center Part + Tuft) -->
+  <path class="inner-stroke none" d="
+    M 292,175
+    C 286,208 282,232 288,250
+    C 322,248 370,230 398,182
+    C 394,212 410,232 436,238
+    C 430,224 428,210 432,198
+    C 455,228 492,248 532,250
+    C 538,232 534,208 528,175
+  " />
+
+  <!-- ================= HORNS & RIBBON ACCENTS ================= -->
+  <!-- Left Black Winged Ribbon -->
+  <path class="inner-stroke black" d="
+    M 332,90
+    C 298,88 268,104 256,120
+    C 278,132 306,132 326,120
+    C 318,82 338,56 358,48
+    C 362,64 356,80 345,90
+    Z
+  " />
+  <!-- Left White Horn -->
+  <path class="inner-stroke white" d="
+    M 352,70
+    C 332,82 318,106 314,130
+    C 338,118 356,98 368,78
+    Z
+  " />
+
+  <!-- Right Black Winged Ribbon -->
+  <path class="inner-stroke black" d="
+    M 488,90
+    C 522,88 552,104 564,120
+    C 542,132 514,132 494,120
+    C 502,82 482,56 462,48
+    C 458,64 464,80 475,90
+    Z
+  " />
+  <!-- Right White Horn -->
+  <path class="inner-stroke white" d="
+    M 468,70
+    C 488,82 502,106 506,130
+    C 482,118 464,98 452,78
+    Z
+  " />
+</svg>

@@ -1,0 +1,297 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 450" width="100%" height="100%">
+  <defs>
+    <style>
+      /* Stroke Hierarchy */
+      .outer-stroke {
+        stroke: #18181B;
+        stroke-width: 11;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .inner-stroke {
+        stroke: #18181B;
+        stroke-width: 8.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .face-stroke {
+        stroke: #18181B;
+        stroke-width: 7.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      /* Flat Color Palette (No Gradients) */
+      .hair-base    { fill: #F8FAFC; }
+      .hair-shadow  { fill: #CBD5E1; }
+      .hair-dark    { fill: #18181B; }
+      .skin-base    { fill: #FFE4D6; }
+      .skin-shadow  { fill: #F5C6B3; }
+      .blush        { fill: #FDA4AF; opacity: 0.75; }
+      .eye-white    { fill: #FFFFFF; }
+      .eye-shadow   { fill: #E2E8F0; }
+      .horn-base    { fill: #FFFFFF; }
+      .horn-shadow  { fill: #CBD5E1; }
+      .none         { fill: none; }
+    </style>
+  </defs>
+
+
+  <!-- ================= INNER DARK BOB LAYER ================= -->
+  <path class="outer-stroke hair-dark" d="
+    M 285,220
+    C 265,285 280,358 338,385
+    C 358,394 378,385 382,368
+    C 358,350 348,310 352,265
+    L 468,265
+    C 472,310 462,350 438,368
+    C 442,385 462,394 482,385
+    C 540,358 555,285 535,220
+    Z
+  " />
+
+  <!-- ================= MAIN FLUFFY HAIR CANOPY & SIDE LOCKS ================= -->
+  <!-- Base Silver-White Fill -->
+  <path class="hair-base" d="
+    M 410,65
+    C 332,65 282,102 268,152
+    C 232,158 202,172 188,188
+    C 210,204 242,208 266,202
+    C 246,248 248,318 282,362
+    C 286,342 292,322 300,305
+    C 298,332 308,358 328,374
+    C 318,335 318,285 326,235
+    L 494,235
+    C 502,285 502,335 492,374
+    C 512,358 522,332 520,305
+    C 528,322 534,342 538,362
+    C 572,318 574,248 554,202
+    C 578,208 610,204 632,188
+    C 618,172 588,158 552,152
+    C 538,102 488,65 410,65
+    Z
+  " />
+
+  <!-- Flat Crown & Side-Lock Cel Shadow (Matches Reference 1) -->
+  <path class="hair-shadow" d="
+    M 410,65
+    C 348,65 302,95 282,138
+    C 325,158 365,162 410,145
+    C 455,162 495,158 538,138
+    C 518,95 472,65 410,65
+    Z
+  " />
+  <!-- Lower Side-Hair Tip Shadows -->
+  <path class="hair-shadow" d="
+    M 256,265
+    C 254,305 262,338 282,362
+    C 286,342 292,322 300,305
+    C 298,332 308,358 328,374
+    C 320,342 318,302 322,265
+    Z
+  " />
+  <path class="hair-shadow" d="
+    M 564,265
+    C 566,305 558,338 538,362
+    C 534,342 528,322 520,305
+    C 522,332 512,358 492,374
+    C 500,342 502,302 498,265
+    Z
+  " />
+
+  <!-- Main Hair Outer Stroke -->
+  <path class="outer-stroke none" d="
+    M 410,65
+    C 332,65 282,102 268,152
+    C 232,158 202,172 188,188
+    C 210,204 242,208 266,202
+    C 246,248 248,318 282,362
+    C 286,342 292,322 300,305
+    C 298,332 308,358 328,374
+    C 318,335 318,285 326,235
+    L 494,235
+    C 502,285 502,335 492,374
+    C 512,358 522,332 520,305
+    C 528,322 534,342 538,362
+    C 572,318 574,248 554,202
+    C 578,208 610,204 632,188
+    C 618,172 588,158 552,152
+    C 538,102 488,65 410,65
+    Z
+  " />
+
+  <!-- Dark Tips on Side Fluff Ears -->
+  <path class="inner-stroke hair-dark" d="
+    M 188,188
+    C 208,202 235,205 256,202
+    C 246,188 228,178 206,176
+    Z
+  " />
+  <path class="inner-stroke hair-dark" d="
+    M 632,188
+    C 612,202 585,205 564,202
+    C 574,188 592,178 614,176
+    Z
+  " />
+
+  <!-- ================= OWO BOT SQUISHY CHEEKS & WARM SKIN ================= -->
+  <path class="outer-stroke skin-base" d="
+    M 315,195
+    C 305,232 296,262 308,292
+    C 322,326 362,338 410,338
+    C 458,338 498,326 512,292
+    C 524,262 515,232 505,195
+    Z
+  " />
+
+  <!-- Subtle Upper Forehead Skin Shadow (Under Bangs) -->
+  <path class="skin-shadow" d="
+    M 312,215
+    C 345,245 380,235 398,195
+    C 405,222 425,238 438,242
+    C 455,238 485,245 508,215
+    L 505,195
+    L 315,195
+    Z
+  " />
+
+  <!-- Cute Pink Oval Cheek Blushes (OwO Bot Style) -->
+  <ellipse class="blush" cx="326" cy="284" rx="18" ry="11" transform="rotate(8 326 284)" />
+  <ellipse class="blush" cx="494" cy="284" rx="18" ry="11" transform="rotate(-8 494 284)" />
+
+  <!-- ================= OWO BOT BIG BLANK EYES & 'w' CAT MOUTH ================= -->
+  <!-- Left Eye -->
+  <g transform="rotate(-6 350 256)">
+    <ellipse class="eye-white" cx="350" cy="256" rx="25" ry="27" />
+    <!-- Subtle Top Eye Shadow Crescent -->
+    <path class="eye-shadow" d="
+      M 326,248
+      A 25,27 0 0,1 374,248
+      Q 350,240 326,248
+      Z
+    " />
+    <ellipse class="face-stroke none" cx="350" cy="256" rx="25" ry="27" />
+  </g>
+
+  <!-- Right Eye -->
+  <g transform="rotate(6 470 256)">
+    <ellipse class="eye-white" cx="470" cy="256" rx="25" ry="27" />
+    <!-- Subtle Top Eye Shadow Crescent -->
+    <path class="eye-shadow" d="
+      M 446,248
+      A 25,27 0 0,1 494,248
+      Q 470,240 446,248
+      Z
+    " />
+    <ellipse class="face-stroke none" cx="470" cy="256" rx="25" ry="27" />
+  </g>
+
+  <!-- Classic OwO 'w' Mouth -->
+  <path class="face-stroke none" d="
+    M 390,282
+    C 392,293 406,293 410,283
+    C 414,293 428,293 430,282
+  " />
+
+  <!-- ================= OWO BOT FLUFFY PARTED BANGS ================= -->
+  <!-- Solid Silver-White Fill Mask for the Forehead Volume -->
+  <path class="hair-base" d="
+    M 292,165
+    C 285,205 282,232 288,250
+    C 318,248 368,232 398,185
+    C 394,212 408,232 435,238
+    C 430,224 428,210 432,198
+    C 455,228 492,248 532,250
+    C 538,232 535,205 528,165
+    L 495,120
+    L 325,120
+    Z
+  " />
+
+  <!-- Soft Cel-Shade Accents on the Bang Tips -->
+  <path class="hair-shadow" d="
+    M 288,250
+    C 318,248 368,232 398,185
+    C 365,218 325,232 290,234
+    Z
+  " />
+  <path class="hair-shadow" d="
+    M 432,198
+    C 455,228 492,248 532,250
+    C 534,242 534,234 532,234
+    C 495,232 460,218 432,198
+    Z
+  " />
+
+  <!-- Sweeping Fluffy Fringe Outlines -->
+  <path class="inner-stroke none" d="
+    M 292,175
+    C 286,208 282,232 288,250
+    C 322,248 370,230 398,182
+    C 394,212 410,232 436,238
+    C 430,224 428,210 432,198
+    C 455,228 492,248 532,250
+    C 538,232 534,208 528,175
+  " />
+
+  <!-- ================= HORNS & RIBBON ACCENTS ================= -->
+  <!-- Left Dark Winged Ribbon -->
+  <path class="inner-stroke hair-dark" d="
+    M 332,90
+    C 298,88 268,104 256,120
+    C 278,132 306,132 326,120
+    C 318,82 338,56 358,48
+    C 362,64 356,80 345,90
+    Z
+  " />
+  <!-- Left Horn with Band Detail -->
+  <path class="inner-stroke horn-base" d="
+    M 352,70
+    C 332,82 318,106 314,130
+    C 338,118 356,98 368,78
+    Z
+  " />
+  <path class="horn-shadow" d="
+    M 314,130
+    C 326,124 338,115 348,104
+    L 332,94
+    C 324,106 317,118 314,130
+    Z
+  " />
+  <path class="inner-stroke none" d="
+    M 352,70
+    C 332,82 318,106 314,130
+    C 338,118 356,98 368,78
+    Z
+  " />
+
+  <!-- Right Dark Winged Ribbon -->
+  <path class="inner-stroke hair-dark" d="
+    M 488,90
+    C 522,88 552,104 564,120
+    C 542,132 514,132 494,120
+    C 502,82 482,56 462,48
+    C 458,64 464,80 475,90
+    Z
+  " />
+  <!-- Right Horn with Band Detail -->
+  <path class="inner-stroke horn-base" d="
+    M 468,70
+    C 488,82 502,106 506,130
+    C 482,118 464,98 452,78
+    Z
+  " />
+  <path class="horn-shadow" d="
+    M 506,130
+    C 494,124 482,115 472,104
+    L 488,94
+    C 496,106 503,118 506,130
+    Z
+  " />
+  <path class="inner-stroke none" d="
+    M 468,70
+    C 488,82 502,106 506,130
+    C 482,118 464,98 452,78
+    Z
+  " />
+</svg>
