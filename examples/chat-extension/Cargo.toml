@@ -1,0 +1,15 @@
+[package]
+name = "chat-extension"
+version = "1.0.0"
+edition = "2021"
+authors = ["NeuxDOT Team"]
+description = "Example WASM extension providing a chat interface with host-managed KV and file storage"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }

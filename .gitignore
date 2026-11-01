@@ -1,0 +1,61 @@
+# Rust & Cargo build artifacts
+target/
+**/target/
+**/*.rs.bk
+Cargo.lock.bk
+
+# Node & Package Managers
+node_modules/
+**/node_modules/
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Frontend & SvelteKit
+.svelte-kit/
+**/.svelte-kit/
+build/
+**/build/
+dist/
+**/dist/
+.vite/
+**/.vite/
+
+# Database files & SQLite journals
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+veuxdot.sqlite*
+
+# Runtime Storage, Extension state & Transcripts
+data/
+**/data/
+logs/
+*.log
+
+# Sensitive Environment & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.pfx
+*.p12
+*.secret
+credentials.json
+secrets.json
+
+# IDE & OS Metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+*.bak

@@ -1,0 +1,132 @@
+CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS profiles (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    display_name TEXT,
+    avatar_color TEXT,
+    avatar_shape TEXT
+);
+
+CREATE TABLE IF NOT EXISTS providers (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    api_key TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS provider_models (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+    model_id TEXT NOT NULL,
+    name TEXT,
+    config_json TEXT,
+    is_active BOOLEAN DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    avatar_color TEXT,
+    avatar_shape TEXT,
+    strategy TEXT NOT NULL DEFAULT 'fallback',
+    system_prompt TEXT,
+    is_active BOOLEAN DEFAULT 0,
+    allow_output_text BOOLEAN DEFAULT 0,
+    output_text_error_message TEXT DEFAULT 'Output Text is not allowed, consider use correct tool or sleep.',
+    max_running_history_chars INTEGER DEFAULT 300000,
+    response_hooks_json TEXT DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS agent_providers (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    provider_model_id TEXT NOT NULL REFERENCES provider_models(id) ON DELETE CASCADE,
+    priority INTEGER DEFAULT 0,
+    PRIMARY KEY (agent_id, provider_model_id)
+);
+
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    url_or_command TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_mcp (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    mcp_id TEXT NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    PRIMARY KEY (agent_id, mcp_id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_pushed_messages (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    mcp_id TEXT REFERENCES mcp_servers(id) ON DELETE SET NULL,
+    method TEXT NOT NULL,
+    params_json TEXT,
+    is_consumed BOOLEAN NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agent_tool_permissions (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    mcp_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    is_enabled BOOLEAN NOT NULL DEFAULT 1,
+    PRIMARY KEY (agent_id, mcp_id, tool_name)
+);
+
+CREATE TABLE IF NOT EXISTS agent_subscriptions (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    uri TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (agent_id, uri)
+);
+
+CREATE TABLE IF NOT EXISTS agent_memories (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    content TEXT NOT NULL DEFAULT '',
+    hash TEXT NOT NULL DEFAULT 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agent_history (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    tool_calls_json TEXT,
+    tool_call_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS extensions (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    version TEXT NOT NULL DEFAULT '1.0.0',
+    description TEXT DEFAULT '',
+    wasm_hash TEXT NOT NULL,
+    wasm_binary BLOB NOT NULL,
+    manifest_json TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT 1,
+    storage_bytes INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS extension_kv (
+    extension_id TEXT NOT NULL REFERENCES extensions(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (extension_id, key)
+);

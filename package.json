@@ -1,0 +1,12 @@
+{
+  "name": "neuxdot-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "build:web": "pnpm --filter web build",
+    "check:web": "pnpm --filter web check",
+    "server": "cargo run -p neuxdot-server",
+    "test": "cargo test --workspace"
+  }
+}
