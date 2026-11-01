@@ -24,6 +24,7 @@
 
 <br/>
 
+**[ 🎬 Video Showcase ](#-video-showcase)** &nbsp;•&nbsp;
 **[ 🌸 The Paradigm ](#-the-neuxdot-paradigm)** &nbsp;•&nbsp;
 **[ 🏛️ Architecture ](#-system-architecture)** &nbsp;•&nbsp;
 **[ ✨ 9 Meta-Tools ](#-9-invariant-meta-tools)** &nbsp;•&nbsp;
@@ -37,6 +38,22 @@
 </div>
 
 ---
+
+## 🎬 Video Showcase
+
+Experience NeuxDOT's cache-invariance, sandboxed WASM extensions, unprompted MCP push streaming, and deterministic single-timer sleeping in this 55-second Full HD video showcase:
+
+<div align="center">
+
+[![NeuxDOT Video Showcase](assets/banner.svg)](assets/showcase.mp4)
+
+<br/>
+
+[▶️ **Play Video Showcase (`assets/showcase.mp4`)**](assets/showcase.mp4) &nbsp;&nbsp;|&nbsp;&nbsp; [🌐 **Open Interactive Showcase Player (`assets/showcase.html`)**](assets/showcase.html)
+
+<br/>
+
+</div>
 
 ## ⚡ The NeuxDOT Paradigm
 

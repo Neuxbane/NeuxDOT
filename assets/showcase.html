@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NeuxDOT Video Showcase &amp; Interactive Demo</title>
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background: linear-gradient(135deg, #FFF0F5 0%, #FCE7F3 30%, #F3E8FF 65%, #E0F2FE 100%);
+      color: #0F172A;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 1100px;
+      width: 100%;
+      background: #FFFFFF;
+      border: 3px solid #F472B6;
+      border-radius: 28px;
+      padding: 32px;
+      box-shadow: 0 20px 40px -15px rgba(236, 72, 153, 0.25);
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .header-brand {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .header-logo {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      background: #FFF5F7;
+      border: 2px solid #F472B6;
+      padding: 4px;
+    }
+    .header-title h1 {
+      font-size: 28px;
+      font-weight: 900;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, #0F172A 0%, #1E1B4B 50%, #E11D48 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .header-title p {
+      font-size: 14px;
+      font-weight: 600;
+      color: #64748B;
+    }
+    .pill-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: 9999px;
+      background: #FFE4E6;
+      border: 1.5px solid #FB7185;
+      color: #BE123C;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .video-wrapper {
+      position: relative;
+      width: 100%;
+      padding-top: 56.25%; /* 16:9 Aspect Ratio */
+      border-radius: 20px;
+      overflow: hidden;
+      background: #09090B;
+      box-shadow: 0 12px 28px -8px rgba(15, 23, 42, 0.35);
+      border: 2px solid #E2E8F0;
+      margin-bottom: 24px;
+    }
+    .video-wrapper video {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .controls-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+    .card {
+      background: #F8FAFC;
+      border: 1.5px solid #E2E8F0;
+      border-radius: 18px;
+      padding: 20px;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: #EC4899;
+    }
+    .card h3 {
+      font-size: 16px;
+      font-weight: 800;
+      color: #1E293B;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .card p {
+      font-size: 13px;
+      color: #64748B;
+      line-height: 1.5;
+    }
+    .actions {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      margin-top: 28px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: 14px;
+      font-size: 15px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #EC4899 0%, #8B5CF6 100%);
+      color: #FFFFFF;
+      border: none;
+      box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4);
+    }
+    .btn-primary:hover {
+      opacity: 0.95;
+      transform: scale(1.02);
+    }
+    .btn-secondary {
+      background: #FFFFFF;
+      color: #0F172A;
+      border: 2px solid #CBD5E1;
+    }
+    .btn-secondary:hover {
+      border-color: #94A3B8;
+      background: #F8FAFC;
+    }
+    .footer {
+      margin-top: 32px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: #64748B;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="header">
+      <div class="header-brand">
+        <img class="header-logo" src="logo.svg" alt="NeuxDOT Logo">
+        <div class="header-title">
+          <h1>NeuxDOT Video Showcase</h1>
+          <p>Cache-Invariant, Zero-Trust MCP Agent Runtime &amp; Desktop</p>
+        </div>
+      </div>
+      <div class="pill-badge">
+        🌸 100% Deterministic &amp; Kawaii
+      </div>
+    </div>
+
+    <!-- Video Showcase Player -->
+    <div class="video-wrapper">
+      <video id="player" controls playsinline preload="auto" poster="banner.svg">
+        <source src="showcase.mp4" type="video/mp4">
+        Your browser does not support the video tag.
+      </video>
+    </div>
+
+    <!-- Feature Highlights Covered in the Video -->
+    <div class="controls-grid">
+      <div class="card">
+        <h3>⚡ 100% Cache Invariance</h3>
+        <p>Volatile tool schemas are never injected into prompts. 9 invariant meta-tools preserve LLM prefix caches across all turns.</p>
+      </div>
+
+      <div class="card">
+        <h3>🛡️ Zero-Trust Discovery</h3>
+        <p>Tools disabled by policy remain completely invisible to the LLM with zero prompt leakage.</p>
+      </div>
+
+      <div class="card">
+        <h3>🧩 Sandboxed WASM Extensions</h3>
+        <p>Pre-compiled WebAssembly running in Wasmtime with host-managed KV and auto data migration.</p>
+      </div>
+
+      <div class="card">
+        <h3>🌸 Unprompted MCP Push</h3>
+        <p>Native asynchronous resource subscriptions stream live data and wake sleeping agents deterministically.</p>
+      </div>
+    </div>
+
+    <div class="actions">
+      <a class="btn btn-primary" href="showcase.mp4" download="NeuxDOT_Showcase.mp4">
+        ⬇️ Download Video (.mp4)
+      </a>
+      <a class="btn btn-secondary" href="../README.md">
+        📖 Read Full Documentation
+      </a>
+      <a class="btn btn-secondary" href="https://github.com/NeuxDOT/NeuxDOT" target="_blank" rel="noopener">
+        ⭐ Star on GitHub
+      </a>
+    </div>
+
+    <div class="footer">
+      (◕‿◕✿) Crafted with 💖 and lots of green tea by the NeuxDOT team.
+    </div>
+  </div>
+
+</body>
+</html>
