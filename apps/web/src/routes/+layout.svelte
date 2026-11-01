@@ -213,11 +213,11 @@
 							{agent.name}
 						</a>
 
-						<div class="flex items-center gap-1.5">
-							<!-- Delete Agent Hover Button -->
+						<div class="flex items-center gap-1">
+							<!-- Delete Agent Button -->
 							<button
 								type="button"
-								class="opacity-0 group-hover:opacity-100 p-1 rounded-md text-zinc-400 hover:text-rose-500 hover:bg-rose-500/10 transition-all cursor-pointer"
+								class="p-1 rounded-md text-zinc-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
 								onclick={(e) => deleteAgent(agent, e)}
 								title="Delete agent"
 								aria-label="Delete agent"

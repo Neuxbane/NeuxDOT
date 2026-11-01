@@ -840,29 +840,6 @@
 				{/if}
 			</section>
 
-			<!-- ⚠️ Danger Zone -->
-			<section id="agent-danger-section" class="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 space-y-2">
-				<div class="flex items-center justify-between">
-					<div>
-						<span class="text-xs font-semibold uppercase tracking-wider text-rose-700 dark:text-rose-400">
-							Danger Zone
-						</span>
-						<p class="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-							Permanently delete this agent, its memory, running history, and configuration.
-						</p>
-					</div>
-
-					<button
-						type="button"
-						onclick={deleteAgent}
-						class="flex items-center gap-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5 text-xs font-medium shadow-xs transition-colors cursor-pointer"
-					>
-						<Trash2 class="h-3.5 w-3.5" />
-						<span>Delete Agent</span>
-					</button>
-				</div>
-			</section>
-
 			<!-- 💬 FLOATING PROMPT PILL BAR (Reference Image 2 / Grok Feel) -->
 			<div id="agent-prompt-bar" class="sticky bottom-4 z-20">
 				<div class="flex items-center gap-2 rounded-full border border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-xl p-2 pl-4 shadow-lg transition-all focus-within:ring-2 focus-within:ring-zinc-400 dark:focus-within:ring-zinc-600">
