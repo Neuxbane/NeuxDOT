@@ -1,79 +1,85 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="100%" height="100%">
   <defs>
-    <!-- Background Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#09090B"/>
-      <stop offset="40%" stop-color="#0D0E15"/>
-      <stop offset="100%" stop-color="#140E1E"/>
+    <!-- High-Color Vibrant (Not Dark) Background Gradients -->
+    <linearGradient id="highColorBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFF0F5"/>
+      <stop offset="25%" stop-color="#FCE7F3"/>
+      <stop offset="50%" stop-color="#F3E8FF"/>
+      <stop offset="75%" stop-color="#E0E7FF"/>
+      <stop offset="100%" stop-color="#E0F2FE"/>
     </linearGradient>
 
     <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#6366F1" stop-opacity="0.8"/>
-      <stop offset="35%" stop-color="#EC4899" stop-opacity="0.8"/>
-      <stop offset="70%" stop-color="#A855F7" stop-opacity="0.7"/>
-      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0.6"/>
+      <stop offset="0%" stop-color="#F43F5E"/>
+      <stop offset="35%" stop-color="#EC4899"/>
+      <stop offset="70%" stop-color="#8B5CF6"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+
+    <!-- Logo Showcase Pod Gradient -->
+    <linearGradient id="podBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="50%" stop-color="#FFF5F7"/>
+      <stop offset="100%" stop-color="#F5F3FF"/>
+    </linearGradient>
+
+    <linearGradient id="podBorder" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FB7185"/>
+      <stop offset="50%" stop-color="#C084FC"/>
+      <stop offset="100%" stop-color="#38BDF8"/>
     </linearGradient>
 
     <!-- Typography Gradients -->
     <linearGradient id="neuxGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#FFFFFF"/>
-      <stop offset="60%" stop-color="#F1F5F9"/>
-      <stop offset="100%" stop-color="#CBD5E1"/>
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="60%" stop-color="#1E1B4B"/>
+      <stop offset="100%" stop-color="#312E81"/>
     </linearGradient>
 
     <linearGradient id="dotGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#FF6090"/>
-      <stop offset="50%" stop-color="#EC4899"/>
-      <stop offset="100%" stop-color="#A855F7"/>
+      <stop offset="0%" stop-color="#FF1493"/>
+      <stop offset="45%" stop-color="#E11D48"/>
+      <stop offset="100%" stop-color="#9333EA"/>
     </linearGradient>
 
     <linearGradient id="badgePillGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#EC4899" stop-opacity="0.2"/>
-      <stop offset="50%" stop-color="#8B5CF6" stop-opacity="0.25"/>
-      <stop offset="100%" stop-color="#06B6D4" stop-opacity="0.2"/>
+      <stop offset="0%" stop-color="#FFE4E6"/>
+      <stop offset="50%" stop-color="#F3E8FF"/>
+      <stop offset="100%" stop-color="#E0F2FE"/>
     </linearGradient>
 
-    <linearGradient id="chipGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#1E1B4B" stop-opacity="0.8"/>
-      <stop offset="100%" stop-color="#2E1065" stop-opacity="0.8"/>
-    </linearGradient>
-
-    <!-- Radial Glows -->
-    <radialGradient id="chibiAura" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#EC4899" stop-opacity="0.32"/>
-      <stop offset="50%" stop-color="#8B5CF6" stop-opacity="0.2"/>
-      <stop offset="100%" stop-color="#09090B" stop-opacity="0"/>
+    <!-- Radiant Glows for High-Color Canvas -->
+    <radialGradient id="pinkAura" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FB7185" stop-opacity="0.45"/>
+      <stop offset="60%" stop-color="#F472B6" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
     </radialGradient>
 
-    <radialGradient id="textAura" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#A855F7" stop-opacity="0.25"/>
-      <stop offset="60%" stop-color="#EC4899" stop-opacity="0.12"/>
-      <stop offset="100%" stop-color="#09090B" stop-opacity="0"/>
+    <radialGradient id="purpleAura" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#C084FC" stop-opacity="0.4"/>
+      <stop offset="70%" stop-color="#A855F7" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
     </radialGradient>
 
     <radialGradient id="cyanAura" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#06B6D4" stop-opacity="0.22"/>
-      <stop offset="100%" stop-color="#09090B" stop-opacity="0"/>
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.4"/>
+      <stop offset="60%" stop-color="#67E8F9" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
     </radialGradient>
 
     <!-- Filters -->
+    <filter id="stickerShadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#7C3AED" flood-opacity="0.18"/>
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#E11D48" flood-opacity="0.12"/>
+    </filter>
+
     <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feGaussianBlur stdDeviation="5" result="blur"/>
       <feComposite in="SourceGraphic" in2="blur" operator="over"/>
     </filter>
 
-    <filter id="pinkGlow" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur1"/>
-      <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="blur2"/>
-      <feMerge>
-        <feMergeNode in="blur2"/>
-        <feMergeNode in="blur1"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-
-    <filter id="dropShadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.7"/>
+    <filter id="podShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#8B5CF6" flood-opacity="0.2"/>
     </filter>
 
     <!-- Mascot Styles from logo.svg -->
@@ -101,96 +107,99 @@
       .hair-dark    { fill: #18181B; }
       .skin-base    { fill: #FFE4D6; }
       .skin-shadow  { fill: #F5C6B3; }
-      .blush        { fill: #FDA4AF; opacity: 0.85; }
+      .blush        { fill: #FDA4AF; opacity: 0.95; }
       .eye-white    { fill: #FFFFFF; }
       .eye-shadow   { fill: #E2E8F0; }
       .horn-base    { fill: #FFFFFF; }
       .horn-shadow  { fill: #CBD5E1; }
       .none         { fill: none; }
 
-      .kawaii-sparkle { fill: #FDF2F8; }
-      .kawaii-gold    { fill: #FDE047; }
-      .kawaii-cyan    { fill: #67E8F9; }
-      .kawaii-pink    { fill: #F472B6; }
+      .sparkle-pink { fill: #EC4899; }
+      .sparkle-gold { fill: #F59E0B; }
+      .sparkle-cyan { fill: #06B6D4; }
+      .sparkle-purp { fill: #8B5CF6; }
     </style>
   </defs>
 
-  <!-- ================= CANVAS BACKGROUND ================= -->
-  <!-- Outer Rounded Card -->
-  <rect x="2" y="2" width="1196" height="416" rx="24" fill="url(#bgGrad)" stroke="url(#borderGrad)" stroke-width="2.5" />
+  <!-- ================= HIGH COLOR CANVAS ================= -->
+  <!-- Outer Rounded Card with Bright High-Color Gradient -->
+  <rect x="2" y="2" width="1196" height="416" rx="26" fill="url(#highColorBg)" stroke="url(#borderGrad)" stroke-width="3" />
 
-  <!-- Background Decorative Cyber Grid -->
-  <g opacity="0.07" stroke="#FFFFFF" stroke-width="1">
-    <line x1="0" y1="70" x2="1200" y2="70" stroke-dasharray="6,6"/>
-    <line x1="0" y1="140" x2="1200" y2="140" stroke-dasharray="6,6"/>
-    <line x1="0" y1="210" x2="1200" y2="210" stroke-dasharray="6,6"/>
-    <line x1="0" y1="280" x2="1200" y2="280" stroke-dasharray="6,6"/>
-    <line x1="0" y1="350" x2="1200" y2="350" stroke-dasharray="6,6"/>
+  <!-- High-Color Ambient Radiant Orbs -->
+  <circle cx="210" cy="210" r="210" fill="url(#pinkAura)" />
+  <circle cx="850" cy="140" r="280" fill="url(#purpleAura)" />
+  <circle cx="1080" cy="300" r="220" fill="url(#cyanAura)" />
 
-    <line x1="150" y1="0" x2="150" y2="420" stroke-dasharray="6,6"/>
-    <line x1="300" y1="0" x2="300" y2="420" stroke-dasharray="6,6"/>
-    <line x1="450" y1="0" x2="450" y2="420" stroke-dasharray="6,6"/>
-    <line x1="600" y1="0" x2="600" y2="420" stroke-dasharray="6,6"/>
-    <line x1="750" y1="0" x2="750" y2="420" stroke-dasharray="6,6"/>
-    <line x1="900" y1="0" x2="900" y2="420" stroke-dasharray="6,6"/>
-    <line x1="1050" y1="0" x2="1050" y2="420" stroke-dasharray="6,6"/>
+  <!-- Cyber Kawaii Grid / Matrix Accent (Soft Saturated) -->
+  <g opacity="0.18" stroke="#8B5CF6" stroke-width="1">
+    <line x1="0" y1="70" x2="1200" y2="70" stroke-dasharray="8,8"/>
+    <line x1="0" y1="140" x2="1200" y2="140" stroke-dasharray="8,8"/>
+    <line x1="0" y1="210" x2="1200" y2="210" stroke-dasharray="8,8"/>
+    <line x1="0" y1="280" x2="1200" y2="280" stroke-dasharray="8,8"/>
+    <line x1="0" y1="350" x2="1200" y2="350" stroke-dasharray="8,8"/>
+
+    <line x1="160" y1="0" x2="160" y2="420" stroke-dasharray="8,8"/>
+    <line x1="320" y1="0" x2="320" y2="420" stroke-dasharray="8,8"/>
+    <line x1="480" y1="0" x2="480" y2="420" stroke-dasharray="8,8"/>
+    <line x1="640" y1="0" x2="640" y2="420" stroke-dasharray="8,8"/>
+    <line x1="800" y1="0" x2="800" y2="420" stroke-dasharray="8,8"/>
+    <line x1="960" y1="0" x2="960" y2="420" stroke-dasharray="8,8"/>
+    <line x1="1120" y1="0" x2="1120" y2="420" stroke-dasharray="8,8"/>
   </g>
-
-  <!-- Ambient Glow Orbs -->
-  <circle cx="210" cy="210" r="230" fill="url(#chibiAura)" />
-  <circle cx="820" cy="180" r="300" fill="url(#textAura)" />
-  <circle cx="1100" cy="320" r="200" fill="url(#cyanAura)" />
 
   <!-- ================= FLOATING KAWAII PARTICLES & SAKURA ================= -->
-  <!-- Floating Sakura Petals -->
-  <g opacity="0.75">
-    <!-- Petal 1 -->
-    <path d="M 120,60 C 130,50 145,55 142,70 C 138,82 122,88 116,80 C 112,74 114,66 120,60 Z" fill="#FDA4AF" transform="rotate(15 120 60)"/>
-    <!-- Petal 2 -->
-    <path d="M 400,45 C 412,38 424,44 420,56 C 415,66 400,72 395,64 C 390,58 394,49 400,45 Z" fill="#F472B6" transform="rotate(-20 400 45)"/>
-    <!-- Petal 3 -->
-    <path d="M 1120,95 C 1130,85 1144,92 1140,104 C 1135,114 1120,120 1114,112 C 1110,105 1114,98 1120,95 Z" fill="#FDA4AF" transform="rotate(35 1120 95)"/>
-    <!-- Petal 4 -->
-    <path d="M 680,360 C 690,352 702,356 698,368 C 694,378 682,382 676,375 C 672,369 675,362 680,360 Z" fill="#FDA4AF" transform="rotate(-10 680 360)"/>
-    <!-- Petal 5 -->
-    <path d="M 1030,365 C 1042,358 1054,364 1050,376 C 1045,386 1030,392 1024,384 C 1020,378 1023,370 1030,365 Z" fill="#F472B6" transform="rotate(25 1030 365)"/>
+  <!-- Vibrant Sakura Petals -->
+  <g opacity="0.85">
+    <path d="M 90,65 C 102,54 118,60 115,76 C 110,89 92,96 85,87 C 81,80 83,72 90,65 Z" fill="#FB7185" transform="rotate(18 90 65)"/>
+    <path d="M 440,38 C 454,30 468,37 463,51 C 457,63 440,70 434,61 C 428,54 433,43 440,38 Z" fill="#F43F5E" transform="rotate(-15 440 38)"/>
+    <path d="M 1125,80 C 1137,70 1152,78 1148,92 C 1142,103 1125,110 1118,101 C 1114,93 1118,84 1125,80 Z" fill="#FB7185" transform="rotate(30 1125 80)"/>
+    <path d="M 680,365 C 692,356 706,361 701,374 C 696,385 683,390 676,382 C 671,375 675,367 680,365 Z" fill="#F43F5E" transform="rotate(-8 680 365)"/>
+    <path d="M 1040,360 C 1054,352 1068,359 1063,372 C 1057,383 1040,390 1033,381 C 1028,374 1032,365 1040,360 Z" fill="#FB7185" transform="rotate(22 1040 360)"/>
   </g>
 
-  <!-- Sparkles (4-pointed Kawaii Stars) -->
+  <!-- Kawaii Sparkle Stars (High-Color Saturated) -->
   <g filter="url(#softGlow)">
-    <!-- Big Sparkle Top Left -->
-    <path d="M 85,110 Q 85,125 70,125 Q 85,125 85,140 Q 85,125 100,125 Q 85,125 85,110 Z" class="kawaii-sparkle" />
-    <!-- Pink Sparkle near mascot -->
-    <path d="M 365,85 Q 365,95 355,95 Q 365,95 365,105 Q 365,95 375,95 Q 365,95 365,85 Z" class="kawaii-pink" />
-    <!-- Gold Sparkle over Title -->
-    <path d="M 505,80 Q 505,94 491,94 Q 505,94 505,108 Q 505,94 519,94 Q 505,94 505,80 Z" class="kawaii-gold" />
-    <!-- Cyan Sparkle Mid Banner -->
-    <path d="M 1080,160 Q 1080,172 1068,172 Q 1080,172 1080,184 Q 1080,172 1092,172 Q 1080,172 1080,160 Z" class="kawaii-cyan" />
-    <!-- Small Pink Sparkle Bottom Right -->
-    <path d="M 1135,275 Q 1135,283 1127,283 Q 1135,283 1135,291 Q 1135,283 1143,283 Q 1135,283 1135,275 Z" class="kawaii-pink" />
-    <!-- Tiny Sparkle bottom left -->
-    <path d="M 330,345 Q 330,353 322,353 Q 330,353 330,361 Q 330,353 338,353 Q 330,353 330,345 Z" class="kawaii-sparkle" />
+    <path d="M 70,120 Q 70,135 55,135 Q 70,135 70,150 Q 70,135 85,135 Q 70,135 70,120 Z" class="sparkle-pink" />
+    <path d="M 410,75 Q 410,87 398,87 Q 410,87 410,99 Q 410,87 422,87 Q 410,87 410,75 Z" class="sparkle-purp" />
+    <path d="M 525,78 Q 525,92 511,92 Q 525,92 525,106 Q 525,92 539,92 Q 525,92 525,78 Z" class="sparkle-gold" />
+    <path d="M 1080,140 Q 1080,154 1066,154 Q 1080,154 1080,168 Q 1080,154 1094,154 Q 1080,154 1080,140 Z" class="sparkle-cyan" />
+    <path d="M 1145,260 Q 1145,270 1135,270 Q 1145,270 1145,280 Q 1145,270 1155,270 Q 1145,270 1145,260 Z" class="sparkle-pink" />
+    <path d="M 370,350 Q 370,360 360,360 Q 370,360 370,370 Q 370,360 380,360 Q 370,360 370,350 Z" class="sparkle-purp" />
   </g>
 
   <!-- Kawaii Cross Sparkles (+) -->
-  <g stroke="#FDF2F8" stroke-width="2" stroke-linecap="round" opacity="0.8">
-    <line x1="60" y1="260" x2="70" y2="260" />
-    <line x1="65" y1="255" x2="65" y2="265" />
+  <g stroke="#EC4899" stroke-width="2.2" stroke-linecap="round" opacity="0.9">
+    <line x1="50" y1="260" x2="62" y2="260" />
+    <line x1="56" y1="254" x2="56" y2="266" />
 
-    <line x1="435" y1="230" x2="445" y2="230" />
-    <line x1="440" y1="225" x2="440" y2="235" />
+    <line x1="450" y1="220" x2="462" y2="220" />
+    <line x1="456" y1="214" x2="456" y2="226" />
 
-    <line x1="1140" y1="65" x2="1150" y2="65" />
-    <line x1="1145" y1="60" x2="1145" y2="70" />
+    <line x1="1130" y1="50" x2="1142" y2="50" />
+    <line x1="1136" y1="44" x2="1136" y2="56" />
 
-    <line x1="970" y1="380" x2="980" y2="380" />
-    <line x1="975" y1="375" x2="975" y2="385" />
+    <line x1="970" y1="375" x2="982" y2="375" />
+    <line x1="976" y1="369" x2="976" y2="381" />
   </g>
 
-  <!-- ================= MASCOT SECTION (LEFT) ================= -->
-  <!-- Scaled and positioned chibi mascot from logo.svg -->
-  <g transform="translate(-105, -5) scale(0.92)" filter="url(#dropShadow)">
-    <!-- Inner Dark Bob Layer -->
+  <!-- ================= LOGO SHOWCASE POD (LEFT) ================= -->
+  <!-- Dedicated High-Color Card Pod with Pristine Contrast for Black Hair & Strokes -->
+  <g transform="translate(30, 26)" filter="url(#podShadow)">
+    <rect x="0" y="0" width="380" height="368" rx="28" fill="url(#podBg)" stroke="url(#podBorder)" stroke-width="2.5" />
+    <!-- Inner Ambient Highlight Ring -->
+    <rect x="8" y="8" width="364" height="352" rx="22" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.8" />
+    <!-- Floating Kawaii Decors on Pod Corners -->
+    <circle cx="28" cy="28" r="6" fill="#F43F5E" />
+    <circle cx="28" cy="28" r="3" fill="#FFFFFF" />
+    <circle cx="352" cy="28" r="6" fill="#8B5CF6" />
+    <circle cx="352" cy="28" r="3" fill="#FFFFFF" />
+    <circle cx="352" cy="340" r="6" fill="#06B6D4" />
+    <circle cx="352" cy="340" r="3" fill="#FFFFFF" />
+  </g>
+
+  <!-- Scaled Chibi Mascot from logo.svg on top of High-Color Pod -->
+  <g transform="translate(-105, -5) scale(0.92)" filter="url(#stickerShadow)">
+    <!-- Inner Dark Bob Layer (High Contrast against Pod!) -->
     <path class="outer-stroke hair-dark" d="
       M 285,220
       C 265,285 280,358 338,385
@@ -438,82 +447,82 @@
   <!-- ================= RIGHT HERO CONTENT & TYPOGRAPHY ================= -->
   <g transform="translate(470, 0)">
     <!-- Top Kawaii Pill Badge -->
-    <g transform="translate(0, 48)">
-      <rect x="0" y="0" width="410" height="34" rx="17" fill="url(#badgePillGrad)" stroke="#EC4899" stroke-width="1.2" stroke-opacity="0.6"/>
-      <text x="20" y="22" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="700" fill="#F472B6" letter-spacing="1.5">
+    <g transform="translate(0, 46)">
+      <rect x="0" y="0" width="418" height="34" rx="17" fill="url(#badgePillGrad)" stroke="#EC4899" stroke-width="1.6"/>
+      <text x="20" y="22" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="700" fill="#BE185D" letter-spacing="1.5">
         🌸 CACHE-INVARIANT • MCP RUNTIME ✦
       </text>
-      <circle cx="388" cy="17" r="4" fill="#38BDF8" filter="url(#softGlow)"/>
+      <circle cx="396" cy="17" r="5" fill="#0284C7" />
     </g>
 
     <!-- Main Typographic Brand Title -->
     <g transform="translate(0, 155)">
-      <!-- Drop Shadow Behind Text -->
-      <text x="0" y="0" font-family="'Inter', 'Montserrat', 'Segoe UI', system-ui, sans-serif" font-size="82" font-weight="900" letter-spacing="-2" fill="#000000" opacity="0.6" dx="0" dy="6">
-        Neux<tspan fill="#000000">DOT</tspan>
+      <!-- Soft Depth Shadow Behind Text -->
+      <text x="0" y="0" font-family="'Inter', 'Montserrat', 'Segoe UI', system-ui, sans-serif" font-size="84" font-weight="900" letter-spacing="-2" fill="#8B5CF6" opacity="0.2" dx="0" dy="5">
+        Neux<tspan fill="#EC4899">DOT</tspan>
       </text>
 
-      <!-- Main "Neux" Text in Crystalline Silver Gradient -->
-      <text x="0" y="0" font-family="'Inter', 'Montserrat', 'Segoe UI', system-ui, sans-serif" font-size="82" font-weight="900" letter-spacing="-2" fill="url(#neuxGrad)">
+      <!-- Main "Neux" Text in Saturated Dark Indigo Gradient -->
+      <text x="0" y="0" font-family="'Inter', 'Montserrat', 'Segoe UI', system-ui, sans-serif" font-size="84" font-weight="900" letter-spacing="-2" fill="url(#neuxGrad)">
         Neux
       </text>
 
-      <!-- "DOT" Text in Cyber Kawaii Neon Gradient with Glow -->
-      <text x="238" y="0" font-family="'Inter', 'Montserrat', 'Segoe UI', system-ui, sans-serif" font-size="82" font-weight="900" letter-spacing="-1" fill="url(#dotGrad)" filter="url(#pinkGlow)">
+      <!-- "DOT" Text in High-Color Neon Cyber Magenta Gradient -->
+      <text x="246" y="0" font-family="'Inter', 'Montserrat', 'Segoe UI', system-ui, sans-serif" font-size="84" font-weight="900" letter-spacing="-1" fill="url(#dotGrad)">
         DOT
       </text>
 
       <!-- Kawaii Sparkle over the letter 'O' -->
-      <path d="M 334,-38 Q 334,-30 326,-30 Q 334,-30 334,-22 Q 334,-30 342,-30 Q 334,-30 334,-38 Z" fill="#FFFFFF" />
+      <path d="M 345,-38 Q 345,-30 337,-30 Q 345,-30 345,-22 Q 345,-30 353,-30 Q 345,-30 345,-38 Z" fill="#FFFFFF" />
 
-      <!-- Glowing Neon Cyber Dot at end -->
-      <circle cx="438" cy="-8" r="9" fill="#F43F5E" filter="url(#pinkGlow)"/>
-      <circle cx="438" cy="-8" r="5" fill="#FFFFFF"/>
+      <!-- Glowing High-Color Cyber Dot at end -->
+      <circle cx="452" cy="-8" r="10" fill="#E11D48" />
+      <circle cx="452" cy="-8" r="5" fill="#FFFFFF"/>
     </g>
 
-    <!-- Mascot Speech Quote Bubble -->
-    <g transform="translate(0, 192)">
-      <rect x="0" y="0" width="560" height="42" rx="14" fill="#18181B" fill-opacity="0.85" stroke="#3F3F46" stroke-width="1.2" />
-      <text x="18" y="26" font-family="'Fira Code', 'JetBrains Mono', Consolas, monospace" font-size="13.5" font-weight="500" fill="#E2E8F0">
-        <tspan fill="#F472B6">(｡•̀ᴗ-)✧</tspan> <tspan fill="#A5F3FC">"Zero-trust determinism</tspan> <tspan fill="#E2E8F0">never looked so</tspan> <tspan fill="#F472B6" font-weight="700">kawaii!"</tspan> <tspan fill="#FDE047">✨</tspan>
+    <!-- Mascot Speech Quote Bubble (Clean White Glass on High-Color Canvas) -->
+    <g transform="translate(0, 192)" filter="url(#podShadow)">
+      <rect x="0" y="0" width="560" height="44" rx="14" fill="#FFFFFF" stroke="#F472B6" stroke-width="1.8" />
+      <text x="18" y="27" font-family="'Fira Code', 'JetBrains Mono', Consolas, monospace" font-size="13.5" font-weight="600" fill="#1E293B">
+        <tspan fill="#E11D48">(｡•̀ᴗ-)✧</tspan> <tspan fill="#0284C7">"Zero-trust determinism</tspan> <tspan fill="#334155">never looked so</tspan> <tspan fill="#E11D48" font-weight="800">kawaii!"</tspan> <tspan fill="#D97706">✨</tspan>
       </text>
     </g>
 
     <!-- Subtitle Description -->
-    <text x="2" y="266" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="400" fill="#94A3B8" letter-spacing="0.2">
+    <text x="2" y="268" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600" fill="#475569" letter-spacing="0.2">
       Zero-trust agent kernel with invariant meta-tools &amp; unprompted WASM events.
     </text>
 
-    <!-- Interactive Glowing Feature Pills Row -->
+    <!-- High-Color Glowing Feature Pills Row -->
     <g transform="translate(0, 296)">
       <!-- Pill 1: Cache Invariance -->
       <g transform="translate(0, 0)">
-        <rect x="0" y="0" width="168" height="38" rx="10" fill="url(#chipGrad)" stroke="#6366F1" stroke-width="1" stroke-opacity="0.6"/>
-        <text x="14" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#C7D2FE">
+        <rect x="0" y="0" width="168" height="38" rx="12" fill="#FFFFFF" stroke="#4F46E5" stroke-width="1.8" />
+        <text x="14" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700" fill="#4338CA">
           ⚡ Cache-Invariant
         </text>
       </g>
 
       <!-- Pill 2: 9 Invariant Meta-Tools -->
       <g transform="translate(180, 0)">
-        <rect x="0" y="0" width="168" height="38" rx="10" fill="url(#chipGrad)" stroke="#EC4899" stroke-width="1" stroke-opacity="0.6"/>
-        <text x="14" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FBCFE8">
+        <rect x="0" y="0" width="168" height="38" rx="12" fill="#FFFFFF" stroke="#EC4899" stroke-width="1.8" />
+        <text x="14" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700" fill="#BE185D">
           🛡️ 9 Meta-Tools
         </text>
       </g>
 
       <!-- Pill 3: WASM Sandbox -->
       <g transform="translate(360, 0)">
-        <rect x="0" y="0" width="155" height="38" rx="10" fill="url(#chipGrad)" stroke="#A855F7" stroke-width="1" stroke-opacity="0.6"/>
-        <text x="14" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E9D5FF">
+        <rect x="0" y="0" width="155" height="38" rx="12" fill="#FFFFFF" stroke="#8B5CF6" stroke-width="1.8" />
+        <text x="14" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700" fill="#6D28D9">
           🧩 WASM Sandbox
         </text>
       </g>
 
       <!-- Pill 4: Push Events -->
       <g transform="translate(527, 0)">
-        <rect x="0" y="0" width="145" height="38" rx="10" fill="url(#chipGrad)" stroke="#06B6D4" stroke-width="1" stroke-opacity="0.6"/>
-        <text x="14" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#BAE6FD">
+        <rect x="0" y="0" width="145" height="38" rx="12" fill="#FFFFFF" stroke="#06B6D4" stroke-width="1.8" />
+        <text x="14" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700" fill="#0E7490">
           🌸 Push Events
         </text>
       </g>
@@ -521,7 +530,7 @@
 
     <!-- Bottom Tiny Kawaii Footer Flourish -->
     <g transform="translate(4, 370)">
-      <text font-family="'Fira Code', monospace" font-size="11" fill="#64748B" letter-spacing="1">
+      <text font-family="'Fira Code', monospace" font-size="11" font-weight="600" fill="#64748B" letter-spacing="1">
         ✦ ✧ ✦  NEUXDOT KERNEL  •  100% DETERMINISTIC  •  OWO POWERED  ✦ ✧ ✦
       </text>
     </g>
