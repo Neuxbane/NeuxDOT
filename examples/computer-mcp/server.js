@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 
 // Configuration
@@ -17,37 +17,27 @@ const ONE_TIME_API_KEY =
 const sseClients = new Set();
 
 /**
- * Truncates long command output with head, body, and tail preserves for security and token economy.
- * Defaults to 1000 chars head, 1000 chars body, 1000 chars tail.
+ * Parses duration strings like "120s", "5m", "500ms" into milliseconds.
  */
-function truncateOutput(text, head = 1000, body = 1000, tail = 1000) {
-  const h = Math.max(0, parseInt(head ?? 1000, 10));
-  const b = Math.max(0, parseInt(body ?? 1000, 10));
-  const t = Math.max(0, parseInt(tail ?? 1000, 10));
-  const total = text.length;
-  const maxAllowed = h + b + t;
-
-  if (total <= maxAllowed) {
-    return text;
+function parseTimeout(val, defaultMs = 120000) {
+  if (val === undefined || val === null || val === '') return defaultMs;
+  if (typeof val === 'number') return val;
+  const match = String(val).trim().match(/^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/i);
+  if (!match) return defaultMs;
+  const num = parseFloat(match[1]);
+  const unit = (match[2] || 's').toLowerCase();
+  switch (unit) {
+    case 'ms':
+      return Math.round(num);
+    case 's':
+      return Math.round(num * 1000);
+    case 'm':
+      return Math.round(num * 60 * 1000);
+    case 'h':
+      return Math.round(num * 60 * 60 * 1000);
+    default:
+      return Math.round(num * 1000);
   }
-
-  const headPart = text.slice(0, h);
-  const tailPart = text.slice(Math.max(0, total - t));
-
-  const middleStart = Math.max(h, Math.floor((total - b) / 2));
-  const middleEnd = Math.min(total - t, middleStart + b);
-  const bodyPart = text.slice(middleStart, middleEnd);
-
-  const truncBefore = Math.max(0, middleStart - h);
-  const truncAfter = Math.max(0, total - t - middleEnd);
-
-  return [
-    headPart,
-    `\n\n[... Truncation notice: skipped ${truncBefore.toLocaleString()} characters ...]\n\n`,
-    bodyPart,
-    `\n\n[... Truncation notice: skipped ${truncAfter.toLocaleString()} characters ...]\n\n`,
-    tailPart,
-  ].join('');
 }
 
 /**
@@ -55,9 +45,8 @@ function truncateOutput(text, head = 1000, body = 1000, tail = 1000) {
  */
 const TOOLS = [
   {
-    name: 'execute',
-    description:
-      'Execute a bash command with secure output truncation (head/body/tail security controls)',
+    name: 'terminal',
+    description: 'Execute a bash command in the terminal environment',
     inputSchema: {
       type: 'object',
       properties: {
@@ -65,20 +54,15 @@ const TOOLS = [
           type: 'string',
           description: 'The bash command to execute in shell environment',
         },
-        head: {
-          type: 'integer',
-          description: 'Head character limit for truncation security (default: 1000)',
-          default: 1000,
+        runInBackground: {
+          type: 'boolean',
+          description: 'Whether to run the command in background without waiting (default: false)',
+          default: false,
         },
-        body: {
-          type: 'integer',
-          description: 'Middle body character limit for truncation security (default: 1000)',
-          default: 1000,
-        },
-        tail: {
-          type: 'integer',
-          description: 'Tail character limit for truncation security (default: 1000)',
-          default: 1000,
+        timeout: {
+          type: 'string',
+          description: 'Execution timeout duration, e.g. "120s", "30s", "5m" (default: "120s")',
+          default: '120s',
         },
       },
       required: ['bash'],
@@ -167,22 +151,35 @@ const TOOLS = [
  */
 async function callTool(name, args = {}) {
   switch (name) {
+    case 'terminal':
     case 'execute': {
       const command = args.bash;
       if (!command || typeof command !== 'string') {
         throw new Error("Missing required 'bash' command string");
       }
-      const head = args.head ?? 1000;
-      const body = args.body ?? 1000;
-      const tail = args.tail ?? 1000;
+      const runInBackground = Boolean(args.runInBackground);
+      const timeoutMs = parseTimeout(args.timeout ?? '120s', 120000);
+
+      if (runInBackground) {
+        const child = spawn('/bin/bash', ['-c', command], {
+          detached: true,
+          stdio: 'ignore',
+        });
+        child.unref();
+        return {
+          status: 'running_in_background',
+          pid: child.pid,
+          command,
+        };
+      }
 
       return new Promise((resolve) => {
         exec(
           command,
           {
             shell: '/bin/bash',
-            timeout: 60000,
-            maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+            timeout: timeoutMs,
+            maxBuffer: 50 * 1024 * 1024, // 50MB buffer
           },
           (err, stdout, stderr) => {
             const exitCode = err?.code ?? (err ? 1 : 0);
@@ -191,12 +188,10 @@ async function callTool(name, args = {}) {
               stderr ? (stdout ? '\n[STDERR]\n' + stderr : stderr) : '',
             ].join('');
 
-            const truncated = truncateOutput(combined || '(no output produced)', head, body, tail);
             resolve({
               exit_code: exitCode,
-              output: truncated,
-              is_truncated: combined.length > head + body + tail,
-              raw_length: combined.length,
+              output: combined || '(no output produced)',
+              timed_out: Boolean(err?.killed),
             });
           }
         );
@@ -538,7 +533,7 @@ server.listen(PORT, HOST, () => {
 ║      Authorization: Bearer ${ONE_TIME_API_KEY.padEnd(46)}║
 ╠════════════════════════════════════════════════════════════════════════════╣
 ║ Tools available:                                                           ║
-║   - execute(bash, head=1000, body=1000, tail=1000)                         ║
+║   - terminal(bash, runInBackground=false, timeout="120s")                  ║
 ║   - list(path=".")                                                         ║
 ║   - read(path, from?, to?)                                                 ║
 ║   - set(path, content)                                                     ║
