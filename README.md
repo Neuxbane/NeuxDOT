@@ -24,7 +24,7 @@
 
 <br/>
 
-**[ 🎬 Video Showcase ](#-video-showcase)** &nbsp;•&nbsp;
+**[ 🚀 3D Kinetic Promo ](#-3d-kinetic-motion-promo)** &nbsp;•&nbsp;
 **[ 🌸 The Paradigm ](#-the-neuxdot-paradigm)** &nbsp;•&nbsp;
 **[ 🏛️ Architecture ](#-system-architecture)** &nbsp;•&nbsp;
 **[ ✨ 9 Meta-Tools ](#-9-invariant-meta-tools)** &nbsp;•&nbsp;
@@ -39,17 +39,19 @@
 
 ---
 
-## 🎬 Video Showcase
+## 🚀 3D Kinetic Motion Promo
 
-Experience NeuxDOT's cache-invariance, sandboxed WASM extensions, unprompted MCP push streaming, and deterministic single-timer sleeping in this 55-second Full HD video showcase:
+Experience NeuxDOT's cache-invariance, 3D isometric runtime architecture, and sandboxed WASM extensions in this high-energy SaaS Product Motion Teaser:
 
 <div align="center">
 
-[![NeuxDOT Video Showcase](assets/banner.svg)](assets/showcase.mp4)
+[![NeuxDOT 3D Kinetic Motion Promo](assets/banner.svg)](assets/showcase.mp4)
 
 <br/>
 
-[▶️ **Play Video Showcase (`assets/showcase.mp4`)**](assets/showcase.mp4) &nbsp;&nbsp;|&nbsp;&nbsp; [🌐 **Open Interactive Showcase Player (`assets/showcase.html`)**](assets/showcase.html)
+[🎬 **Play Master Video Promo (`assets/showcase.mp4`)**](assets/showcase.mp4) &nbsp;&nbsp;|&nbsp;&nbsp; 
+[🚀 **Launch Interactive 3D WebGL Canvas (`assets/promo.html`)**](assets/promo.html) &nbsp;&nbsp;|&nbsp;&nbsp;
+[🌐 **Open Showcase Hub (`assets/showcase.html`)**](assets/showcase.html)
 
 <br/>
 
