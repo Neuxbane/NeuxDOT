@@ -24,7 +24,7 @@
 
 <br/>
 
-**[ 🚀 3D Kinetic Promo ](#-3d-kinetic-motion-promo)** &nbsp;•&nbsp;
+**[ 🎬 Apple-Style Promo ](#-apple-style-ui-animation--kinetic-promo)** &nbsp;•&nbsp;
 **[ 🌸 The Paradigm ](#-the-neuxdot-paradigm)** &nbsp;•&nbsp;
 **[ 🏛️ Architecture ](#-system-architecture)** &nbsp;•&nbsp;
 **[ ✨ 9 Meta-Tools ](#-9-invariant-meta-tools)** &nbsp;•&nbsp;
@@ -39,19 +39,18 @@
 
 ---
 
-## 🚀 3D Kinetic Motion Promo
+## 🎬 Apple-Style UI Animation & Kinetic Promo
 
-Experience NeuxDOT's cache-invariance, 3D isometric runtime architecture, and sandboxed WASM extensions in this high-energy SaaS Product Motion Teaser:
+Experience NeuxDOT's cache-invariance, 3D isometric runtime architecture, and sandboxed WASM extensions in an Apple-style kinetic product reveal:
 
 <div align="center">
 
-[![NeuxDOT 3D Kinetic Motion Promo](assets/banner.svg)](assets/showcase.mp4)
+[![NeuxDOT Apple-Style Kinetic UI Promo](assets/banner.svg)](video.html)
 
 <br/>
 
-[🎬 **Play Master Video Promo (`assets/showcase.mp4`)**](assets/showcase.mp4) &nbsp;&nbsp;|&nbsp;&nbsp; 
-[🚀 **Launch Interactive 3D WebGL Canvas (`assets/promo.html`)**](assets/promo.html) &nbsp;&nbsp;|&nbsp;&nbsp;
-[🌐 **Open Showcase Hub (`assets/showcase.html`)**](assets/showcase.html)
+[🚀 **Open Apple-Style UI Animation (`video.html`)**](video.html) &nbsp;&nbsp;|&nbsp;&nbsp; 
+[🎥 **Assets Mirror (`assets/video.html`)**](assets/video.html)
 
 <br/>
 
