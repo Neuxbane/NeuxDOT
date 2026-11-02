@@ -185,6 +185,320 @@ pub struct AgentProvider {
     pub priority: i32,
 }
 
+fn default_plugin_version() -> String {
+    "1.0.0".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+
+/// Marker stored in `ui.resources` to mean "every ui:// resource".
+/// normalised. Matches any `ui://` URI.
+pub const UI_RESOURCE_WILDCARD: &str = "*";
+
+/// Canonical capability strings (see `docs/HOST_BRIDGE.md` §1). Only granted
+/// capabilities appear in a host bootstrap payload.
+pub const CAP_UI_CONTEXT_REFRESH: &str = "ui.context.refresh";
+pub const CAP_STORAGE_GET: &str = "storage.get";
+pub const CAP_STORAGE_SET: &str = "storage.set";
+pub const CAP_STORAGE_DELETE: &str = "storage.delete";
+pub const CAP_STORAGE_KEYS: &str = "storage.keys";
+pub const CAP_AGENT_TRIGGER: &str = "agent.trigger";
+pub const CAP_IDENTITY_AGENT_NAME: &str = "identity.agent.name";
+pub const CAP_IDENTITY_AGENT_PICTURE: &str = "identity.agent.profile_picture";
+pub const CAP_IDENTITY_USER_NAME: &str = "identity.user.name";
+pub const CAP_IDENTITY_USER_PICTURE: &str = "identity.user.profile_picture";
+
+/// How a sandboxed MCP-App UI may use the `ui://` resources of a plugin.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiPermissions {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Allow-list of `ui://` URIs. `["*"]` (or an empty list) means "any".
+    #[serde(default)]
+    pub resources: Vec<String>,
+}
+
+impl Default for UiPermissions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            resources: vec![UI_RESOURCE_WILDCARD.to_string()],
+        }
+    }
+}
+
+/// Isolated per-plugin key/value storage grants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoragePermissions {
+    #[serde(default)]
+    pub get: bool,
+    #[serde(default)]
+    pub set: bool,
+    #[serde(default)]
+    pub delete: bool,
+    /// Key **prefix** allow-list; `None` means "every key".
+    #[serde(default)]
+    pub keys: Option<Vec<String>>,
+}
+
+impl Default for StoragePermissions {
+    fn default() -> Self {
+        Self {
+            get: true,
+            set: true,
+            delete: true,
+            keys: None,
+        }
+    }
+}
+
+/// Permission to drive an agent from inside the hosted UI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentPermissions {
+    #[serde(default)]
+    pub trigger: bool,
+    #[serde(default)]
+    pub tools: bool,
+}
+
+impl Default for AgentPermissions {
+    fn default() -> Self {
+        Self {
+            trigger: true,
+            tools: true,
+        }
+    }
+}
+
+/// Consent to expose the signed-in account and/or the bound agent's identity to
+/// the hosted UI. Every grant defaults to **false** (privacy by default).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct IdentityPermissions {
+    #[serde(default, rename = "agent.name")]
+    pub agent_name: bool,
+    #[serde(default, rename = "agent.profile_picture")]
+    pub agent_profile_picture: bool,
+    #[serde(default, rename = "user.name")]
+    pub user_name: bool,
+    #[serde(default, rename = "user.profile_picture")]
+    pub user_profile_picture: bool,
+}
+
+impl IdentityPermissions {
+    /// All four identity grants.
+    pub fn all_granted() -> Self {
+        Self {
+            agent_name: true,
+            agent_profile_picture: true,
+            user_name: true,
+            user_profile_picture: true,
+        }
+    }
+}
+
+/// Resolved grants for a plugin. See `docs/HOST_BRIDGE.md` §2 for the
+/// canonical JSON shape — this struct serialises to exactly that.
+///
+/// The flat boolean permission blob of earlier releases is **not** supported:
+/// only the canonical grouped shape deserialises. Missing sections default to
+/// *not* granted.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginPermissions {
+    pub ui: UiPermissions,
+    pub storage: StoragePermissions,
+    pub agent: AgentPermissions,
+    pub identity: IdentityPermissions,
+    /// Process spawning (stdio plugins). Out of scope for the consent editor.
+    #[serde(default = "default_true")]
+    pub process: bool,
+    /// Outbound network (http plugins). Out of scope for the consent editor.
+    #[serde(default = "default_true")]
+    pub network: bool,
+}
+
+impl Default for PluginPermissions {
+    fn default() -> Self {
+        Self {
+            ui: UiPermissions::default(),
+            storage: StoragePermissions::default(),
+            agent: AgentPermissions::default(),
+            // Privacy by default: identity grants must be asked for explicitly.
+            identity: IdentityPermissions::default(),
+            process: true,
+            network: true,
+        }
+    }
+}
+
+/// Nothing granted at all — used as the base for manifest-derived grants.
+impl PluginPermissions {
+    /// A permission object where every capability is denied.
+    pub fn deny_all() -> Self {
+        Self {
+            ui: UiPermissions { enabled: false, resources: Vec::new() },
+            storage: StoragePermissions { get: false, set: false, delete: false, keys: Some(Vec::new()) },
+            agent: AgentPermissions { trigger: false, tools: false },
+            identity: IdentityPermissions::default(),
+            process: false,
+            network: false,
+        }
+    }
+}
+
+impl PluginPermissions {
+    /// Returns `true` iff `capability` (a contract capability string) is granted.
+    ///
+    /// For `storage.*` this only checks the verb grant; the key-prefix
+    /// allow-list is applied separately via [`PluginPermissions::storage_allows_key`]
+    /// because it depends on the concrete key being touched.
+    pub fn allows(&self, capability: &str) -> bool {
+        match capability {
+            CAP_UI_CONTEXT_REFRESH => self.ui.enabled,
+            CAP_STORAGE_GET | CAP_STORAGE_KEYS => self.storage.get,
+            CAP_STORAGE_SET => self.storage.set,
+            CAP_STORAGE_DELETE => self.storage.delete,
+            CAP_AGENT_TRIGGER => self.agent.trigger,
+            CAP_IDENTITY_AGENT_NAME => self.identity.agent_name,
+            CAP_IDENTITY_AGENT_PICTURE => self.identity.agent_profile_picture,
+            CAP_IDENTITY_USER_NAME => self.identity.user_name,
+            CAP_IDENTITY_USER_PICTURE => self.identity.user_profile_picture,
+            _ => false,
+        }
+    }
+
+    /// Every granted capability, in contract order.
+    ///
+    /// `storage.keys` is only emitted when `storage.get` is granted (listing
+    /// keys without read access would be meaningless).
+    pub fn capabilities(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for cap in [
+            CAP_UI_CONTEXT_REFRESH,
+            CAP_STORAGE_GET,
+            CAP_STORAGE_SET,
+            CAP_STORAGE_DELETE,
+            CAP_STORAGE_KEYS,
+            CAP_AGENT_TRIGGER,
+            CAP_IDENTITY_AGENT_NAME,
+            CAP_IDENTITY_AGENT_PICTURE,
+            CAP_IDENTITY_USER_NAME,
+            CAP_IDENTITY_USER_PICTURE,
+        ] {
+            if self.allows(cap) {
+                out.push(cap.to_string());
+            }
+        }
+        out
+    }
+
+    /// True when the UI may render `uri`. Honours the `"*"` wildcard marker
+    /// and treats an empty allow-list as "any".
+    pub fn allows_ui_resource(&self, uri: &str) -> bool {
+        if !self.ui.enabled {
+            return false;
+        }
+        if !uri.starts_with("ui://") {
+            return false;
+        }
+        if self.ui.resources.is_empty() {
+            return true;
+        }
+        self.ui
+            .resources
+            .iter()
+            .any(|r| r == UI_RESOURCE_WILDCARD || r == uri)
+    }
+
+    /// True when `key` falls inside the `storage.keys` prefix allow-list.
+    /// `None` (or an empty list) means "all keys".
+    pub fn storage_allows_key(&self, key: &str) -> bool {
+        match &self.storage.keys {
+            None => true,
+            Some(prefixes) if prefixes.is_empty() => true,
+            Some(prefixes) => prefixes
+                .iter()
+                .any(|p| !p.is_empty() && (key.starts_with(p.as_str()) || p.as_str() == UI_RESOURCE_WILDCARD)),
+        }
+    }
+
+    /// The effective capability name for a storage verb (`storage.get`,
+    /// `storage.set`, `storage.delete`, `storage.list` -> `storage.keys`).
+    pub fn storage_capability(verb: &str) -> Option<&'static str> {
+        match verb {
+            "get" => Some(CAP_STORAGE_GET),
+            "set" => Some(CAP_STORAGE_SET),
+            "delete" => Some(CAP_STORAGE_DELETE),
+            "list" | "keys" => Some(CAP_STORAGE_KEYS),
+            _ => None,
+        }
+    }
+
+    /// Checks a storage operation end-to-end: verb grant **and** key prefix.
+    /// Returns `Err(reason)` when the operation must be refused.
+    pub fn check_storage(&self, verb: &str, key: &str) -> Result<(), String> {
+        let cap = Self::storage_capability(verb)
+            .ok_or_else(|| format!("unknown storage verb '{}'", verb))?;
+        if !self.allows(cap) {
+            return Err(format!("capability '{}' is not granted", cap));
+        }
+        if !self.storage_allows_key(key) {
+            return Err(format!("key '{}' is outside the allowed storage prefixes", key));
+        }
+        Ok(())
+    }
+}
+
+/// Intermediate representation of the canonical grouped shape. Every field is
+/// optional so a partial object (e.g. only `identity`) is accepted; missing
+/// sections mean "not granted".
+#[derive(Debug, Clone, Deserialize)]
+struct GroupedPluginPermissions {
+    #[serde(default)]
+    ui: Option<UiPermissions>,
+    #[serde(default)]
+    storage: Option<StoragePermissions>,
+    #[serde(default)]
+    agent: Option<AgentPermissions>,
+    #[serde(default)]
+    identity: Option<IdentityPermissions>,
+    #[serde(default)]
+    process: Option<bool>,
+    #[serde(default)]
+    network: Option<bool>,
+}
+
+impl From<GroupedPluginPermissions> for PluginPermissions {
+    fn from(g: GroupedPluginPermissions) -> Self {
+        let mut perms = PluginPermissions::deny_all();
+        if let Some(ui) = g.ui {
+            perms.ui = ui;
+        }
+        if let Some(storage) = g.storage {
+            perms.storage = storage;
+        }
+        if let Some(agent) = g.agent {
+            perms.agent = agent;
+        }
+        if let Some(identity) = g.identity {
+            perms.identity = identity;
+        }
+        perms.process = g.process.unwrap_or(false);
+        perms.network = g.network.unwrap_or(false);
+        perms
+    }
+}
+
+impl<'de> Deserialize<'de> for PluginPermissions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let grouped = GroupedPluginPermissions::deserialize(deserializer)?;
+        Ok(PluginPermissions::from(grouped))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct McpServer {
     pub id: String,
@@ -192,11 +506,35 @@ pub struct McpServer {
     pub name: String,
     #[sqlx(default)]
     pub alias: Option<String>,
-    pub transport: String, // "stdio" or "http"
+    pub transport: String, // "wasm" ("wasm_stdio"), "stdio", or "http"
     pub url_or_command: String,
     #[sqlx(default)]
     pub headers_or_env: Option<String>,
+    #[serde(default = "default_plugin_version")]
+    #[sqlx(default)]
+    pub version: String,
+    #[sqlx(default)]
+    pub description: Option<String>,
+    #[sqlx(default)]
+    pub wasm_hash: Option<String>,
+    #[serde(skip_serializing)]
+    #[sqlx(default)]
+    pub wasm_binary: Option<Vec<u8>>,
+    #[sqlx(default)]
+    pub manifest_json: Option<String>,
+    #[sqlx(default)]
+    pub permissions_json: Option<String>,
+    #[serde(default = "default_true")]
+    #[sqlx(default)]
+    pub is_active: bool,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub storage_bytes: i64,
+    #[sqlx(default)]
+    pub created_at: Option<DateTime<Utc>>,
 }
+
+pub type Plugin = McpServer;
 
 pub fn slugify_alias(name: &str) -> String {
     let cleaned = name.replace("[WASM]", "").replace("[wasm]", "");
@@ -230,6 +568,199 @@ impl McpServer {
             }
         }
         slugify_alias(&self.name)
+    }
+
+    pub fn is_wasm(&self) -> bool {
+        self.transport == "wasm"
+            || self.transport == "wasm_stdio"
+            || self.url_or_command.starts_with("wasm://")
+    }
+
+    /// Resolves the effective grants for this plugin.
+    ///
+    /// Resolution order:
+    /// 1. An explicit `permissions` block in the manifest — parsed into the
+    ///    canonical grouped shape.
+    /// 2. Otherwise, behaviour derived from the manifest (`ui://` resources /
+    ///    `ui_hooks`, `network.hosts`) or from the transport.
+    ///
+    /// **Privacy by default:** identity grants are only ever given when the
+    /// manifest explicitly asks for them (`identity.user.name: true`, …).
+    /// Neither an omitted `data_access` block nor a transport default grants
+    /// access to the account profile any more.
+    pub fn get_permissions(&self) -> PluginPermissions {
+        // The account's stored consent decision is authoritative. It is written
+        // by the /mcp consent editor (`permissions_json`) and must win over
+        // whatever the plugin's own manifest asked for — otherwise a plugin
+        // could grant itself access nobody approved.
+        if let Some(stored) = self
+            .permissions_json
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && *v != "{}")
+        {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(stored) {
+                if val.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+                    return Self::permissions_from_manifest_block(&val);
+                }
+            }
+        }
+        self.declared_permissions()
+    }
+
+    /// Grants derived from the plugin's own manifest (`ui://` resources, the
+    /// permission block, transport defaults). Account consent overrides live in
+    /// [`McpServer::get_permissions`].
+    pub fn declared_permissions(&self) -> PluginPermissions {
+        if self.is_wasm() {
+            if let Some(manifest_str) = &self.manifest_json {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(manifest_str) {
+                    if let Some(p) = val.get("permissions") {
+                        return Self::permissions_from_manifest_block(p);
+                    }
+                    let has_ui = Self::manifest_has_ui_resources(&val);
+                    let has_network = val
+                        .get("network")
+                        .and_then(|n| n.get("hosts"))
+                        .and_then(|h| h.as_array())
+                        .map(|a| !a.is_empty())
+                        .unwrap_or(false);
+                    // Structure only implies UI and network. Storage, agent
+                    // control and identity must be asked for explicitly, so the
+                    // base is `deny_all` rather than the permissive defaults.
+                    let has_tools = val
+                        .get("mcp")
+                        .and_then(|m| m.get("tools"))
+                        .and_then(|t| t.as_array())
+                        .map(|a| !a.is_empty())
+                        .unwrap_or(false);
+                    return PluginPermissions {
+                        ui: UiPermissions {
+                            enabled: has_ui,
+                            resources: if has_ui {
+                                Self::manifest_ui_resources(&val)
+                            } else {
+                                Vec::new()
+                            },
+                        },
+                        storage: StoragePermissions::default(),
+                        agent: AgentPermissions {
+                            trigger: false,
+                            tools: has_tools,
+                        },
+                        // Identity is never implied by the manifest silence.
+                        identity: IdentityPermissions::default(),
+                        process: false,
+                        network: has_network,
+                    };
+                }
+            }
+            return PluginPermissions {
+                ui: UiPermissions::default(),
+                storage: StoragePermissions::default(),
+                agent: AgentPermissions::default(),
+                identity: IdentityPermissions::default(),
+                process: false,
+                network: false,
+            };
+        }
+
+        if self.transport == "stdio" {
+            return PluginPermissions {
+                process: true,
+                storage: StoragePermissions {
+                    get: false,
+                    set: false,
+                    delete: false,
+                    keys: Some(vec![]),
+                },
+                identity: IdentityPermissions::default(),
+                ..PluginPermissions::default()
+            };
+        }
+
+        if self.transport == "custom_tools" || self.transport == "curl" {
+            return PluginPermissions {
+                ui: UiPermissions { enabled: false, resources: Vec::new() },
+                storage: StoragePermissions::default(),
+                agent: AgentPermissions::default(),
+                identity: IdentityPermissions::default(),
+                process: false,
+                network: true,
+            };
+        }
+
+        // Plain HTTP MCP server: network only, no UI, no storage, no identity.
+        PluginPermissions {
+            storage: StoragePermissions {
+                get: false,
+                set: false,
+                delete: false,
+                keys: Some(vec![]),
+            },
+            identity: IdentityPermissions::default(),
+            process: false,
+            network: true,
+            ..PluginPermissions::default()
+        }
+    }
+
+    /// Parses a manifest `permissions` block into the canonical shape.
+    /// Accepts the canonical grouped shape only.
+    fn permissions_from_manifest_block(p: &serde_json::Value) -> PluginPermissions {
+        // The manifest block is exactly the PluginPermissions wire format, so
+        // reuse its (backward compatible) Deserialize impl.
+        if let Ok(perms) = serde_json::from_value::<PluginPermissions>(p.clone()) {
+            return perms;
+        }
+        // Unparseable block: deny everything rather than guess.
+        PluginPermissions::deny_all()
+    }
+
+    /// `true` when the manifest declares at least one `ui://` resource or a
+    /// non-empty `ui_hooks` array.
+    fn manifest_has_ui_resources(val: &serde_json::Value) -> bool {
+        let by_resource = val
+            .get("mcp")
+            .and_then(|m| m.get("resources"))
+            .and_then(|r| r.as_array())
+            .map(|arr| {
+                arr.iter().any(|item| {
+                    item.get("uri")
+                        .and_then(|u| u.as_str())
+                        .map(|u| u.starts_with("ui://"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        let by_hooks = val
+            .get("ui_hooks")
+            .and_then(|h| h.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        by_resource || by_hooks
+    }
+
+    /// The `ui://` URIs the manifest exposes. Falls back to the wildcard when
+    /// the UI is only implied by `ui_hooks`.
+    fn manifest_ui_resources(val: &serde_json::Value) -> Vec<String> {
+        let uris: Vec<String> = val
+            .get("mcp")
+            .and_then(|m| m.get("resources"))
+            .and_then(|r| r.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.get("uri").and_then(|u| u.as_str()))
+                    .filter(|u| u.starts_with("ui://"))
+                    .map(|u| u.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if uris.is_empty() {
+            vec![UI_RESOURCE_WILDCARD.to_string()]
+        } else {
+            uris
+        }
     }
 }
 
@@ -282,6 +813,9 @@ pub struct AgentHistoryItem {
     pub content: String,
     pub tool_calls_json: Option<String>,
     pub tool_call_id: Option<String>,
+    /// For the base `system` row: the raw template that produced `content`.
+    #[sqlx(default)]
+    pub source_template: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -365,6 +899,15 @@ mod tests {
             transport: "http".into(),
             url_or_command: "http://localhost:3000".into(),
             headers_or_env: None,
+            version: "1.0.0".into(),
+            description: None,
+            wasm_hash: None,
+            wasm_binary: None,
+            manifest_json: None,
+            permissions_json: None,
+            is_active: true,
+            storage_bytes: 0,
+            created_at: None,
         };
         assert_eq!(server.get_alias(), "tg");
 
@@ -376,7 +919,333 @@ mod tests {
             transport: "http".into(),
             url_or_command: "http://localhost:3000".into(),
             headers_or_env: None,
+            version: "1.0.0".into(),
+            description: None,
+            wasm_hash: None,
+            wasm_binary: None,
+            manifest_json: None,
+            permissions_json: None,
+            is_active: true,
+            storage_bytes: 0,
+            created_at: None,
         };
         assert_eq!(server_no_alias.get_alias(), "discord_bot");
+    }
+
+    // --- PluginPermissions ---
+
+    fn manifest_server(manifest: serde_json::Value) -> McpServer {
+        McpServer {
+            id: "wasm:test".into(),
+            account_id: "acc".into(),
+            name: "Test".into(),
+            alias: None,
+            transport: "wasm".into(),
+            url_or_command: "wasm://test".into(),
+            headers_or_env: None,
+            version: "1.0.0".into(),
+            description: None,
+            wasm_hash: None,
+            wasm_binary: None,
+            manifest_json: Some(manifest.to_string()),
+            permissions_json: None,
+            is_active: true,
+            storage_bytes: 0,
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn flat_permission_blob_is_rejected() {
+        // The historic flat boolean blob is no longer a supported input shape;
+        // only the grouped contract shape deserialises.
+        let flat = serde_json::json!({
+            "ui": true,
+            "storage": true,
+            "process": false,
+            "network": false,
+            "agent_control": true,
+            "identity": true
+        });
+        assert!(
+            serde_json::from_value::<PluginPermissions>(flat).is_err(),
+            "flat permission blobs must be rejected"
+        );
+    }
+
+    #[test]
+    fn unknown_sections_are_denied() {
+        // A grouped object with fields we do not know about parses, but any
+        // section that is absent stays denied.
+        let perms: PluginPermissions =
+            serde_json::from_value(serde_json::json!({"ui": {"enabled": true}})).expect("parses");
+        assert!(perms.ui.enabled);
+        assert!(!perms.storage.get);
+        assert!(!perms.agent.trigger);
+        assert_eq!(perms.identity, IdentityPermissions::default());
+    }
+
+    #[test]
+    fn grouped_permissions_round_trip() {
+        let json = serde_json::json!({
+            "ui": { "enabled": true, "resources": ["ui://chat-console"] },
+            "storage": { "get": true, "set": true, "delete": false, "keys": ["chat."] },
+            "agent": { "trigger": true, "tools": false },
+            "identity": {
+                "agent.name": false,
+                "agent.profile_picture": true,
+                "user.name": true,
+                "user.profile_picture": false
+            },
+            "process": false,
+            "network": false
+        });
+        let perms: PluginPermissions = serde_json::from_value(json.clone()).expect("grouped parses");
+        assert!(perms.ui.enabled);
+        assert_eq!(perms.ui.resources, vec!["ui://chat-console".to_string()]);
+        assert!(perms.storage.get);
+        assert!(!perms.storage.delete);
+        assert_eq!(perms.storage.keys.as_deref(), Some(&["chat.".to_string()][..]));
+        assert!(perms.agent.trigger);
+        assert!(!perms.agent.tools);
+        assert!(!perms.identity.agent_name);
+        assert!(perms.identity.agent_profile_picture);
+        assert!(perms.identity.user_name);
+        assert!(!perms.identity.user_profile_picture);
+
+        // Serialises back to the same canonical shape (dotted identity keys).
+        let out = serde_json::to_value(&perms).expect("serialises");
+        assert_eq!(out["identity"]["agent.profile_picture"], serde_json::json!(true));
+        assert_eq!(out["identity"]["agent.name"], serde_json::json!(false));
+        assert_eq!(out["storage"]["keys"], serde_json::json!(["chat."]));
+        assert_eq!(out["ui"]["resources"], serde_json::json!(["ui://chat-console"]));
+    }
+
+    #[test]
+    fn partial_grouped_permissions_deny_by_default() {
+        let perms: PluginPermissions =
+            serde_json::from_value(serde_json::json!({"identity": {"user.name": true}}))
+                .expect("parses");
+        assert!(!perms.ui.enabled);
+        assert!(!perms.storage.get);
+        assert!(!perms.agent.trigger);
+        assert!(perms.identity.user_name);
+        assert!(!perms.identity.agent_name);
+        assert_eq!(perms.capabilities(), vec!["identity.user.name".to_string()]);
+    }
+
+    #[test]
+    fn allows_and_capabilities_per_namespace() {
+        let perms = PluginPermissions {
+            ui: UiPermissions { enabled: true, resources: vec!["ui://a".into()] },
+            storage: StoragePermissions { get: true, set: false, delete: false, keys: Some(vec!["k.".into()]) },
+            agent: AgentPermissions { trigger: true, tools: false },
+            identity: IdentityPermissions { agent_name: true, ..Default::default() },
+            process: true,
+            network: false,
+        };
+
+        assert!(perms.allows("ui.context.refresh"));
+        assert!(perms.allows("storage.get"));
+        assert!(perms.allows("storage.keys"));
+        assert!(!perms.allows("storage.set"));
+        assert!(!perms.allows("storage.delete"));
+        assert!(perms.allows("agent.trigger"));
+        assert!(!perms.allows("agent.tools"));
+        assert!(perms.allows("identity.agent.name"));
+        assert!(!perms.allows("identity.agent.profile_picture"));
+        assert!(!perms.allows("identity.user.name"));
+        assert!(!perms.allows("identity.user.profile_picture"));
+        assert!(!perms.allows("totally.unknown"));
+        assert!(!perms.allows(""));
+
+        assert_eq!(
+            perms.capabilities(),
+            vec![
+                "ui.context.refresh",
+                "storage.get",
+                "storage.keys",
+                "agent.trigger",
+                "identity.agent.name",
+            ]
+        );
+
+        // process/network stay flat booleans.
+        assert!(perms.process);
+        assert!(!perms.network);
+    }
+
+    #[test]
+    fn allows_ui_resource_honours_wildcard_and_allow_list() {
+        let wildcard = PluginPermissions {
+            ui: UiPermissions { enabled: true, resources: vec![UI_RESOURCE_WILDCARD.to_string()] },
+            ..PluginPermissions::deny_all()
+        };
+        assert!(wildcard.allows_ui_resource("ui://anything"));
+        assert!(!wildcard.allows_ui_resource("http://example.com"));
+
+        let listed = PluginPermissions {
+            ui: UiPermissions { enabled: true, resources: vec!["ui://a".into()] },
+            ..PluginPermissions::deny_all()
+        };
+        assert!(listed.allows_ui_resource("ui://a"));
+        assert!(!listed.allows_ui_resource("ui://b"));
+
+        let disabled = PluginPermissions {
+            ui: UiPermissions { enabled: false, resources: vec![UI_RESOURCE_WILDCARD.to_string()] },
+            ..PluginPermissions::deny_all()
+        };
+        assert!(!disabled.allows_ui_resource("ui://a"));
+    }
+
+    #[test]
+    fn storage_key_prefix_rejection() {
+        let perms = PluginPermissions {
+            storage: StoragePermissions {
+                get: true,
+                set: true,
+                delete: false,
+                keys: Some(vec!["chat.".into(), "draft.".into()]),
+            },
+            ..PluginPermissions::deny_all()
+        };
+
+        assert!(perms.check_storage("get", "chat.draft").is_ok());
+        assert!(perms.check_storage("set", "draft.1").is_ok());
+        assert!(perms.check_storage("get", "secret.key").is_err());
+        assert!(perms.check_storage("set", "chatx").is_err());
+        // Verb not granted.
+        assert!(perms.check_storage("delete", "chat.draft").is_err());
+        // Unknown verb.
+        assert!(perms.check_storage("nuke", "chat.draft").is_err());
+
+        // `keys: None` means every key.
+        let all = PluginPermissions {
+            storage: StoragePermissions { get: true, set: true, delete: true, keys: None },
+            ..PluginPermissions::deny_all()
+        };
+        assert!(all.storage_allows_key("anything"));
+        assert!(all.check_storage("delete", "anything").is_ok());
+
+        // `keys: None` means every key, and an explicit `[]` must not lock the
+        // plugin out of its own isolated storage either.
+        let empty = PluginPermissions {
+            storage: StoragePermissions { get: true, set: false, delete: false, keys: Some(vec![]) },
+            ..PluginPermissions::deny_all()
+        };
+        assert!(empty.storage_allows_key("anything"));
+    }
+
+    #[test]
+    fn get_permissions_reads_grouped_manifest_block() {
+        let server = manifest_server(serde_json::json!({
+            "id": "x",
+            "permissions": {
+                "ui": { "enabled": true, "resources": ["ui://chat-console"] },
+                "storage": { "get": true, "set": true, "delete": true, "keys": ["chat."] },
+                "agent": { "trigger": true, "tools": true },
+                "identity": { "agent.name": true, "user.name": true },
+                "process": false,
+                "network": false
+            }
+        }));
+        let perms = server.get_permissions();
+        assert!(perms.allows_ui_resource("ui://chat-console"));
+        assert!(!perms.allows_ui_resource("ui://other"));
+        assert!(perms.allows("storage.get"));
+        assert!(perms.allows("agent.trigger"));
+        assert_eq!(
+            perms.capabilities(),
+            vec![
+                "ui.context.refresh",
+                "storage.get",
+                "storage.set",
+                "storage.delete",
+                "storage.keys",
+                "agent.trigger",
+                "identity.agent.name",
+                "identity.user.name",
+            ]
+        );
+    }
+
+    #[test]
+    fn stored_consent_overrides_manifest_grants() {
+        // The manifest asks for everything...
+        let mut server = manifest_server(serde_json::json!({
+            "permissions": {
+                "ui": { "enabled": true, "resources": ["ui://chat-console"] },
+                "storage": { "get": true, "set": true, "delete": true, "keys": null },
+                "agent": { "trigger": true, "tools": true },
+                "identity": {
+                    "agent.name": true, "agent.profile_picture": true,
+                    "user.name": true, "user.profile_picture": true
+                }
+            }
+        }));
+        assert!(server.get_permissions().allows("identity.user.name"));
+
+        // ...but the account approved only a narrow subset.
+        server.permissions_json = Some(
+            serde_json::json!({
+                "ui": { "enabled": true, "resources": ["ui://chat-console"] },
+                "storage": { "get": true, "set": false, "delete": false, "keys": ["chat."] },
+                "agent": { "trigger": false, "tools": true },
+                "identity": { "user.name": true }
+            })
+            .to_string(),
+        );
+        let perms = server.get_permissions();
+        assert!(perms.allows("identity.user.name"));
+        assert!(!perms.allows("identity.agent.name"), "unapproved agent name leaked");
+        assert!(!perms.allows("agent.trigger"), "unapproved agent trigger leaked");
+        assert!(!perms.storage.set);
+        assert!(perms.storage.get);
+        assert_eq!(perms.storage.keys.as_deref(), Some(&["chat.".to_string()][..]));
+
+        // An empty/garbage store falls back to what the manifest declared.
+        server.permissions_json = Some("{}".to_string());
+        assert!(server.get_permissions().allows("identity.agent.name"));
+        server.permissions_json = Some("not json".to_string());
+        assert!(server.get_permissions().allows("identity.agent.name"));
+    }
+
+    #[test]
+    fn get_permissions_manifest_privacy_by_default() {
+        // No `permissions` block at all, but a ui:// resource and data_access.
+        let server = manifest_server(serde_json::json!({
+            "id": "x",
+            "mcp": { "resources": [{ "uri": "ui://chat-console" }] },
+            "data_access": ["history"],
+            "network": { "hosts": ["api.example.com"] }
+        }));
+        let perms = server.get_permissions();
+        assert!(perms.ui.enabled);
+        assert!(perms.allows_ui_resource("ui://chat-console"));
+        assert!(!perms.allows_ui_resource("ui://something-else"));
+        assert!(perms.network);
+        assert!(perms.capabilities().iter().all(|c| !c.starts_with("identity.")));
+
+        // A grouped manifest block is honoured verbatim.
+        let grouped = manifest_server(serde_json::json!({
+            "permissions": {
+                "ui": { "enabled": true, "resources": ["ui://chat-console"] },
+                "storage": { "get": true, "set": false, "delete": false, "keys": ["chat."] },
+                "agent": { "trigger": false, "tools": true },
+                "identity": { "user.name": true }
+            }
+        }));
+        let gp = grouped.get_permissions();
+        assert!(gp.allows("identity.user.name"));
+        assert!(!gp.allows("identity.agent.name"));
+        assert!(gp.storage.get && !gp.storage.set);
+
+        // An unparseable (e.g. flat) block denies everything rather than guessing.
+        let bad = manifest_server(serde_json::json!({
+            "permissions": { "ui": true, "storage": true, "identity": true }
+        }));
+        let p = bad.get_permissions();
+        assert!(!p.ui.enabled);
+        assert_eq!(p.capabilities(), Vec::<String>::new());
     }
 }

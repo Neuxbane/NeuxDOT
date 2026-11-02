@@ -21,6 +21,7 @@ pub struct AgentToolItem {
     pub unique_name: String,
     pub description: Option<String>,
     pub input_schema: Option<serde_json::Value>,
+    pub meta: Option<serde_json::Value>,
     pub is_enabled: bool,
 }
 
@@ -456,6 +457,9 @@ pub async fn get_agent_tools_handler(
     let mut resources_res = Vec::new();
 
     for s in servers {
+        if !s.is_active {
+            continue;
+        }
         if s.transport == "wasm_stdio" || s.url_or_command.starts_with("wasm://") {
             let ext_id = s.id.strip_prefix("wasm:").unwrap_or(&s.id);
             if let Ok(Some(ext)) = state.db.get_extension(ext_id).await {
@@ -463,9 +467,15 @@ pub async fn get_agent_tools_handler(
                     if let Some(mcp) = manifest_val.get("mcp") {
                         if let Some(tool_list) = mcp.get("tools").and_then(|t| t.as_array()) {
                             for t in tool_list {
+                                if let Some(vis) = t.get("_meta").and_then(|m| m.get("ui")).and_then(|u| u.get("visibility")).and_then(|v| v.as_array()) {
+                                    if !vis.is_empty() && !vis.iter().any(|x| x.as_str() == Some("model")) {
+                                        continue;
+                                    }
+                                }
                                 let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                 let desc = t.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
                                 let schema = t.get("inputSchema").cloned();
+                                let meta = t.get("_meta").cloned();
                                 let is_enabled = permissions.iter().find(|p| p.mcp_id == s.id && p.tool_name == name).map(|p| p.is_enabled).unwrap_or(true);
                                 let server_alias = s.get_alias();
                                 let unique_name = format!("{}.{}", server_alias, name);
@@ -478,6 +488,7 @@ pub async fn get_agent_tools_handler(
                                     name,
                                     description: desc,
                                     input_schema: schema,
+                                    meta,
                                     is_enabled,
                                 });
                             }
@@ -529,6 +540,9 @@ pub async fn get_agent_tools_handler(
                 if let Ok(Ok(tools)) = tokio::time::timeout(std::time::Duration::from_millis(3000), fetch_fut).await {
                     let server_alias = s.get_alias();
                     for tool in tools {
+                        if tool.is_app_only() {
+                            continue;
+                        }
                         let is_enabled = permissions
                             .iter()
                             .find(|p| p.mcp_id == s.id && p.tool_name == tool.name)
@@ -544,6 +558,7 @@ pub async fn get_agent_tools_handler(
                             name: tool.name,
                             description: tool.description,
                             input_schema: tool.input_schema,
+                            meta: tool.meta,
                             is_enabled,
                         });
                     }
@@ -596,6 +611,9 @@ pub async fn get_agent_tools_handler(
             if let Ok(Ok(tools)) = tokio::time::timeout(std::time::Duration::from_millis(3500), fetch_fut).await {
                 let server_alias = s.get_alias();
                 for tool in tools {
+                    if tool.is_app_only() {
+                        continue;
+                    }
                     let is_enabled = permissions
                         .iter()
                         .find(|p| p.mcp_id == s.id && p.tool_name == tool.name)
@@ -611,6 +629,7 @@ pub async fn get_agent_tools_handler(
                         name: tool.name,
                         description: tool.description,
                         input_schema: tool.input_schema,
+                        meta: tool.meta,
                         is_enabled,
                     });
                 }

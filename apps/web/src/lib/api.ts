@@ -150,6 +150,106 @@ export interface AgentDetail {
 	mcp_ids: string[];
 }
 
+/**
+ * A dotted, namespaced grant. Only granted capabilities appear in the bridge
+ * bootstrap; an absent capability means "not granted" (see docs/HOST_BRIDGE.md §1).
+ */
+export type Capability =
+| 'ui.context.refresh'
+| 'storage.get'
+| 'storage.set'
+| 'storage.delete'
+| 'storage.keys'
+| 'agent.trigger'
+| 'identity.agent.name'
+| 'identity.agent.profile_picture'
+| 'identity.user.name'
+| 'identity.user.profile_picture';
+
+/**
+ * Canonical permission object (docs/HOST_BRIDGE.md §2/§6).
+ * This is the only accepted shape — there is no flat fallback.
+ */
+export interface PluginPermissions {
+/** `resources` is an allow-list of `ui://` URIs; `["*"]` means "every resource". */
+ui: { enabled: boolean; resources: string[] };
+/** `keys` is a list of key prefixes; `null` means "all keys". */
+storage: { get: boolean; set: boolean; delete: boolean; keys: string[] | null };
+agent: { trigger: boolean; tools: boolean };
+identity: {
+'agent.name': boolean;
+'agent.profile_picture': boolean;
+'user.name': boolean;
+'user.profile_picture': boolean;
+};
+process: boolean;
+network: boolean;
+}
+
+/** Avatar descriptor as returned by the host. Never assembled browser-side. */
+export interface HostBridgeAvatar {
+url?: string;
+color?: string;
+shape?: string;
+}
+
+/** Identity block of the bridge bootstrap (§6). Absent = not granted (§3 omission rule). */
+export interface HostBridgeIdentity {
+agent?: { id: string; name?: string; avatar?: HostBridgeAvatar };
+user?: { name?: string; avatar?: HostBridgeAvatar };
+}
+
+/** Payload returned by `GET /api/host/session` and pushed on `ui/context` (§3). */
+export interface HostBridgeBootstrap {
+protocolVersion: string;
+app: { pluginId: string; pluginName: string; resourceUri: string; title: string };
+agent?: HostBridgeIdentity['agent'];
+user?: HostBridgeIdentity['user'];
+capabilities: Capability[];
+permissions: PluginPermissions;
+context: { locale: string | null; theme: 'light' | 'dark' };
+}
+
+/** `storage.get` value. */
+export interface HostStorageValue {
+key: string;
+value: string | null;
+}
+
+/** `storage.set` / `storage.delete` acknowledgement. */
+export interface HostStorageMutation {
+ok: boolean;
+key?: string;
+}
+
+/** `storage.keys` / `storage.list` result. */
+export interface HostStorageKeyList {
+keys: string[];
+}
+
+export interface CustomToolDef {
+	name: string;
+	description?: string;
+	method: string;
+	url: string;
+	headers?: Record<string, string>;
+	body?: string;
+	cookie_expression?: string;
+	captures?: {
+		cookies?: string;
+		json_fields?: Record<string, string>;
+	};
+	input_schema?: any;
+}
+
+export interface TestCustomToolResult {
+	success: boolean;
+	status: number;
+	body: string;
+	updated_session_variables: Record<string, string>;
+	error?: string;
+}
+
 export interface McpServer {
 	id: string;
 	account_id: string;
@@ -158,6 +258,14 @@ export interface McpServer {
 	transport: string;
 	url_or_command: string;
 	headers_or_env?: string;
+	version?: string;
+	description?: string;
+	wasm_hash?: string;
+	manifest_json?: string;
+	permissions_json?: string;
+	is_active?: boolean;
+	storage_bytes?: number;
+	created_at?: string;
 }
 
 export interface AgentPushedMessage {
@@ -177,6 +285,7 @@ export interface AgentToolItem {
 	unique_name?: string;
 	description?: string;
 	input_schema?: any;
+	meta?: any;
 	is_enabled: boolean;
 }
 
@@ -218,21 +327,23 @@ export interface ServerAccount {
 	avatarUrl?: string;
 }
 
-export interface ExtensionUiHook {
-	target_id: string;
-	type?: string;
-	panel_id?: string;
-	title: string;
-	icon?: string;
-	template?: string;
-}
-
 export interface ExtensionManifest {
 	id: string;
 	name: string;
 	version: string;
 	description?: string;
-	ui_hooks?: ExtensionUiHook[];
+	/** Resolved grants declared by this plugin (see docs/HOST_BRIDGE.md). */
+	permissions?: Partial<PluginPermissions>;
+	mcp?: {
+		tools?: any[];
+		resources?: {
+			uri: string;
+			name: string;
+			description?: string;
+			mimeType?: string;
+			mime_type?: string;
+		}[];
+	};
 	data_access?: string[];
 	network?: { hosts?: string[] };
 }
@@ -390,6 +501,10 @@ class ApiClient {
 			max_running_history_chars?: number;
 			response_hooks_json?: string;
 			response_hooks?: ResponseHook[];
+			/**
+			 * Selected Agent Instructions preset. Use `''` for Custom.
+			 */
+			instruction_preset_id?: string | null;
 		}) =>
 			this.request<Agent>('/api/agents', {
 				method: 'POST',
@@ -414,6 +529,11 @@ class ApiClient {
 				max_running_history_chars?: number;
 				response_hooks_json?: string;
 				response_hooks?: ResponseHook[];
+				/**
+				 * Selected Agent Instructions preset. Send `''` to detach and go
+				 * back to Custom; omit to leave the selection untouched.
+				 */
+				instruction_preset_id?: string | null;
 			}
 		) =>
 			this.request<Agent>(`/api/agents/${id}`, {
@@ -506,31 +626,114 @@ class ApiClient {
 			})
 	};
 
-	// MCP Servers
+	// Plugins & MCP Servers
 	mcp = {
 		list: () => this.request<McpServer[]>('/api/mcp'),
 
-		create: (data: { name: string; alias?: string; transport: string; url_or_command: string; headers_or_env?: string }) =>
+		create: (data: {
+			name: string;
+			alias?: string;
+			transport: string;
+			url_or_command: string;
+			headers_or_env?: string;
+			is_active?: boolean;
+			permissions?: PluginPermissions;
+		}) =>
 			this.request<McpServer>('/api/mcp', {
 				method: 'POST',
 				body: JSON.stringify(data)
 			}),
 
-		update: (id: string, data: { name: string; alias?: string; transport: string; url_or_command: string; headers_or_env?: string }) =>
-			this.request<McpServer>(`/api/mcp/${id}`, {
+		update: (
+			id: string,
+			data: {
+				name?: string;
+				alias?: string;
+				transport?: string;
+				url_or_command?: string;
+				headers_or_env?: string;
+				is_active?: boolean;
+				permissions?: PluginPermissions;
+			}
+		) =>
+			this.request<McpServer>(`/api/mcp/${encodeURIComponent(id)}`, {
 				method: 'PUT',
 				body: JSON.stringify(data)
 			}),
 
 		delete: (id: string) =>
-			this.request<{ deleted: boolean }>(`/api/mcp/${id}`, { method: 'DELETE' }),
+			this.request<{ deleted: boolean }>(`/api/mcp/${encodeURIComponent(id)}`, {
+				method: 'DELETE'
+			}),
 
 		push: (id: string, method: string, params?: unknown, target_agent_id?: string) =>
-			this.request<{ status: string; affected_agents_count: number }>(`/api/mcp/${id}/push`, {
+			this.request<{ status: string; affected_agents_count: number }>(
+				`/api/mcp/${encodeURIComponent(id)}/push`,
+				{
+					method: 'POST',
+					body: JSON.stringify({ method, params, target_agent_id })
+				}
+			),
+
+		rpc: <T = any>(id: string, method: string, params?: unknown, agent_id?: string) =>
+			this.request<T>(`/api/plugins/${encodeURIComponent(id)}/rpc`, {
 				method: 'POST',
-				body: JSON.stringify({ method, params, target_agent_id })
+				body: JSON.stringify({ method, params, agent_id })
+			}),
+
+		testCustomTool: (payload: {
+			tool: CustomToolDef;
+			arguments?: any;
+			session_variables?: Record<string, string>;
+		}) =>
+			this.request<TestCustomToolResult>('/api/mcp/test-custom-tool', {
+				method: 'POST',
+				body: JSON.stringify(payload)
 			})
 	};
+
+	// Host bridge (sandboxed MCP-App <-> host). See docs/HOST_BRIDGE.md §5.
+host = {
+/**
+ * Builds the ui/context bootstrap server-side from the session, the agent
+ * row and the profile row. 403 when the plugin/agent belongs to another
+ * account. This is the only sanctioned way for a sandboxed app to learn
+ * identity — the browser never reads the profile itself.
+ */
+session: (pluginId: string, agentId: string, resourceUri: string) =>
+this.request<HostBridgeBootstrap>(
+`/api/host/session?plugin_id=${encodeURIComponent(pluginId)}` +
+`&agent_id=${encodeURIComponent(agentId)}` +
+`&resource_uri=${encodeURIComponent(resourceUri)}`
+),
+
+/** Per-(account, plugin) isolated key/value storage, gated by `storage.*` grants. */
+storage: {
+get: (pluginId: string, key: string) =>
+this.request<HostStorageValue>('/api/host/storage/get', {
+method: 'POST',
+body: JSON.stringify({ plugin_id: pluginId, key })
+}),
+
+set: (pluginId: string, key: string, value: string) =>
+this.request<HostStorageMutation>('/api/host/storage/set', {
+method: 'POST',
+body: JSON.stringify({ plugin_id: pluginId, key, value })
+}),
+
+delete: (pluginId: string, key: string) =>
+this.request<HostStorageMutation>('/api/host/storage/delete', {
+method: 'POST',
+body: JSON.stringify({ plugin_id: pluginId, key })
+}),
+
+list: (pluginId: string, prefix?: string) =>
+this.request<HostStorageKeyList>('/api/host/storage/list', {
+method: 'POST',
+body: JSON.stringify({ plugin_id: pluginId, prefix })
+})
+}
+};
 
 	// Profile
 	profile = {
@@ -630,13 +833,30 @@ this.request<void>(`/api/instruction-presets/${id}`, { method: 'DELETE' })
 			}),
 
 		getStorage: (id: string) =>
-			this.request<ExtensionStorageInfo>(`/api/extensions/${id}/storage`),
+			this.request<ExtensionStorageInfo>(`/api/extensions/${encodeURIComponent(id)}/storage`)
+	};
 
-		executeAction: <T = unknown>(id: string, action: string, payload: unknown) =>
-			this.request<T>(`/api/extensions/${id}/action`, {
-				method: 'POST',
-				body: JSON.stringify({ action, payload })
-			})
+	// Unified Plugins alias combining MCP + WASM
+	plugins = {
+		list: () => this.mcp.list(),
+		create: (data: Parameters<typeof this.mcp.create>[0]) => this.mcp.create(data),
+		update: (id: string, data: Parameters<typeof this.mcp.update>[1]) => this.mcp.update(id, data),
+		delete: (id: string) => this.mcp.delete(id),
+		push: (id: string, method: string, params?: unknown, target_agent_id?: string) =>
+			this.mcp.push(id, method, params, target_agent_id),
+		rpc: <T = any>(id: string, method: string, params?: unknown, agent_id?: string) =>
+			this.mcp.rpc<T>(id, method, params, agent_id),
+		testCustomTool: (payload: {
+			tool: CustomToolDef;
+			arguments?: any;
+			session_variables?: Record<string, string>;
+		}) => this.mcp.testCustomTool(payload),
+		inspectWasm: (file: File) => this.extensions.inspect(file),
+		uploadWasm: (file: File) => this.extensions.upload(file),
+		installWasmUrl: (url: string) => this.extensions.installUrl(url),
+		getKv: (id: string) => this.extensions.getKv(id),
+		deleteKvKey: (id: string, key: string) => this.extensions.deleteKvKey(id, key),
+		getStorage: (id: string) => this.extensions.getStorage(id)
 	};
 }
 

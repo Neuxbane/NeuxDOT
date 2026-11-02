@@ -1051,7 +1051,14 @@ impl AgentExecutor {
 
             let initial_sys = self
                 .db
-                .append_agent_history(&self.agent.id, "system", &system_text, None, None)
+                .append_agent_history(
+					&self.agent.id,
+					"system",
+					&system_text,
+					None,
+					None,
+					Some(base_template),
+				)
                 .await
                 .map_err(|e| e.to_string())?;
 
@@ -1060,6 +1067,70 @@ impl AgentExecutor {
                 .await;
 
             db_history.push(initial_sys);
+        } else {
+            // The conversation already has a base instruction row. If the agent's
+            // `system_prompt` changed since that row was rendered (the user
+            // picked a different Agent Instructions preset, or edited the text by
+            // hand), re-render it *in place*.
+            //
+            // Without this the old instruction silently wins forever: row 0 is
+            // written once and only rebuilt at compaction, so a new preset would
+            // appear selected in the UI while the model kept obeying the old text.
+            let base_template = self
+                .agent
+                .system_prompt
+                .as_deref()
+                .unwrap_or("You are {{agent.name}}, an autonomous AI assistant.");
+
+            let base_row = db_history
+                .iter()
+                .enumerate()
+                .find(|(_, h)| h.role == "system")
+                .map(|(idx, h)| (idx, h.source_template.clone(), h.tool_calls_json.clone()));
+
+            if let Some((idx, stored_template, _)) = base_row {
+                // Rows written before `source_template` existed have no
+                // fingerprint; leave those alone rather than risk clobbering a
+                // distillation/compaction summary row.
+                let changed = stored_template
+                    .as_deref()
+                    .map(|stored| stored != base_template)
+                    .unwrap_or(false);
+
+                if changed {
+                    let rendered = interpolate_prompt(
+                        base_template,
+                        &self.agent.id,
+                        &self.agent.name,
+                        &self.agent.strategy,
+                        &current_mem.content,
+                        &current_mem.hash,
+                        &allowed_tools,
+                        max_history_chars,
+                    );
+
+                    match self
+                        .db
+                        .replace_base_system_prompt(&self.agent.id, &rendered, base_template)
+                        .await
+                    {
+                        Ok(true) => {
+                            db_history[idx].content = rendered;
+                            self.record_transcript(
+                                "system",
+                                &db_history[idx].content,
+                                None,
+                                None,
+                                "instruction_refresh",
+                                turn_number,
+                            )
+                            .await;
+                        }
+                        Ok(false) => {}
+                        Err(e) => warn!("Failed to refresh base system prompt: {}", e),
+                    }
+                }
+            }
         }
 
         // Repair interrupted turns left in history. A previous turn may have
@@ -1139,7 +1210,7 @@ impl AgentExecutor {
         // Append user message to database history
         let user_item = self
             .db
-            .append_agent_history(&self.agent.id, "user", user_input, None, None)
+            .append_agent_history(&self.agent.id, "user", user_input, None, None, None)
             .await
             .map_err(|e| e.to_string())?;
         db_history.push(user_item);
@@ -1271,6 +1342,7 @@ impl AgentExecutor {
                             content_str,
                             None,
                             None,
+                            None,
                         )
                         .await;
                     self.record_transcript("assistant", content_str, None, None, "turn", turn_number)
@@ -1282,6 +1354,7 @@ impl AgentExecutor {
                             &self.agent.id,
                             "user",
                             error_msg,
+                            None,
                             None,
                             None,
                         )
@@ -1299,6 +1372,7 @@ impl AgentExecutor {
                             &self.agent.id,
                             "assistant",
                             content_str,
+                            None,
                             None,
                             None,
                         )
@@ -1319,6 +1393,7 @@ impl AgentExecutor {
                     "assistant",
                     content_str,
                     tool_calls_json_str.as_deref(),
+                    None,
                     None,
                 )
                 .await;
@@ -2006,6 +2081,7 @@ impl AgentExecutor {
                                 &tool_content_str,
                                 None,
                                 Some(&call_id),
+                                None,
                             )
                             .await;
 

@@ -80,7 +80,16 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     alias TEXT,
     transport TEXT NOT NULL,
     url_or_command TEXT NOT NULL,
-    headers_or_env TEXT
+    headers_or_env TEXT,
+    version TEXT NOT NULL DEFAULT '1.0.0',
+    description TEXT DEFAULT '',
+    wasm_hash TEXT,
+    wasm_binary BLOB,
+    manifest_json TEXT DEFAULT '{}',
+    permissions_json TEXT DEFAULT '{}',
+    is_active BOOLEAN DEFAULT 1,
+    storage_bytes INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS agent_mcp (
@@ -128,6 +137,11 @@ CREATE TABLE IF NOT EXISTS agent_history (
     content TEXT NOT NULL DEFAULT '',
     tool_calls_json TEXT,
     tool_call_id TEXT,
+    -- For the base `system` row: the raw instruction template that produced
+    -- `content`. Lets the runtime tell "the user changed the system prompt /
+    -- instruction preset" apart from "memory or tools changed", and refresh
+    -- only the latter case without rebuilding the transcript.
+    source_template TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -168,7 +182,7 @@ CREATE TABLE IF NOT EXISTS extensions (
 );
 
 CREATE TABLE IF NOT EXISTS extension_kv (
-    extension_id TEXT NOT NULL REFERENCES extensions(id) ON DELETE CASCADE,
+    extension_id TEXT NOT NULL,
     key TEXT NOT NULL,
     value TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,

@@ -1,6 +1,6 @@
-import { redirect } from '@sveltejs/kit';
-
-// /settings is only a hub — send visitors to the default section.
+// `/settings` renders the section list only (level 2 on mobile).
+// Deliberately no redirect: auto-selecting a section would mark it as the
+// current page before the user has chosen one.
 export function load() {
-	redirect(307, '/settings/accounts');
+return {};
 }

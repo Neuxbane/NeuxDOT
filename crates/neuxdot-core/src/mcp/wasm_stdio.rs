@@ -112,11 +112,15 @@ impl McpTransport for WasmStdioTransport {
                 })?;
 
                 let res_str = runner
-                    .execute_action("mcp_call_tool", &params_val.to_string())
+                    .handle_mcp_request("tools/call", &params_val.to_string())
                     .map_err(|e| McpError::ServerError {
                         code: -32603,
                         message: e.to_string(),
                     })?;
+
+                // Update storage size after tool execution
+                let new_storage = runner.calculate_storage_usage().await;
+                let _ = self.db.update_extension_storage(&self.extension_id, new_storage).await;
 
                 let res_val: Value = serde_json::from_str(&res_str).unwrap_or_else(|_| {
                     serde_json::json!({
@@ -135,6 +139,50 @@ impl McpTransport for WasmStdioTransport {
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!([]));
                 Ok(serde_json::json!({ "resources": resources }))
+            }
+
+            "resources/read" => {
+                let params_val = params.unwrap_or(serde_json::Value::Null);
+                let ext = self
+                    .db
+                    .get_extension(&self.extension_id)
+                    .await
+                    .map_err(|e| McpError::ServerError {
+                        code: -32603,
+                        message: e.to_string(),
+                    })?
+                    .ok_or_else(|| McpError::ToolNotFound("Extension not found".to_string()))?;
+
+                let runner = WasmExtensionRunner::new(
+                    &ext.wasm_binary,
+                    ext.id.clone(),
+                    &self.data_dir,
+                    Arc::clone(&self.db),
+                )
+                .map_err(|e| McpError::ServerError {
+                    code: -32603,
+                    message: e.to_string(),
+                })?;
+
+                let res_str = runner
+                    .handle_mcp_request("resources/read", &params_val.to_string())
+                    .map_err(|e| McpError::ServerError {
+                        code: -32603,
+                        message: e.to_string(),
+                    })?;
+
+                let res_val: Value = serde_json::from_str(&res_str).unwrap_or_else(|_| {
+                    let uri = params_val.get("uri").and_then(|u| u.as_str()).unwrap_or("ui://app");
+                    serde_json::json!({
+                        "contents": [{
+                            "uri": uri,
+                            "mimeType": "text/html;profile=mcp-app",
+                            "text": res_str
+                        }]
+                    })
+                });
+
+                Ok(res_val)
             }
 
             "resources/subscribe" => {

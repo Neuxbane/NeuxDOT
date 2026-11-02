@@ -15,6 +15,12 @@ class EventStore {
 	logs = $state<TerminalEntry[]>([]);
 	isConnected = $state<boolean>(false);
 	currentAgentId = $state<string | null>(null);
+/**
+ * Bumped whenever an event implies the agent's persisted running history
+ * changed. Views can react to it to refetch from the server, so the UI
+ * reflects real turn/tool activity instead of a one-off snapshot.
+ */
+historyRevision = $state<number>(0);
 	private ws: WebSocket | null = null;
 	private reconnectTimer: number | null = null;
 
@@ -24,7 +30,12 @@ class EventStore {
 		this.connect();
 	}
 
-	connect() {
+	/** Signals that persisted history may have changed. */
+bumpHistory() {
+this.historyRevision++;
+}
+
+connect() {
 		if (typeof window === 'undefined') return;
 		if (this.ws) {
 			this.ws.close();
@@ -124,6 +135,7 @@ class EventStore {
 				break;
 
 			case 'tool_call_completed':
+				this.bumpHistory();
 				this.addLog({
 					timestamp: time,
 					type: 'tool_result',
@@ -134,6 +146,7 @@ class EventStore {
 				break;
 
 			case 'mcp_pushed_notification':
+				this.bumpHistory();
 				this.addLog({
 					timestamp: time,
 					type: 'mcp_push',
@@ -153,6 +166,7 @@ class EventStore {
 				break;
 
 			case 'memory_compacted':
+				this.bumpHistory();
 				this.addLog({
 					timestamp: time,
 					type: 'compact',
@@ -198,6 +212,7 @@ class EventStore {
 				break;
 
 			case 'turn_started':
+				this.bumpHistory();
 				this.addLog({
 					timestamp: time,
 					type: 'turn_started',
@@ -206,6 +221,7 @@ class EventStore {
 				break;
 
 			case 'turn_completed':
+				this.bumpHistory();
 				this.addLog({
 					timestamp: time,
 					type: 'turn_completed',

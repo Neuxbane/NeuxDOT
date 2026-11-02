@@ -1,8 +1,9 @@
 <script lang="ts">
 import { page } from '$app/state';
 import { authState } from '$lib/stores/auth.svelte';
+import { navState } from '$lib/stores/nav.svelte';
 import Avatar from '$lib/components/Avatar.svelte';
-import { Settings, ArrowLeft, User, Sun, Package, Users, BookOpen } from 'lucide-svelte';
+import { Settings, ArrowLeft, User, Sun, Users, BookOpen, Menu } from 'lucide-svelte';
 
 let { children } = $props();
 
@@ -42,20 +43,46 @@ label: 'Appearance',
 hint: 'Theme & interface styling',
 icon: Sun,
 iconColor: 'text-amber-400 dark:text-amber-600'
-},
-{
-href: '/settings/extensions',
-label: 'Extensions & Storage',
-hint: 'WASM, KV tables & disk',
-icon: Package,
-iconColor: 'text-emerald-400 dark:text-emerald-600'
 }
 ];
 
 const pathname = $derived(page.url.pathname.replace(/\/+$/, '') || '/');
 
+// Mobile drill-down: the settings section list is level 2.
+let navOpen = $state(true);
+
+// Close the section list only when the user actually navigates between
+// settings pages (not on the initial render, which must show level 2).
+	// Close the section list only when the user navigates between settings pages.
+	// `prevPath` is a plain variable so the first render keeps level 2 visible.
+	let prevPath: string | null = null;
+	$effect(() => {
+		const current = pathname;
+		if (prevPath !== null && current !== prevPath) {
+			navOpen = false;
+		}
+		prevPath = current;
+	});
+
+const onHub = $derived(pathname === '/settings');
+
+// A section is only "current" while its content is actually on screen. When the
+// section list is open (level 2), nothing is selected — otherwise going "back"
+// would leave the previous item highlighted.
+let isWide = $state(false);
+$effect(() => {
+if (typeof window === 'undefined') return;
+const mq = window.matchMedia('(min-width: 1024px)');
+isWide = mq.matches;
+const onChange = (e: MediaQueryListEvent) => (isWide = e.matches);
+mq.addEventListener('change', onChange);
+return () => mq.removeEventListener('change', onChange);
+});
+
 function isCurrent(href: string) {
-return pathname === href;
+// On mobile the section list is its own screen, so nothing is selected while
+// it is open. On desktop the list is always visible beside the content.
+return (isWide || !navOpen) && pathname === href;
 }
 </script>
 
@@ -66,13 +93,27 @@ id="settings-header"
 class="flex items-center justify-between border-b border-zinc-200/80 dark:border-zinc-800/80 bg-white/70 dark:bg-zinc-900/40 backdrop-blur-md px-6 py-3.5"
 >
 <div class="flex items-center gap-3">
-<a
-href="/"
-class="text-zinc-400 hover:text-zinc-800 dark:hover:text-white transition-colors"
-aria-label="Back to Agent Playground"
+<button
+type="button"
+onclick={() => {
+if (onHub) {
+// On the section list: leave Settings entirely (level 1).
+navOpen = true;
+navState.showLevel1();
+} else if (!navOpen) {
+// Viewing a section: go back to the list (level 2).
+navOpen = true;
+} else {
+// The list is already open but the URL is still a section:
+// treat this as leaving Settings.
+navState.showLevel1();
+}
+}}
+class="cursor-pointer text-zinc-400 transition-colors hover:text-zinc-800 dark:hover:text-white"
+aria-label={onHub ? 'Back to navigation' : 'Back to settings sections'}
 >
 <ArrowLeft class="h-4 w-4" />
-</a>
+</button>
 <div class="flex items-center gap-2">
 <Settings class="h-4 w-4 text-cyan-500" />
 <h1 class="text-base font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight">
@@ -104,9 +145,10 @@ size="sm"
 
 <!-- Settings Layout: Left Route Navigation + Routed Content Area -->
 <div id="settings-layout" class="flex flex-1 overflow-hidden">
+
 <aside
 id="settings-sidebar"
-class="w-64 shrink-0 border-r border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-100/50 dark:bg-zinc-900/40 p-4 flex flex-col justify-between"
+class="h-full w-full shrink-0 flex-col justify-between border-r border-zinc-200/80 bg-zinc-100/50 p-4 dark:border-zinc-800/80 dark:bg-zinc-900/40 lg:flex lg:w-64 {navOpen ? 'flex' : 'hidden'}"
 >
 <nav id="settings-nav" class="space-y-1" aria-label="Settings sections">
 <div class="px-2.5 pb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
@@ -138,7 +180,10 @@ NeuxDOT System Configuration
 </div>
 </aside>
 
-<main id="settings-content" class="flex-1 overflow-y-auto px-8 py-8 md:px-12">
+<main
+id="settings-content"
+class="flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-8 sm:py-8 md:px-12 lg:flex {onHub ? 'hidden' : 'flex'}"
+>
 <div class="max-w-3xl">
 {@render children()}
 </div>

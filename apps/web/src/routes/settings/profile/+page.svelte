@@ -2,6 +2,7 @@
 import { api } from '$lib/api';
 import { authState } from '$lib/stores/auth.svelte';
 import Avatar from '$lib/components/Avatar.svelte';
+	import { Loader2 } from 'lucide-svelte';
 	import AvatarCropModal from '$lib/components/AvatarCropModal.svelte';
 import { Check, Upload, Trash2, Link2, Sparkles } from 'lucide-svelte';
 
@@ -52,6 +53,8 @@ profileAvatarColor = authState.profile.avatar_color || '#3b82f6';
 profileAvatarShape = authState.profile.avatar_shape || 'circle';
 profileAvatarUrl = authState.profile.avatar_url || '';
 urlInput = authState.profile.avatar_url?.startsWith('http') ? authState.profile.avatar_url : '';
+// Seeding finished: from now on edits auto-save.
+queueMicrotask(() => (didLoadProfile = true));
 }
 });
 
@@ -86,6 +89,7 @@ function applyCroppedAvatar(dataUrl: string) {
 pendingAvatarFile = null;
 profileAvatarUrl = dataUrl;
 urlInput = '';
+scheduleAutoSave();
 }
 
 function applyUrlInput() {
@@ -97,12 +101,14 @@ return;
 }
 errorMessage = null;
 profileAvatarUrl = value;
+scheduleAutoSave();
 }
 
 function clearAvatar() {
 profileAvatarUrl = '';
 urlInput = '';
 errorMessage = null;
+scheduleAutoSave();
 }
 
 async function saveProfile() {
@@ -125,6 +131,20 @@ errorMessage = 'Failed to update profile: ' + (e?.message || e);
 isSavingProfile = false;
 }
 }
+
+// Auto-save: every profile field is idempotent, so persist shortly after the
+// user stops editing — no Save button needed.
+let autoSaveTimer: number | null = null;
+let didLoadProfile = $state(false);
+
+function scheduleAutoSave() {
+if (!didLoadProfile) return; // ignore the initial seeding from the store
+if (autoSaveTimer) clearTimeout(autoSaveTimer);
+autoSaveTimer = window.setTimeout(() => {
+autoSaveTimer = null;
+saveProfile();
+}, 600);
+}
 </script>
 
 <section id="server-profile" class="space-y-6">
@@ -144,9 +164,9 @@ Customize the display name and avatar for this account. Stored on the backend se
 </p>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_240px] gap-6 items-start">
+<div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_260px] gap-6 items-start">
 <!-- Editor -->
-<div class="space-y-5 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
+<div class="space-y-6">
 <!-- Display Name -->
 <div>
 <label for="display-name" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
@@ -156,6 +176,7 @@ Display Name
 id="display-name"
 type="text"
 bind:value={profileDisplayName}
+oninput={scheduleAutoSave}
 placeholder={authState.username || 'Your Name or Handle'}
 class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none"
 />
@@ -166,7 +187,7 @@ class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 
 <span class="block text-xs font-medium text-zinc-700 dark:text-zinc-300">Profile Picture</span>
 
 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-<div class="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-750 p-3 bg-zinc-50/50 dark:bg-zinc-950/40 space-y-2">
+<div class="space-y-2">
 <div class="flex items-center gap-2 text-xs font-medium text-zinc-900 dark:text-white">
 <Upload class="h-4 w-4 text-emerald-500" />
 <span>Upload image</span>
@@ -191,7 +212,7 @@ onclick={() => fileInputRef?.click()}
 </button>
 </div>
 
-<div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 bg-zinc-50/50 dark:bg-zinc-950/40 space-y-2">
+<div class="space-y-2">
 <div class="flex items-center gap-2 text-xs font-medium text-zinc-900 dark:text-white">
 <Link2 class="h-4 w-4 text-cyan-500" />
 <span>Use image URL</span>
@@ -242,7 +263,10 @@ class="h-7 w-7 rounded-full border-2 transition-all {profileAvatarColor === colo
 ? 'border-zinc-900 dark:border-white scale-110'
 : 'border-transparent hover:scale-105'}"
 style="background-color: {color};"
-onclick={() => (profileAvatarColor = color)}
+onclick={() => {
+profileAvatarColor = color;
+scheduleAutoSave();
+}}
 aria-label="Avatar color {color}"
 title={color}
 ></button>
@@ -251,6 +275,7 @@ title={color}
 <input
 type="color"
 bind:value={profileAvatarColor}
+oninput={scheduleAutoSave}
 class="h-7 w-8 cursor-pointer rounded border border-zinc-200 dark:border-zinc-700 bg-transparent p-0.5"
 aria-label="Custom avatar color"
 />
@@ -269,7 +294,10 @@ type="button"
 class="rounded-xl border px-3 py-1.5 text-xs font-medium transition-all {profileAvatarShape === shape.id
 ? 'border-zinc-900 dark:border-white bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 shadow-2xs'
 : 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'}"
-onclick={() => (profileAvatarShape = shape.id)}
+onclick={() => {
+profileAvatarShape = shape.id;
+scheduleAutoSave();
+}}
 >
 {shape.label}
 </button>
@@ -283,25 +311,21 @@ onclick={() => (profileAvatarShape = shape.id)}
 </div>
 {/if}
 
-<div class="flex items-center gap-3 pt-1">
-<button
-type="button"
-class="rounded-xl bg-zinc-900 dark:bg-white px-4 py-2 text-xs font-medium text-white dark:text-zinc-950 hover:bg-zinc-800 dark:hover:bg-zinc-100 disabled:opacity-40 transition-all shadow-xs"
-onclick={saveProfile}
-disabled={isSavingProfile}
->
-{isSavingProfile ? 'Saving...' : 'Save Profile'}
-</button>
-{#if profileSavedBadge}
-<span class="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-medium">
-<Check class="h-3.5 w-3.5" /> Saved!
+<div class="flex items-center gap-2 pt-1 h-6 text-[11px]">
+{#if isSavingProfile}
+<span class="flex items-center gap-1.5 text-zinc-400">
+<Loader2 class="h-3 w-3 animate-spin" /> Saving…
+</span>
+{:else if profileSavedBadge}
+<span class="flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400">
+<Check class="h-3 w-3" /> Saved
 </span>
 {/if}
 </div>
 </div>
 
 <!-- Live preview -->
-<div class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
+<div class="space-y-3 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs lg:sticky lg:top-6">
 <div class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-3">
 <Sparkles class="h-3.5 w-3.5 text-amber-500" />
 Live Preview

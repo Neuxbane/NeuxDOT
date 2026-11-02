@@ -274,9 +274,9 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     let initial_history = db.get_agent_history(&agent.id).await?;
     assert_eq!(initial_history.len(), 0);
 
-    let _sys_item = db.append_agent_history(&agent.id, "system", "You are Ares.", None, None).await?;
-    let _user_item = db.append_agent_history(&agent.id, "user", "Hello Ares!", None, None).await?;
-    let _asst_item = db.append_agent_history(&agent.id, "assistant", "Hello! How can I assist?", None, None).await?;
+    let _sys_item = db.append_agent_history(&agent.id, "system", "You are Ares.", None, None, None).await?;
+    let _user_item = db.append_agent_history(&agent.id, "user", "Hello Ares!", None, None, None).await?;
+    let _asst_item = db.append_agent_history(&agent.id, "assistant", "Hello! How can I assist?", None, None, None).await?;
     // Mirror what the executor does: every turn is also archived to the
     // append-only transcript.
     db.append_transcript(&agent.id, "system", "You are Ares.", None, None, "system", 1, None).await?;
@@ -364,11 +364,11 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
         { "id": "call_p2", "type": "function", "function": { "name": "computer.list", "arguments": "{}" } }
     ])
     .to_string();
-    db.append_agent_history(&agent.id, "user", "next turn", None, None).await?;
-    db.append_agent_history(&agent.id, "assistant", "", Some(&tool_calls), None).await?;
-    db.append_agent_history(&agent.id, "tool", "slept", None, Some("call_p1")).await?;
-    db.append_agent_history(&agent.id, "tool", "listed", None, Some("call_p2")).await?;
-    db.append_agent_history(&agent.id, "user", "after tools", None, None).await?;
+    db.append_agent_history(&agent.id, "user", "next turn", None, None, None).await?;
+    db.append_agent_history(&agent.id, "assistant", "", Some(&tool_calls), None, None).await?;
+    db.append_agent_history(&agent.id, "tool", "slept", None, Some("call_p1"), None).await?;
+    db.append_agent_history(&agent.id, "tool", "listed", None, Some("call_p2"), None).await?;
+    db.append_agent_history(&agent.id, "user", "after tools", None, None, None).await?;
 
     // Budget only large enough for the system prompt + the trailing user turns.
     let pruned = db

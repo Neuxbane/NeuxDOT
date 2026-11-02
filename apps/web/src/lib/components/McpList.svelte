@@ -103,6 +103,22 @@
 			alert('Failed to update subscriptions: ' + e);
 		}
 	}
+
+	async function toggleGlobalPluginActive(srv: McpServer, event: MouseEvent) {
+		event.preventDefault();
+		event.stopPropagation();
+		const nextState = srv.is_active === false ? true : false;
+		srv.is_active = nextState;
+		try {
+			await api.mcp.update(srv.id, { is_active: nextState });
+			if (agentId) {
+				setTimeout(loadToolsAndResources, 350);
+			}
+		} catch (e) {
+			srv.is_active = !nextState;
+			alert('Failed to update plugin active status: ' + e);
+		}
+	}
 </script>
 
 <div class="space-y-3">
@@ -119,9 +135,9 @@
 				{@const serverResources = agentResources.filter((r) => r.mcp_id === srv.id)}
 				{@const isWasm = srv.transport === 'wasm_stdio' || srv.url_or_command.startsWith('wasm://')}
 
-				<div class="rounded-2xl border transition-all {isSelected
+				<div class="rounded-2xl border transition-all {srv.is_active === false ? 'opacity-70 bg-zinc-50/50 dark:bg-zinc-900/30' : ''} {isSelected
 					? 'border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900/70 shadow-xs'
-					: 'border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 hover:bg-zinc-50/70 dark:hover:bg-zinc-850/40'}">
+					: 'border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 hover:bg-zinc-50/70 dark:hover:bg-zinc-800/40'}">
 					<!-- Server Header Pill -->
 					<div class="flex items-center justify-between p-3">
 						<label class="flex flex-1 cursor-pointer items-center gap-3 truncate">
@@ -148,33 +164,59 @@
 							</div>
 						</label>
 
-						{#if isSelected}
-							{#if isLoadingTools}
-								<div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
-									<RefreshCw class="h-3 w-3 animate-spin text-zinc-400" />
-									<span>Loading...</span>
-								</div>
-							{:else}
-								<button
-									type="button"
-									class="flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-800 px-2.5 py-1 text-[11px] font-medium {serverTools.length > 0 ? 'text-zinc-600 dark:text-zinc-300' : 'text-amber-600 dark:text-amber-400'} hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors"
-									onclick={() => (expandedServerId = isExpanded ? null : srv.id)}
-								>
-									<Sliders class="h-3 w-3" />
-									<span>{isExpanded ? 'Hide Tools' : `Tools & Push (${serverTools.length})`}</span>
-									{#if isExpanded}
-										<ChevronUp class="h-3 w-3" />
-									{:else}
-										<ChevronDown class="h-3 w-3" />
-									{/if}
-								</button>
+						<div class="flex items-center gap-2">
+							<button
+								type="button"
+								role="switch"
+								aria-checked={srv.is_active !== false}
+								onclick={(e) => toggleGlobalPluginActive(srv, e)}
+								class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg border border-zinc-200 dark:border-zinc-700/80 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-[10px] cursor-pointer"
+								title={srv.is_active !== false ? 'Plugin is active — click to turn off' : 'Plugin is turned off — click to turn on'}
+							>
+								<span class="h-1.5 w-1.5 rounded-full {srv.is_active !== false ? 'bg-emerald-500' : 'bg-zinc-400'}"></span>
+								<span class="text-zinc-600 dark:text-zinc-400 font-medium">{srv.is_active !== false ? 'Active' : 'Off'}</span>
+							</button>
+
+							{#if isSelected}
+								{#if isLoadingTools}
+									<div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
+										<RefreshCw class="h-3 w-3 animate-spin text-zinc-400" />
+										<span>Loading...</span>
+									</div>
+								{:else}
+									<button
+										type="button"
+										class="flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-800 px-2.5 py-1 text-[11px] font-medium {serverTools.length > 0 ? 'text-zinc-600 dark:text-zinc-300' : 'text-amber-600 dark:text-amber-400'} hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors"
+										onclick={() => (expandedServerId = isExpanded ? null : srv.id)}
+									>
+										<Sliders class="h-3 w-3" />
+										<span>{isExpanded ? 'Hide Tools' : `Tools & Push (${serverTools.length})`}</span>
+										{#if isExpanded}
+											<ChevronUp class="h-3 w-3" />
+										{:else}
+											<ChevronDown class="h-3 w-3" />
+										{/if}
+									</button>
+								{/if}
 							{/if}
-						{/if}
+						</div>
 					</div>
 
 					<!-- Granular Tool & Push MCP Subscription Manager -->
 					{#if isSelected && isExpanded}
 						<div class="border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-950/30 p-3.5 space-y-3.5 rounded-b-2xl">
+							{#if srv.is_active === false}
+								<div class="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs flex items-center justify-between">
+									<span>This plugin is currently turned off. Its tools are paused and will not execute during agent turns.</span>
+									<button
+										type="button"
+										class="underline font-semibold ml-2 text-amber-800 dark:text-amber-200 hover:opacity-80 cursor-pointer"
+										onclick={(e) => toggleGlobalPluginActive(srv, e)}
+									>
+										Turn On
+									</button>
+								</div>
+							{/if}
 							<!-- 1. Granular Tool Permissions -->
 							<div>
 								<div class="flex items-center justify-between mb-2">

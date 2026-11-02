@@ -3,6 +3,7 @@ pub mod agents;
 pub mod auth;
 pub mod extensions;
 pub mod mcp;
+pub mod host;
 pub mod instruction_presets;
 pub mod profile;
 pub mod providers;
@@ -76,13 +77,51 @@ pub fn build_router(state: AppState) -> Router {
             "/api/providers/:id",
             put(providers::update_provider_handler).delete(providers::delete_provider_handler),
         )
-        // MCP Servers
+        // Unified Plugins & MCP Servers
         .route("/api/mcp", get(mcp::list_mcp_handler).post(mcp::create_mcp_handler))
+        .route("/api/mcp/test-custom-tool", post(mcp::test_custom_tool_handler))
         .route(
             "/api/mcp/:id",
-            put(mcp::update_mcp_handler).delete(mcp::delete_mcp_handler),
+            put(mcp::update_mcp_handler)
+                .patch(mcp::update_mcp_handler)
+                .delete(mcp::delete_mcp_handler),
         )
         .route("/api/mcp/:id/push", post(mcp::push_mcp_information_handler))
+        .route("/api/mcp/:id/rpc", post(mcp::plugin_rpc_handler))
+        .route("/api/plugins", get(mcp::list_mcp_handler).post(mcp::create_mcp_handler))
+        .route("/api/plugins/test-custom-tool", post(mcp::test_custom_tool_handler))
+        .route(
+            "/api/plugins/upload",
+            post(extensions::upload_extension_handler),
+        )
+        .route(
+            "/api/plugins/inspect",
+            post(extensions::inspect_extension_handler),
+        )
+        .route(
+            "/api/plugins/url",
+            post(extensions::install_url_handler),
+        )
+        .route(
+            "/api/plugins/:id",
+            put(mcp::update_mcp_handler)
+                .patch(mcp::update_mcp_handler)
+                .delete(mcp::delete_mcp_handler),
+        )
+        .route("/api/plugins/:id/push", post(mcp::push_mcp_information_handler))
+        .route("/api/plugins/:id/rpc", post(mcp::plugin_rpc_handler))
+        .route(
+            "/api/plugins/:id/kv",
+            get(extensions::list_extension_kv_handler),
+        )
+        .route(
+            "/api/plugins/:id/kv/:key",
+            axum::routing::delete(extensions::delete_extension_kv_key_handler),
+        )
+        .route(
+            "/api/plugins/:id/storage",
+            get(extensions::get_extension_storage_handler),
+        )
         // Profile
         .route(
             "/api/profile",
@@ -99,7 +138,7 @@ pub fn build_router(state: AppState) -> Router {
             patch(instruction_presets::update_instruction_preset_handler)
                 .delete(instruction_presets::delete_instruction_preset_handler),
         )
-        // Extensions & Isolated Host-Managed Storage
+        // WASM storage & legacy extension alias routes
         .route(
             "/api/extensions",
             get(extensions::list_extensions_handler),
@@ -133,10 +172,16 @@ pub fn build_router(state: AppState) -> Router {
             "/api/extensions/:id/storage",
             get(extensions::get_extension_storage_handler),
         )
-        .route(
-            "/api/extensions/:id/action",
-            post(extensions::execute_extension_action_handler),
-        )
+        .route("/api/extensions/:id/rpc", post(mcp::plugin_rpc_handler))
+        // Host bridge for sandboxed MCP-Apps (docs/HOST_BRIDGE.md §5).
+        // Identity/avatars/storage are resolved server-side so the opaque-origin
+        // iframe never has to fetch anything itself.
+        .route("/api/host/session", get(host::host_session_handler))
+        .route("/api/host/avatar", get(host::host_avatar_handler))
+        .route("/api/host/storage/get", post(host::storage_get_handler))
+        .route("/api/host/storage/set", post(host::storage_set_handler))
+        .route("/api/host/storage/delete", post(host::storage_delete_handler))
+        .route("/api/host/storage/list", post(host::storage_list_handler))
         // WebSocket
         .route("/ws/events", get(ws::ws_events_handler))
         .with_state(state)

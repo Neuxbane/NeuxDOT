@@ -15,8 +15,8 @@ async fn compact_installs_new_instruction_and_keeps_running_history_intact_befor
         .unwrap();
 
     // Materialise row 0 the way run_turn does.
-    db.append_agent_history(&agent.id, "system", "OLD INSTRUCTION", None, None).await.unwrap();
-    db.append_agent_history(&agent.id, "user", "hello", None, None).await.unwrap();
+    db.append_agent_history(&agent.id, "system", "OLD INSTRUCTION", None, None, None).await.unwrap();
+    db.append_agent_history(&agent.id, "user", "hello", None, None, None).await.unwrap();
 
     // User selects a new instruction preset -> only agents.system_prompt changes.
     // patch_agent(id, name, avatar_color, avatar_shape, avatar_url, strategy,
@@ -28,9 +28,11 @@ async fn compact_installs_new_instruction_and_keeps_running_history_intact_befor
     .await
     .unwrap();
 
-    // Running history must be untouched (cache-safe).
+    // `patch_agent` alone does not touch running history; the runtime refreshes
+    // row 0 at the start of the next turn (see
+    // `instruction_preset_switch_test.rs`). Compaction is the rebuild point.
     let before = db.get_agent_history(&agent.id).await.unwrap();
-    assert_eq!(before[0].content, "OLD INSTRUCTION", "history must NOT change mid-run");
+    assert_eq!(before[0].content, "OLD INSTRUCTION");
     assert_eq!(before.len(), 2);
 
     // Compact installs the new instruction.

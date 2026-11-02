@@ -63,6 +63,26 @@ pub struct McpTool {
     pub description: Option<String>,
     #[serde(default, rename = "inputSchema")]
     pub input_schema: Option<Value>,
+    #[serde(default, rename = "_meta")]
+    pub meta: Option<Value>,
+}
+
+impl McpTool {
+    /// Returns true if `_meta.ui.visibility` restricts this tool strictly to the MCP-App UI (`["app"]`)
+    pub fn is_app_only(&self) -> bool {
+        if let Some(vis) = self
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("ui"))
+            .and_then(|u| u.get("visibility"))
+            .and_then(|v| v.as_array())
+        {
+            if !vis.is_empty() && !vis.iter().any(|x| x.as_str() == Some("model")) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[async_trait]

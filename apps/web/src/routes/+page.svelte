@@ -1,12 +1,24 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, type Agent, type Provider, type McpServer, type AgentDetail, type ExtensionItem, type ExtensionUiHook, type ResponseHook, type InstructionPreset } from '$lib/api';
+	import {
+		api,
+		type Agent,
+		type Provider,
+		type McpServer,
+		type AgentDetail,
+		type AgentResourceItem,
+		type PluginPermissions,
+		type ResponseHook,
+		type InstructionPreset
+	} from '$lib/api';
 	import { authState } from '$lib/stores/auth.svelte';
+	import { denyAll, resolvedPermissions } from '$lib/utils/permissions';
 	import { eventStore } from '$lib/stores/events.svelte';
+	import { navState } from '$lib/stores/nav.svelte';
 	import TerminalLog from '$lib/components/TerminalLog.svelte';
 	import ProviderSelect from '$lib/components/ProviderSelect.svelte';
 	import McpList from '$lib/components/McpList.svelte';
-	import ExtensionChatPanel from '$lib/components/ExtensionChatPanel.svelte';
+	import McpAppIframe from '$lib/components/McpAppIframe.svelte';
 	import Avatar from '$lib/components/Avatar.svelte';
 import AvatarCropModal from '$lib/components/AvatarCropModal.svelte';
 	import {
@@ -29,7 +41,9 @@ import AvatarCropModal from '$lib/components/AvatarCropModal.svelte';
 		CornerDownLeft,
 		MessageSquare,
 		FileCode,
-		Upload
+		Upload,
+		ArrowLeft,
+		Menu
 	} from 'lucide-svelte';
 
 	let agentId = $derived(page.url.searchParams.get('agent_id'));
@@ -76,33 +90,110 @@ let agentMemory = $state<{ content: string; current_hash: string; character_coun
 	let newAgentName = $state('');
 	let isCreating = $state(false);
 
-	// Navigation & Extensions
+	// Navigation & Apps
+	interface DiscoveredMcpApp {
+		pluginId: string;
+		pluginName: string;
+		transport: string;
+		resourceUri: string;
+		title: string;
+		description?: string;
+		permissions: PluginPermissions;
+		isConnectedToAgent: boolean;
+	}
+
 	let activePanel = $state<'config' | string>('config');
 	let activeAnchor = $state<string>('agent-settings-section');
-	let extensions = $state<ExtensionItem[]>([]);
-	let selectedExtension = $state<ExtensionItem | null>(null);
-	let selectedHook = $state<ExtensionUiHook | null>(null);
+	// Mobile drill-down, level 2: choosing an agent lands on its section list.
+	// Picking a section hides this to reveal the content (level 3).
+	let agentNavOpen = $state(true);
+	let agentResources = $state<AgentResourceItem[]>([]);
+	let selectedMcpApp = $state<DiscoveredMcpApp | null>(null);
 
-	let sidebarExtensions = $derived(
-		extensions
-			.filter((e) => e.is_active && e.manifest?.ui_hooks?.some((h) => h.target_id === 'agent-sidebar-nav'))
-			.map((e) => ({
-				...e,
-				hooks: (e.manifest?.ui_hooks || []).filter((h) => h.target_id === 'agent-sidebar-nav')
-			}))
-	);
+	/**
+	 * Grants in force for a plugin (declared by the manifest, narrowed by the
+	 * account's stored override). Shared with the /mcp consent editor so both
+	 * surfaces agree — see `$lib/utils/permissions`.
+	 */
+	function parsePluginPermissions(server: McpServer): PluginPermissions {
+		return resolvedPermissions(server);
+	}
 
-	async function loadExtensions() {
+	let sidebarMcpApps = $derived.by(() => {
+		const map = new Map<string, DiscoveredMcpApp>();
+
+		// 1. Discover from active plugins' manifests (e.g. WASM plugins with mcp.resources ui://...)
+		for (const srv of allMcpServers) {
+			if (srv.is_active === false) continue;
+			const perms = parsePluginPermissions(srv);
+			if (!perms.ui.enabled) continue;
+			if (srv.manifest_json) {
+				try {
+					const manifest = JSON.parse(srv.manifest_json);
+					const resources = manifest?.mcp?.resources || [];
+					for (const res of resources) {
+						const uri: string = res.uri || '';
+						const mime: string = res.mimeType || res.mime_type || '';
+						if (uri.startsWith('ui://') || mime.includes('mcp-app')) {
+							const key = `${srv.id}:${uri}`;
+							map.set(key, {
+								pluginId: srv.id,
+								pluginName: srv.name,
+								transport: srv.transport,
+								resourceUri: uri,
+								title: res.name || srv.name,
+								description: res.description,
+								permissions: perms,
+								isConnectedToAgent: selectedMcpIds.includes(srv.id)
+							});
+						}
+					}
+				} catch {}
+			}
+		}
+
+		// 2. Discover from live MCP resources/list on connected plugins (stdio / http / wasm_stdio)
+		for (const res of agentResources) {
+			const uri = res.uri || '';
+			const mime = res.mime_type || '';
+			if (uri.startsWith('ui://') || mime.includes('mcp-app')) {
+				const srv = allMcpServers.find((s) => s.id === res.mcp_id);
+				if (srv && srv.is_active === false) continue;
+				// A discovered resource with no matching server row still gets a
+				// conservative grant set: UI only, no identity, no storage.
+				const perms = srv ? parsePluginPermissions(srv) : denyAll();
+				if (srv && !perms.ui.enabled) continue;
+				const key = `${res.mcp_id}:${uri}`;
+				map.set(key, {
+					pluginId: res.mcp_id,
+					pluginName: srv?.name || res.server_name,
+					transport: srv?.transport || 'stdio',
+					resourceUri: uri,
+					title: res.name || srv?.name || res.server_name,
+					description: res.description,
+					permissions: perms,
+					isConnectedToAgent: true
+				});
+			}
+		}
+
+		return Array.from(map.values());
+	});
+
+	async function loadAgentMcpResources(id: string) {
 		try {
-			extensions = await api.extensions.list();
+			const toolsResp = await api.agents.getTools(id);
+			agentResources = toolsResp.resources || [];
 		} catch (e) {
-			console.error('Failed to load extensions:', e);
+			agentResources = [];
 		}
 	}
 
 	function selectAnchor(anchorId: string) {
 		activePanel = 'config';
 		activeAnchor = anchorId;
+		// Mobile: choosing a section moves from level 2 (nav) to level 3 (content).
+		agentNavOpen = false;
 		setTimeout(() => {
 			const el = document.getElementById(anchorId);
 			if (el) {
@@ -111,10 +202,15 @@ let agentMemory = $state<{ content: string; current_hash: string; character_coun
 		}, 20);
 	}
 
-	function selectExtensionHook(ext: ExtensionItem, hook: ExtensionUiHook) {
-		selectedExtension = ext;
-		selectedHook = hook;
-		activePanel = `ext:${ext.id}:${hook.panel_id || 'default'}`;
+	async function selectMcpApp(app: DiscoveredMcpApp) {
+		// Automatically attach the plugin to the agent if not yet attached so tools & push notifications work seamlessly
+		if (agent && !selectedMcpIds.includes(app.pluginId)) {
+			selectedMcpIds = [...selectedMcpIds, app.pluginId];
+			triggerAutoSave();
+		}
+		selectedMcpApp = app;
+		activePanel = `mcp-app:${app.pluginId}:${app.resourceUri}`;
+		agentNavOpen = false;
 	}
 
 	// Load data when agentId changes
@@ -222,13 +318,35 @@ async function loadAgentData(id: string) {
 			} else {
 				responseHooks = [];
 			}
-			loadExtensions();
+			loadAgentMcpResources(id);
 		} catch (e) {
 			console.error('Failed to load agent detail:', e);
 		}
 	}
 
-	async function reloadHistory() {
+	// Live running history: refetch whenever the event stream reports activity
+// that changes persisted history. Debounced so a burst of tool events
+// results in one request, and skipped while a manual reload is in flight.
+let historySyncTimer: number | null = null;
+
+$effect(() => {
+// Subscribe to the revision counter.
+void eventStore.historyRevision;
+const id = agentId;
+if (!id) return;
+if (historySyncTimer) clearTimeout(historySyncTimer);
+historySyncTimer = window.setTimeout(async () => {
+historySyncTimer = null;
+if (!agent || agent.id !== id) return;
+try {
+runningHistory = await api.agents.getHistory(id);
+} catch (e) {
+console.error('Failed to sync running history:', e);
+}
+}, 600);
+});
+
+async function reloadHistory() {
 		if (!agent) return;
 		try {
 			runningHistory = await api.agents.getHistory(agent.id);
@@ -319,7 +437,11 @@ function triggerAutoSave() {
 					allow_output_text: agent.allow_output_text,
 					output_text_error_message: agent.output_text_error_message,
 					max_running_history_chars: Number(maxRunningHistoryChars) || 300000,
-					response_hooks: responseHooks
+					response_hooks: responseHooks,
+					// Without this the server never learns which preset is selected:
+					// the dropdown resets to Custom on reload and the runtime keeps
+					// using the stale text. '' detaches the preset (Custom).
+					instruction_preset_id: agent.instruction_preset_id ?? ''
 				});
 				agent = updated;
 				showSavedBadge();
@@ -463,8 +585,26 @@ function triggerAutoSave() {
 			/>
 		{/if}
 		<!-- Header -->
-		<header id="agent-header" class="flex items-center justify-between border-b border-zinc-200/80 dark:border-zinc-800/80 bg-white/70 dark:bg-zinc-900/40 backdrop-blur-md px-6 py-3.5">
-			<div class="flex items-center gap-3">
+		<header id="agent-header" class="flex items-center justify-between gap-2 border-b border-zinc-200/80 dark:border-zinc-800/80 bg-white/70 dark:bg-zinc-900/40 backdrop-blur-md px-3 py-2.5 sm:px-6 sm:py-3.5">
+			<div class="flex min-w-0 items-center gap-2 sm:gap-3">
+				<!-- Mobile back: section -> level 2 section list; list -> level 1 -->
+				<button
+					type="button"
+					class="shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-200/60 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-white transition-colors lg:hidden"
+					onclick={() => {
+						if (agentNavOpen) {
+							// Section list is showing: leave for the app menu (level 1).
+							navState.showLevel1();
+						} else {
+							// Viewing a section: back to the agent's section list (level 2).
+							agentNavOpen = true;
+						}
+					}}
+					aria-label={agentNavOpen ? 'Back to navigation' : 'Back to agent menu'}
+					title="Back"
+				>
+					<ArrowLeft class="h-4 w-4" />
+				</button>
 				<Avatar
 					src={agent.avatar_url}
 					name={agent.name}
@@ -512,8 +652,13 @@ function triggerAutoSave() {
 
 		<!-- Body with Inner Sidebar and Main Panel -->
 		<div class="flex flex-1 overflow-hidden">
-			<!-- 🧭 Inner Sidebar Navigation -->
-			<aside id="agent-sidebar-nav" class="w-56 shrink-0 border-r border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/40 p-3 flex flex-col justify-between overflow-y-auto">
+			<!-- Mobile scrim behind the agent's flying sidebar -->
+
+<!-- 🧭 Inner Sidebar Navigation -->
+			<aside
+ id="agent-sidebar-nav"
+ class="h-full w-full shrink-0 flex-col justify-between overflow-y-auto border-r border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-zinc-800/80 dark:bg-zinc-950/40 lg:flex lg:w-56 {agentNavOpen ? 'flex' : 'hidden'}"
+ >
 				<div class="space-y-4">
 					<!-- Standard Anchors / Views -->
 					<div>
@@ -572,7 +717,7 @@ function triggerAutoSave() {
 								onclick={() => selectAnchor('agent-mcp-section')}
 							>
 								<Play class="h-3.5 w-3.5 shrink-0" />
-								<span>Connected MCP</span>
+								<span>Plugins</span>
 							</button>
 
 							<button
@@ -602,44 +747,43 @@ function triggerAutoSave() {
 						</nav>
 					</div>
 
-					<!-- Extensions Hooked to agent-sidebar-nav -->
+					<!-- Apps (MCP-Apps served via ui:// resources) -->
 					<div>
 						<div class="flex items-center justify-between px-2 mb-1.5">
 							<span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-								Extensions
+								Apps
 							</span>
 							<a
-								href="/settings#extensions"
+								href="/mcp"
 								class="text-[10px] text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
-								title="Install or manage WASM extensions"
+								title="Install or manage Plugins & Permissions"
 							>
-								Manage
+								Plugins
 							</a>
 						</div>
 
-						{#if sidebarExtensions.length === 0}
+						{#if sidebarMcpApps.length === 0}
 							<div class="px-2 py-2 text-[11px] text-zinc-400 dark:text-zinc-600 italic">
-								No sidebar extensions installed
+								No MCP-App UI resources active
 							</div>
 						{:else}
 							<nav class="space-y-0.5">
-								{#each sidebarExtensions as ext}
-									{#each ext.hooks as hook}
-										{@const panelKey = `ext:${ext.id}:${hook.panel_id || 'default'}`}
-										<button
-											type="button"
-											class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all {activePanel === panelKey ? 'bg-indigo-600 text-white shadow-xs' : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800'}"
-											onclick={() => selectExtensionHook(ext, hook)}
-										>
-											<div class="flex items-center gap-2 truncate">
-												<MessageSquare class="h-3.5 w-3.5 shrink-0" />
-												<span class="truncate">{hook.title || ext.name}</span>
-											</div>
-											<span class="text-[9px] px-1 py-0.2 rounded font-mono uppercase {activePanel === panelKey ? 'bg-white/20 text-white' : 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'}">
-												WASM
-											</span>
-										</button>
-									{/each}
+								{#each sidebarMcpApps as app (`${app.pluginId}:${app.resourceUri}`)}
+									{@const panelKey = `mcp-app:${app.pluginId}:${app.resourceUri}`}
+									<button
+										type="button"
+										class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all {activePanel === panelKey ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs' : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800'}"
+										onclick={() => selectMcpApp(app)}
+										title="{app.resourceUri} ({app.pluginName})"
+									>
+										<div class="flex items-center gap-2 truncate">
+											<MessageSquare class="h-3.5 w-3.5 shrink-0" />
+											<span class="truncate">{app.title}</span>
+										</div>
+										<span class="text-[9px] px-1.5 py-0.2 rounded-md font-mono uppercase {activePanel === panelKey ? 'bg-white/20 text-white dark:bg-black/20 dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700'}">
+											{app.transport === 'wasm_stdio' ? 'WASM' : app.transport}
+										</span>
+									</button>
 								{/each}
 							</nav>
 						{/if}
@@ -656,96 +800,217 @@ function triggerAutoSave() {
 			</aside>
 
 			<!-- Main Content View -->
-			<main class="flex-1 flex flex-col h-full overflow-hidden">
+			<main class="flex h-full flex-1 flex-col overflow-hidden">
 				{#if activePanel === 'config'}
 					<!-- Main Scrollable Configuration Area -->
-					<div id="agent-config-scroll" class="flex-1 overflow-y-auto px-6 py-6 space-y-5">
+					<div id="agent-config-scroll" class="flex-1 overflow-y-auto px-4 py-5 space-y-5 sm:px-6 sm:py-6">
 			<!-- Settings Form -->
 			{#if activeAnchor === 'agent-settings-section'}
-			<section id="agent-settings-section" class="grid grid-cols-1 md:grid-cols-4 gap-4">
-				<!-- Presentation: Avatar picture, color & shape -->
-				<div class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
-					<div class="flex items-center justify-between mb-1.5">
-						<span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-						Agent Avatar
-						</span>
-						{#if agent.avatar_url}
-						<button
-						type="button"
-						onclick={clearAgentAvatar}
-						class="text-[10px] font-medium text-zinc-400 hover:text-rose-500 transition-colors cursor-pointer"
-						title="Remove the profile picture and fall back to the color/shape"
-						>
-						Remove
-						</button>
-						{/if}
-					</div>
-					<div class="flex items-center gap-2">
-						<button
-						type="button"
-						onclick={() => agentAvatarInput?.click()}
-						class="group relative shrink-0 rounded-full transition-transform active:scale-95 cursor-pointer"
-						title="Upload a profile picture"
-						aria-label="Upload agent profile picture"
-						>
-						<Avatar
-						src={agent.avatar_url}
-						name={agent.name}
-						color={agent.avatar_color || '#6366f1'}
-						shape={agent.avatar_shape === 'circle' ? 'circle' : agent.avatar_shape === 'square' ? 'square' : 'rounded'}
-						size="md"
-						/>
-						<span class="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity">
-						<Upload class="h-4 w-4" />
-						</span>
-						</button>
-						<input
-						id="agent-avatar-color"
-						type="color"
-						bind:value={agent.avatar_color}
-						onchange={triggerAutoSave}
-						class="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-zinc-200 dark:border-zinc-750 bg-transparent p-0.5"
-						aria-label="Agent avatar color"
-						title="Fallback color (used when no picture is set)"
-						/>
-						<select
-						bind:value={agent.avatar_shape}
-						onchange={triggerAutoSave}
-						class="flex-1 min-w-0 rounded-lg border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-2 py-1.5 text-xs font-medium text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none"
-						aria-label="Agent avatar shape"
-						>
-						<option value="circle">Circle</option>
-						<option value="rounded">Rounded</option>
-						<option value="square">Square</option>
-						</select>
-					</div>
-					<input
-					bind:this={agentAvatarInput}
-					type="file"
-					accept="image/png,image/jpeg,image/webp,image/gif"
-					class="hidden"
-					onchange={handleAgentAvatarFile}
-					/>
-					{#if agentAvatarError}
-					<p class="mt-1.5 text-[10px] text-rose-500">{agentAvatarError}</p>
-					{/if}
+			<section id="agent-settings-section" class="space-y-6">
+				<div>
+					<h2 class="text-sm font-semibold text-zinc-900 dark:text-white">Agent Settings</h2>
+					<p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+						Identity, history budget and presentation for this agent. Changes save automatically.
+					</p>
 				</div>
-<!-- Name -->
-				<div class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
-					<label for="agent-name" class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-1.5">
-						Agent Name
-					</label>
-					<input
-						id="agent-name"
-						type="text"
-						bind:value={agent.name}
-						oninput={triggerAutoSave}
-						class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none transition-colors"
-					/>
-				</div>
+				<div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_260px] gap-6 items-start">
+					<!-- Editor -->
+					<div class="space-y-6">
 
-				<!-- Strategy -->
-				<div class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
+<!-- Avatar -->
+<div class="space-y-2">
+<div class="flex items-center justify-between">
+<span class="block text-xs font-medium text-zinc-700 dark:text-zinc-300">Agent Avatar</span>
+{#if agent.avatar_url}
+<button
+type="button"
+onclick={clearAgentAvatar}
+class="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-rose-500 transition-colors cursor-pointer"
+title="Remove the picture and fall back to colored initials"
+>
+<Trash2 class="h-3 w-3" />
+<span>Remove picture</span>
+</button>
+{/if}
+</div>
+
+<div class="flex items-center gap-3">
+<button
+type="button"
+onclick={() => agentAvatarInput?.click()}
+class="group relative shrink-0 rounded-full transition-transform active:scale-95 cursor-pointer"
+title="Upload a profile picture"
+aria-label="Upload agent profile picture"
+>
+<Avatar
+src={agent.avatar_url}
+name={agent.name}
+color={agent.avatar_color || '#6366f1'}
+shape={agent.avatar_shape === 'circle' ? 'circle' : agent.avatar_shape === 'square' ? 'square' : 'rounded'}
+size="lg"
+/>
+<span class="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity">
+<Upload class="h-4 w-4" />
+</span>
+</button>
+<div class="min-w-0">
+<button
+type="button"
+onclick={() => agentAvatarInput?.click()}
+class="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-100 px-2.5 py-1.5 text-xs font-medium text-white dark:text-zinc-950 shadow-xs transition-all cursor-pointer"
+>
+<Upload class="h-3.5 w-3.5" />
+<span>Choose Image</span>
+</button>
+<p class="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+Cropped, downscaled and compressed automatically.
+</p>
+</div>
+</div>
+
+<input
+bind:this={agentAvatarInput}
+type="file"
+accept="image/png,image/jpeg,image/webp,image/gif"
+class="hidden"
+onchange={handleAgentAvatarFile}
+/>
+{#if agentAvatarError}
+<p class="text-[11px] text-rose-500">{agentAvatarError}</p>
+{/if}
+</div>
+
+<!-- Fallback avatar color -->
+<div class="space-y-2">
+<span class="block text-xs font-medium text-zinc-700 dark:text-zinc-300">Fallback Avatar Color</span>
+<div class="flex flex-wrap items-center gap-2">
+{#each ['#3b82f6', '#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f59e0b', '#10b981', '#14b8a6', '#06b6d4', '#64748b'] as color (color)}
+<button
+type="button"
+class="h-7 w-7 rounded-full border-2 transition-transform hover:scale-110 {agent.avatar_color === color ? 'border-zinc-900 dark:border-white' : 'border-transparent'}"
+style="background-color: {color}"
+onclick={() => {
+if (!agent) return;
+agent.avatar_color = color;
+triggerAutoSave();
+}}
+aria-label="Use color {color}"
+></button>
+{/each}
+<input
+id="agent-avatar-color"
+type="color"
+bind:value={agent.avatar_color}
+onchange={triggerAutoSave}
+class="h-7 w-8 cursor-pointer rounded border border-zinc-200 dark:border-zinc-700 bg-transparent p-0.5"
+aria-label="Custom avatar color"
+/>
+<span class="font-mono text-[11px] text-zinc-400">{agent.avatar_color}</span>
+</div>
+</div>
+
+<!-- Fallback avatar shape -->
+<div class="space-y-2">
+<span class="block text-xs font-medium text-zinc-700 dark:text-zinc-300">Fallback Avatar Shape</span>
+<div class="flex flex-wrap gap-2">
+{#each [{ id: 'circle', label: 'Circle' }, { id: 'rounded', label: 'Rounded' }, { id: 'square', label: 'Square' }] as shape (shape.id)}
+<button
+type="button"
+class="rounded-lg px-3 py-1.5 text-xs font-medium transition-all {agent.avatar_shape === shape.id
+? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 shadow-xs'
+: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'}"
+onclick={() => {
+if (!agent) return;
+agent.avatar_shape = shape.id;
+triggerAutoSave();
+}}
+>
+{shape.label}
+</button>
+{/each}
+</div>
+</div>
+
+<!-- Name -->
+<div>
+<label for="agent-name" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+Agent Name
+</label>
+<input
+id="agent-name"
+type="text"
+bind:value={agent.name}
+oninput={triggerAutoSave}
+class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none"
+/>
+</div>
+
+<!-- Max history -->
+<div>
+<div class="flex items-center justify-between mb-1">
+<label for="max-history-chars" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+Max History Chars
+</label>
+<span class="font-mono text-[11px] text-zinc-400" title="Running conversation character usage">
+{currentHistoryChars.toLocaleString()} / {Number(maxRunningHistoryChars || 300000).toLocaleString()}
+</span>
+</div>
+<input
+id="max-history-chars"
+type="number"
+min="1000"
+max="10000000"
+step="10000"
+bind:value={maxRunningHistoryChars}
+oninput={triggerAutoSave}
+class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-mono font-medium text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none"
+/>
+<p class="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+Oldest turns are pruned once the running context exceeds this budget.
+</p>
+</div>
+					</div>
+										<!-- Live preview -->
+										<div class="space-y-3 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs lg:sticky lg:top-6">
+											<div class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+												<Sparkles class="h-3.5 w-3.5 text-amber-500" />
+												Live Preview
+											</div>
+											<div class="flex flex-col items-center text-center gap-2">
+												<Avatar
+													src={agent.avatar_url}
+													name={agent.name}
+													color={agent.avatar_color || '#6366f1'}
+													shape={agent.avatar_shape === 'circle' ? 'circle' : agent.avatar_shape === 'square' ? 'square' : 'rounded'}
+													size="xl"
+													/>
+													<div class="space-y-1">
+														<div class="text-sm font-semibold text-zinc-900 dark:text-white">{agent.name || 'Unnamed agent'}</div>
+														<div class="text-[11px] font-mono text-zinc-400 dark:text-zinc-500">@{agent.strategy}</div>
+														<span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-mono {agent.is_active ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-zinc-200/60 dark:bg-zinc-800 text-zinc-500'}">
+															{agent.is_active ? 'Active' : 'Inactive'}
+														</span>
+													</div>
+												</div>
+												<p class="text-[10px] leading-snug text-center text-zinc-400 dark:text-zinc-500">
+													The picture is used when set; otherwise the colored {agent.avatar_shape || 'circle'} with initials is rendered.
+												</p>
+											</div>
+										</div>
+									</section>
+			{/if}
+
+			<!-- Providers Multi-Select -->
+			{#if activeAnchor === 'agent-providers-section'}
+			<section id="agent-providers-section" class="space-y-3">
+				<div class="flex items-center justify-between mb-2">
+					<span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+						Connected Models & Providers
+					</span>
+					<a href="/providers" class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-white underline transition-colors">Manage Providers</a>
+				</div>
+				<!-- Provider Routing Strategy -->
+				<div class="mb-3">
 					<label for="routing-strategy" class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-1.5">
 						Provider Routing Strategy
 					</label>
@@ -761,39 +1026,6 @@ function triggerAutoSave() {
 					</select>
 				</div>
 
-				<!-- Max Running History Characters -->
-				<div class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
-					<div class="flex items-center justify-between mb-1.5">
-						<label for="max-history-chars" class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-							Max History Chars
-						</label>
-						<span class="text-[10px] font-mono text-zinc-400" title="Running conversation character usage">
-							{currentHistoryChars.toLocaleString()} / {Number(maxRunningHistoryChars || 300000).toLocaleString()}
-						</span>
-					</div>
-					<input
-						id="max-history-chars"
-						type="number"
-						min="1000"
-						max="10000000"
-						step="10000"
-						bind:value={maxRunningHistoryChars}
-						oninput={triggerAutoSave}
-						class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-mono font-medium text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none transition-colors"
-					/>
-				</div>
-			</section>
-			{/if}
-
-			<!-- Providers Multi-Select -->
-			{#if activeAnchor === 'agent-providers-section'}
-			<section id="agent-providers-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
-				<div class="flex items-center justify-between mb-2">
-					<span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-						Connected Models & Providers
-					</span>
-					<a href="/providers" class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-white underline transition-colors">Manage Providers</a>
-				</div>
 				<ProviderSelect
 					{allProviders}
 					bind:selectedIds={selectedProviderIds}
@@ -804,7 +1036,7 @@ function triggerAutoSave() {
 
 			<!-- System Prompt -->
 			{#if activeAnchor === 'agent-prompt-section'}
-			<section id="agent-prompt-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
+			<section id="agent-prompt-section" class="space-y-3">
 				<div class="flex items-center justify-between mb-2">
 					<div class="flex items-center gap-1.5">
 						<label for="system-prompt" class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
@@ -868,15 +1100,15 @@ class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 
 {/if}
 
 <p class="mt-2 text-[10px] text-zinc-400 dark:text-zinc-500">
-Changes apply to the agent's next fresh context (after <strong>compact</strong> or a history reset).
-A running conversation keeps its current instructions so the prompt cache stays warm.
+Selecting a preset replaces the agent's instructions on its <strong>next turn</strong>.
+The base instruction row is refreshed in place, so your conversation history is kept.
 </p>
 			</section>
 			{/if}
 
 			<!-- 🧠 Persistent Memory Status & Meta-Tool Inspection -->
 			{#if activeAnchor === 'agent-memory-section'}
-			<section id="agent-memory-section" class="rounded-2xl border border-pink-500/20 bg-pink-500/5 p-4 space-y-2">
+			<section id="agent-memory-section" class="space-y-2">
 				<div class="flex items-center justify-between">
 					<div class="flex items-center gap-2">
 						<BrainCircuit class="h-4 w-4 text-pink-500 dark:text-pink-400" />
@@ -923,7 +1155,7 @@ A running conversation keeps its current instructions so the prompt cache stays 
 
 			<!-- 🛑 Flow Control & Output Text Permissions -->
 			{#if activeAnchor === 'agent-permissions-section'}
-			<section id="agent-permissions-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 space-y-3 shadow-xs">
+			<section id="agent-permissions-section" class="space-y-3">
 				<div class="flex items-center justify-between">
 					<div>
 						<div class="flex items-center gap-2">
@@ -979,27 +1211,30 @@ A running conversation keeps its current instructions so the prompt cache stays 
 			</section>
 			{/if}
 
-			<!-- MCP Checklist -->
+			<!-- Plugins & MCP Checklist -->
 			{#if activeAnchor === 'agent-mcp-section'}
-			<section id="agent-mcp-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
+			<section id="agent-mcp-section" class="space-y-3">
 				<div class="flex items-center justify-between mb-2">
 					<span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-						Connected MCP Servers & Tools
+						Connected Plugins (MCP Servers & WASM)
 					</span>
-					<a href="/mcp" class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-white underline transition-colors">Manage MCP Servers</a>
+					<a href="/mcp" class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-white underline transition-colors">Manage Plugins & Permissions</a>
 				</div>
 				<McpList
 					agentId={agent.id}
 					allServers={allMcpServers}
 					bind:selectedIds={selectedMcpIds}
-					onchange={() => triggerAutoSave()}
+					onchange={() => {
+						triggerAutoSave();
+						if (agent) setTimeout(() => loadAgentMcpResources(agent!.id), 600);
+					}}
 				/>
 			</section>
 			{/if}
 
 			<!-- 🪝 Response Hooks Section -->
 			{#if activeAnchor === 'agent-hooks-section'}
-			<section id="agent-hooks-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 space-y-3 shadow-xs">
+			<section id="agent-hooks-section" class="space-y-3">
 				<div class="flex items-center justify-between">
 					<div class="flex items-center gap-2">
 						<Layers class="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
@@ -1048,13 +1283,13 @@ A running conversation keeps its current instructions so the prompt cache stays 
 
 				<!-- Hooks List -->
 				{#if responseHooks.length === 0}
-					<div class="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-6 text-center text-xs text-zinc-400 italic">
+					<div class="py-6 text-center text-xs text-zinc-400 italic">
 						No response hooks configured. Click "+ Add Hook" above to inject custom messages or status into tool results.
 					</div>
 				{:else}
 					<div class="space-y-2 pt-1">
 						{#each responseHooks as hook (hook.id)}
-							<div class="flex items-center gap-2.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/70 p-2.5">
+							<div class="flex items-center gap-2.5 rounded-lg bg-zinc-100/60 dark:bg-zinc-900/60 px-2.5 py-2">
 								<!-- Enable Toggle -->
 								<input
 									type="checkbox"
@@ -1197,11 +1432,15 @@ A running conversation keeps its current instructions so the prompt cache stays 
 			</section>
 			{/if}
 		</div>
-		{:else if selectedExtension && selectedHook}
-			<ExtensionChatPanel
+		{:else if selectedMcpApp}
+			<McpAppIframe
 				{agent}
-				extension={selectedExtension}
-				hook={selectedHook}
+				pluginId={selectedMcpApp.pluginId}
+				pluginName={selectedMcpApp.pluginName}
+				transport={selectedMcpApp.transport}
+				resourceUri={selectedMcpApp.resourceUri}
+				title={selectedMcpApp.title}
+				permissions={selectedMcpApp.permissions}
 			/>
 		{/if}
 		</main>

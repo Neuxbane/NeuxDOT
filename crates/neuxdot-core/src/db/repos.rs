@@ -739,6 +739,20 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        if let Some(ext_id) = id.strip_prefix("wasm:") {
+            let _ = sqlx::query("DELETE FROM extensions WHERE id = ?")
+                .bind(ext_id)
+                .execute(&self.pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM extension_kv WHERE extension_id = ?")
+                .bind(ext_id)
+                .execute(&self.pool)
+                .await;
+        }
+        let _ = sqlx::query("DELETE FROM extension_kv WHERE extension_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await;
         Ok(res.rows_affected() > 0)
     }
 
@@ -924,63 +938,99 @@ impl Database {
         Ok(())
     }
 
-    // --- Synchronize WASM MCP Servers ---
+    // --- Synchronize WASM MCP Servers (Unified Plugins) ---
     pub async fn sync_wasm_mcp_servers(&self, account_id: &str) -> Result<(), sqlx::Error> {
-        let active_exts = self.list_active_extensions(account_id).await?;
-        let mut active_wasm_mcp_ids = std::collections::HashSet::new();
+        let all_exts = sqlx::query_as::<_, Extension>(
+            "SELECT * FROM extensions WHERE account_id = ? ORDER BY name ASC",
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await?;
 
-        for ext in active_exts {
-            if let Ok(manifest_val) = serde_json::from_str::<serde_json::Value>(&ext.manifest_json) {
-                if let Some(mcp) = manifest_val.get("mcp") {
-                    let mcp_id = format!("wasm:{}", ext.id);
-                    active_wasm_mcp_ids.insert(mcp_id.clone());
-                    let server_name = mcp.get("server_name")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| format!("[WASM] {}", ext.name));
-                    let server_alias = mcp.get("alias")
-                        .or_else(|| mcp.get("server_alias"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| ext.name.clone());
-                    let transport = "wasm_stdio";
-                    let url_or_command = format!("wasm://{}", ext.id);
+        for ext in all_exts {
+            let manifest_val = serde_json::from_str::<serde_json::Value>(&ext.manifest_json)
+                .unwrap_or(serde_json::Value::Null);
+            let mcp = manifest_val.get("mcp");
+            let mcp_id = format!("wasm:{}", ext.id);
+            let server_name = ext
+                .name
+                .trim_end_matches(" (WASM)")
+                .to_string();
+            let server_alias = mcp
+                .and_then(|m| m.get("alias").or_else(|| m.get("server_alias")))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| ext.name.clone());
+            let transport = "wasm_stdio";
+            let url_or_command = format!("wasm://{}", ext.id);
 
-                    sqlx::query(
-                        r#"
-                        INSERT INTO mcp_servers (id, account_id, name, alias, transport, url_or_command)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT (id) DO UPDATE SET
-                            name = excluded.name,
-                            alias = excluded.alias,
-                            transport = excluded.transport,
-                            url_or_command = excluded.url_or_command
-                        "#,
-                    )
-                    .bind(&mcp_id)
-                    .bind(account_id)
-                    .bind(&server_name)
-                    .bind(&server_alias)
-                    .bind(transport)
-                    .bind(&url_or_command)
-                    .execute(&self.pool)
-                    .await?;
-                }
-            }
-        }
-
-        // Clean up deactivated WASM MCP servers
-        let existing = sqlx::query_as::<_, McpServer>("SELECT * FROM mcp_servers WHERE account_id = ?")
+            sqlx::query(
+                r#"
+                INSERT INTO mcp_servers (
+                    id, account_id, name, alias, transport, url_or_command,
+                    version, description, wasm_hash, wasm_binary, manifest_json,
+                    is_active, storage_bytes
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = excluded.name,
+                    alias = excluded.alias,
+                    transport = excluded.transport,
+                    url_or_command = excluded.url_or_command,
+                    version = excluded.version,
+                    description = excluded.description,
+                    wasm_hash = excluded.wasm_hash,
+                    wasm_binary = excluded.wasm_binary,
+                    manifest_json = excluded.manifest_json,
+                    is_active = excluded.is_active,
+                    storage_bytes = excluded.storage_bytes
+                "#,
+            )
+            .bind(&mcp_id)
             .bind(account_id)
-            .fetch_all(&self.pool)
+            .bind(&server_name)
+            .bind(&server_alias)
+            .bind(transport)
+            .bind(&url_or_command)
+            .bind(&ext.version)
+            .bind(&ext.description)
+            .bind(&ext.wasm_hash)
+            .bind(&ext.wasm_binary)
+            .bind(&ext.manifest_json)
+            .bind(ext.is_active)
+            .bind(ext.storage_bytes)
+            .execute(&self.pool)
             .await?;
-        for s in existing {
-            if s.transport == "wasm_stdio" && !active_wasm_mcp_ids.contains(&s.id) {
-                let _ = self.delete_mcp_server(&s.id).await;
-            }
         }
 
         Ok(())
+    }
+
+    pub async fn update_plugin_permissions(
+        &self,
+        id: &str,
+        permissions_json: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query("UPDATE mcp_servers SET permissions_json = ? WHERE id = ?")
+            .bind(permissions_json)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    pub async fn set_plugin_active(&self, id: &str, is_active: bool) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query("UPDATE mcp_servers SET is_active = ? WHERE id = ?")
+            .bind(is_active)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if let Some(ext_id) = id.strip_prefix("wasm:") {
+            let _ = self.set_extension_active(ext_id, is_active).await;
+        } else {
+            let _ = self.set_extension_active(id, is_active).await;
+        }
+        Ok(res.rows_affected() > 0)
     }
 
     // --- Agent Memory ---
@@ -1188,12 +1238,13 @@ impl Database {
         content: &str,
         tool_calls_json: Option<&str>,
         tool_call_id: Option<&str>,
+        source_template: Option<&str>,
     ) -> Result<AgentHistoryItem, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         sqlx::query(
             r#"
-            INSERT INTO agent_history (id, agent_id, role, content, tool_calls_json, tool_call_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO agent_history (id, agent_id, role, content, tool_calls_json, tool_call_id, source_template)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id)
@@ -1202,6 +1253,7 @@ impl Database {
         .bind(content)
         .bind(tool_calls_json)
         .bind(tool_call_id)
+        .bind(source_template)
         .execute(&self.pool)
         .await?;
 
@@ -1367,6 +1419,41 @@ impl Database {
 
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Replace the text of the conversation's first `system` row (the base
+    /// instruction) in place, leaving every other row untouched.
+    ///
+    /// Used when the agent's `system_prompt` changes (e.g. a new Agent
+    /// Instructions preset) on an existing conversation: the instruction row is
+    /// refreshed rather than the whole transcript being rebuilt, so history and
+    /// tool-call ordering are preserved.
+    ///
+    /// Returns `true` when a row was updated.
+    pub async fn replace_base_system_prompt(
+        &self,
+        agent_id: &str,
+        content: &str,
+        source_template: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query(
+            r#"
+            UPDATE agent_history
+            SET content = ?, source_template = ?
+            WHERE id = (
+                SELECT id FROM agent_history
+                WHERE agent_id = ? AND role = 'system'
+                ORDER BY created_at ASC, rowid ASC
+                LIMIT 1
+            )
+            "#,
+        )
+        .bind(content)
+        .bind(source_template)
+        .bind(agent_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     pub async fn clear_agent_history(&self, agent_id: &str) -> Result<bool, sqlx::Error> {
@@ -1840,6 +1927,8 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        let _ = self.sync_wasm_mcp_servers(&ext.account_id).await;
+
         Ok(())
     }
 
@@ -1853,6 +1942,13 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        let mcp_id = format!("wasm:{}", id);
+        let _ = sqlx::query("UPDATE mcp_servers SET is_active = ? WHERE id = ? OR id = ?")
+            .bind(is_active)
+            .bind(&mcp_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await;
         Ok(res.rows_affected() > 0)
     }
 
@@ -1866,6 +1962,13 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        let mcp_id = format!("wasm:{}", id);
+        let _ = sqlx::query("UPDATE mcp_servers SET storage_bytes = ? WHERE id = ? OR id = ?")
+            .bind(storage_bytes)
+            .bind(&mcp_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await;
         Ok(())
     }
 
@@ -1874,6 +1977,12 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        let mcp_id = format!("wasm:{}", id);
+        let _ = sqlx::query("DELETE FROM mcp_servers WHERE id = ? OR id = ?")
+            .bind(&mcp_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await;
         Ok(res.rows_affected() > 0)
     }
 

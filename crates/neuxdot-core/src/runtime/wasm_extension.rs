@@ -582,8 +582,8 @@ impl WasmExtensionRunner {
         Ok(manifest)
     }
 
-    /// Execute an action within the WASM module
-    pub fn execute_action(&self, action: &str, payload: &str) -> Result<String> {
+    /// Execute an MCP JSON-RPC request inside the WASM module
+    pub fn handle_mcp_request(&self, method: &str, params_json: &str) -> Result<String> {
         let linker = self.create_linker()?;
         let ctx = HostContext {
             extension_id: self.extension_id.clone(),
@@ -600,17 +600,55 @@ impl WasmExtensionRunner {
             .get_typed_func::<i32, i32>(&store, "alloc")
             .map_err(|e| anyhow!("WASM missing alloc() function: {e}"))?;
 
-        let execute_fn = instance
-            .get_typed_func::<(i32, i32, i32, i32), i64>(&store, "execute_action")
-            .map_err(|e| anyhow!("WASM missing execute_action(): {e}"))?;
-
         let memory = instance
             .get_export(&store, "memory")
             .and_then(|e| e.into_memory())
             .ok_or_else(|| anyhow!("WASM missing memory export"))?;
 
-        let action_bytes = action.as_bytes();
-        let payload_bytes = payload.as_bytes();
+        // First try the pure MCP-Apps entrypoint `mcp_handle_request(method_ptr, method_len, params_ptr, params_len)`
+        if let Ok(mcp_fn) = instance.get_typed_func::<(i32, i32, i32, i32), i64>(&store, "mcp_handle_request") {
+            let method_bytes = method.as_bytes();
+            let params_bytes = params_json.as_bytes();
+
+            let method_ptr = alloc_fn.call(&mut store, method_bytes.len() as i32)?;
+            memory.write(&mut store, method_ptr as usize, method_bytes)?;
+
+            let params_ptr = alloc_fn.call(&mut store, params_bytes.len() as i32)?;
+            memory.write(&mut store, params_ptr as usize, params_bytes)?;
+
+            let res = mcp_fn.call(
+                &mut store,
+                (
+                    method_ptr,
+                    method_bytes.len() as i32,
+                    params_ptr,
+                    params_bytes.len() as i32,
+                ),
+            )?;
+
+            let out_ptr = (res >> 32) as usize;
+            let out_len = (res & 0xFFFFFFFF) as usize;
+
+            let mut out_buf = vec![0u8; out_len];
+            memory.read(&store, out_ptr, &mut out_buf)?;
+
+            let out_str = String::from_utf8(out_buf)?;
+            return Ok(out_str);
+        }
+
+        // Fallback for older WASM binaries exporting `execute_action`
+        let mapped_action = match method {
+            "tools/call" => "mcp_call_tool",
+            "resources/read" => "mcp_read_resource",
+            other => other,
+        };
+
+        let execute_fn = instance
+            .get_typed_func::<(i32, i32, i32, i32), i64>(&store, "execute_action")
+            .map_err(|e| anyhow!("WASM missing mcp_handle_request() or execute_action(): {e}"))?;
+
+        let action_bytes = mapped_action.as_bytes();
+        let payload_bytes = params_json.as_bytes();
 
         let action_ptr = alloc_fn.call(&mut store, action_bytes.len() as i32)?;
         memory.write(&mut store, action_ptr as usize, action_bytes)?;
@@ -687,16 +725,31 @@ mod tests {
         // 1. Test get_manifest()
         let manifest = runner.get_manifest().expect("get_manifest");
         assert!(manifest.contains("Agent Chat Console"));
-        assert!(manifest.contains("agent-sidebar-nav"));
+        assert!(manifest.contains("ui://chat-console"));
+        assert!(!manifest.contains("ui_hooks"));
 
-        // 2. Test execute_action send_message (instant non-blocking user message)
+        // 2. Test resources/read for ui://chat-console
+        let ui_res = runner
+            .handle_mcp_request("resources/read", r#"{"uri":"ui://chat-console"}"#)
+            .expect("resources/read");
+        assert!(ui_res.contains("text/html;profile=mcp-app"));
+        assert!(ui_res.contains("<!DOCTYPE html>"));
+
+        // 3. Test tools/call chat_user_message (pure MCP-App user message)
+        let user_tool_payload = serde_json::json!({
+            "name": "chat_user_message",
+            "arguments": {
+                "agent_id": "agent_123",
+                "message": "Hello from test"
+            }
+        });
         let res = runner
-            .execute_action("send_message", r#"{"agent_id":"agent_123","message":"Hello from test"}"#)
-            .expect("send_message");
+            .handle_mcp_request("tools/call", &user_tool_payload.to_string())
+            .expect("chat_user_message");
         assert!(res.contains("Hello from test"));
         assert!(res.contains("user"));
 
-        // 3. Test assistant sending message via chat_send tool
+        // 4. Test assistant sending message via chat_send tool
         let tool_payload = serde_json::json!({
             "name": "chat_send",
             "arguments": {
@@ -705,21 +758,27 @@ mod tests {
             }
         });
         let tool_res = runner
-            .execute_action("mcp_call_tool", &tool_payload.to_string())
+            .handle_mcp_request("tools/call", &tool_payload.to_string())
             .expect("chat_send");
         assert!(tool_res.contains("Message posted to chat console"));
 
-        // 4. Test get_history (contains both user and assistant messages)
+        // 5. Test tools/call chat_history (contains both user and assistant messages)
+        let hist_payload = serde_json::json!({
+            "name": "chat_history",
+            "arguments": {
+                "agent_id": "agent_123"
+            }
+        });
         let hist = runner
-            .execute_action("get_history", r#"{"agent_id":"agent_123"}"#)
-            .expect("get_history");
+            .handle_mcp_request("tools/call", &hist_payload.to_string())
+            .expect("chat_history");
         assert!(hist.contains("Hello from test"));
         assert!(hist.contains("Assistant reply from test"));
         assert!(hist.contains("assistant"));
 
         // 5. Test KV was persisted in SQLite
         let kv_val = db
-            .get_extension_kv("community.agent-chat", "chat_history_agent_123")
+            .get_extension_kv("community.agent-chat", "chat.history.agent_123")
             .await
             .expect("read kv")
             .expect("kv value exists");

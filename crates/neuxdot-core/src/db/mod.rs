@@ -74,6 +74,41 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN alias TEXT DEFAULT NULL")
         .execute(&pool)
         .await;
+    // Unified Plugins columns on mcp_servers
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN version TEXT NOT NULL DEFAULT '1.0.0'")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN description TEXT DEFAULT ''")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN wasm_hash TEXT DEFAULT NULL")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN wasm_binary BLOB DEFAULT NULL")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN manifest_json TEXT DEFAULT '{}'")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN permissions_json TEXT DEFAULT '{}'")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN is_active BOOLEAN DEFAULT 1")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN storage_bytes INTEGER DEFAULT 0")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+        .execute(&pool)
+        .await;
+
+    // Base system rows remember the template that produced them so a changed
+    // system prompt / instruction preset can be detected (see
+    // `replace_base_system_prompt`).
+    let _ = sqlx::query("ALTER TABLE agent_history ADD COLUMN source_template TEXT")
+        .execute(&pool)
+        .await;
 
     // Roles: every account is a 'member' unless promoted to 'root'.
     let _ = sqlx::query("ALTER TABLE accounts ADD COLUMN role TEXT NOT NULL DEFAULT 'member'")

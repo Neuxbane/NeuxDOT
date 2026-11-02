@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use tracing::info;
 
 use neuxdot_core::db::schema::Extension;
-use neuxdot_core::events::{AgentEvent, EventEnvelope};
 use neuxdot_core::runtime::WasmExtensionRunner;
 
 use crate::middleware::AuthUser;
@@ -46,12 +45,6 @@ pub struct PatchExtensionPayload {
 #[derive(Deserialize)]
 pub struct InstallUrlPayload {
     pub url: String,
-}
-
-#[derive(Deserialize)]
-pub struct ExecuteActionPayload {
-    pub action: String,
-    pub payload: Value,
 }
 
 #[derive(Serialize)]
@@ -400,10 +393,11 @@ pub async fn patch_extension_handler(
     Path(id): Path<String>,
     Json(payload): Json<PatchExtensionPayload>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let ext_id = id.strip_prefix("wasm:").unwrap_or(&id);
     if let Some(active) = payload.is_active {
         let updated = state
             .db
-            .set_extension_active(&id, active)
+            .set_extension_active(ext_id, active)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -421,9 +415,10 @@ pub async fn delete_extension_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let ext_id = id.strip_prefix("wasm:").unwrap_or(&id);
     let ext = state
         .db
-        .get_extension(&id)
+        .get_extension(ext_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -437,11 +432,11 @@ pub async fn delete_extension_handler(
         // 2. Delete from DB (cascades to extension_kv)
         state
             .db
-            .delete_extension(&id)
+            .delete_extension(ext_id)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        info!("Uninstalled extension {}", id);
+        info!("Uninstalled extension {}", ext_id);
         Ok(Json(json!({ "success": true })))
     } else {
         Err((StatusCode::NOT_FOUND, "Extension not found".to_string()))
@@ -454,9 +449,10 @@ pub async fn list_extension_kv_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let ext_id = id.strip_prefix("wasm:").unwrap_or(&id);
     let items = state
         .db
-        .list_extension_kv(&id)
+        .list_extension_kv(ext_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -469,9 +465,10 @@ pub async fn delete_extension_kv_key_handler(
     State(state): State<AppState>,
     Path((id, key)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let ext_id = id.strip_prefix("wasm:").unwrap_or(&id);
     let deleted = state
         .db
-        .delete_extension_kv(&id, &key)
+        .delete_extension_kv(ext_id, &key)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -484,9 +481,10 @@ pub async fn get_extension_storage_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let ext_id = id.strip_prefix("wasm:").unwrap_or(&id);
     let ext = state
         .db
-        .get_extension(&id)
+        .get_extension(ext_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Extension not found".to_string()))?;
@@ -511,7 +509,7 @@ pub async fn get_extension_storage_handler(
 
     let kv_items = state
         .db
-        .list_extension_kv(&id)
+        .list_extension_kv(ext_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -519,10 +517,10 @@ pub async fn get_extension_storage_handler(
     let total_bytes = total_disk_bytes as i64 + kv_bytes as i64;
 
     // Update storage_bytes in database
-    let _ = state.db.update_extension_storage(&id, total_bytes).await;
+    let _ = state.db.update_extension_storage(ext_id, total_bytes).await;
 
     Ok(Json(StorageInfo {
-        extension_id: id,
+        extension_id: ext_id.to_string(),
         wasm_hash: ext.wasm_hash,
         total_storage_bytes: total_bytes,
         files,
@@ -530,70 +528,3 @@ pub async fn get_extension_storage_handler(
     }))
 }
 
-// POST /api/extensions/:id/action (Execute dynamic WASM action)
-pub async fn execute_extension_action_handler(
-    _auth: AuthUser,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(payload): Json<ExecuteActionPayload>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let ext = state
-        .db
-        .get_extension(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Extension not found".to_string()))?;
-
-    if !ext.is_active {
-        return Err((StatusCode::BAD_REQUEST, "Extension is disabled".to_string()));
-    }
-
-    let base_storage_dir = get_storage_base_dir();
-    let runner = WasmExtensionRunner::new(&ext.wasm_binary, id.clone(), &base_storage_dir, state.db.clone())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to instantiate WASM: {}", e)))?;
-
-    let payload_str = serde_json::to_string(&payload.payload).unwrap_or_else(|_| "{}".to_string());
-
-    let res_str = runner
-        .execute_action(&payload.action, &payload_str)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("WASM execution error: {}", e)))?;
-
-    // Update storage size after action
-    let new_storage = runner.calculate_storage_usage().await;
-    let _ = state.db.update_extension_storage(&id, new_storage).await;
-
-    // If action is send_message, automatically emit a Push MCP Notification (Subscription pattern)
-    if payload.action == "send_message" {
-        if let Some(agent_id) = payload.payload.get("agent_id").and_then(|v| v.as_str()) {
-            let user_msg = payload.payload.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            let mcp_id = format!("wasm:{}", id);
-            let notif_params = serde_json::json!({
-                "uri": "extension://chat/messages",
-                "role": "user",
-                "text": user_msg
-            });
-            let notif_str = notif_params.to_string();
-
-            let _ = state
-                .db
-                .save_pushed_message(agent_id, Some(&mcp_id), "notifications/resources/updated", Some(&notif_str))
-                .await;
-
-            let envelope = EventEnvelope::new(
-                agent_id,
-                AgentEvent::McpPushedNotification {
-                    agent_id: agent_id.to_string(),
-                    mcp_id,
-                    mcp_name: format!("[WASM] {}", ext.name),
-                    method: "notifications/resources/updated".to_string(),
-                    payload: notif_params,
-                },
-            );
-            let _ = state.event_tx.send(envelope);
-        }
-    }
-
-    let res_val: Value = serde_json::from_str(&res_str).unwrap_or(Value::String(res_str));
-
-    Ok(Json(res_val))
-}

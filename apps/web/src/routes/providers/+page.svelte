@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api, type Provider, type ModelConfigPayload } from '$lib/api';
+	import { navState } from '$lib/stores/nav.svelte';
 	import {
 		Cpu,
 		Plus,
@@ -282,6 +283,7 @@
 		<div class="flex items-center gap-3">
 			<a
 				href="/"
+				onclick={() => navState.showLevel1()}
 				class="text-zinc-400 hover:text-zinc-800 dark:hover:text-white transition-colors"
 			>
 				<ArrowLeft class="h-4 w-4" />
@@ -331,18 +333,18 @@
 		{:else}
 			<section
 				id="providers-table-section"
-				class="overflow-hidden rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 shadow-xs"
+				class="overflow-x-auto rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 shadow-xs"
 			>
 				<table class="w-full text-left text-xs">
 					<thead
 						class="border-b border-zinc-200/80 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 text-zinc-500 dark:text-zinc-400 font-medium"
 					>
 						<tr>
-							<th class="p-3 pl-4">Provider Name</th>
-							<th class="p-3">Base URL</th>
-							<th class="p-3">API Key</th>
-							<th class="p-3">Configured Models</th>
-							<th class="p-3 pr-4 text-right">Actions</th>
+							<th class="p-2.5 pl-3 md:p-3 md:pl-4">Provider Name</th>
+							<th class="p-2.5 md:p-3">Base URL</th>
+							<th class="p-2.5 md:p-3">API Key</th>
+							<th class="hidden p-3 md:table-cell">Configured Models</th>
+							<th class="p-2.5 pr-3 md:p-3 md:pr-4 text-right">Actions</th>
 						</tr>
 					</thead>
 					<tbody
@@ -350,8 +352,8 @@
 					>
 						{#each providers as prov (prov.id)}
 							<tr class="hover:bg-zinc-50/70 dark:hover:bg-zinc-800/50 transition-colors">
-								<td class="p-3 pl-4 font-medium text-zinc-900 dark:text-white">{prov.name}</td>
-								<td class="p-3 font-mono text-zinc-500 dark:text-zinc-400">{prov.base_url}</td>
+								<td class="p-2.5 pl-3 md:p-3 md:pl-4 font-medium text-zinc-900 dark:text-white">{prov.name}</td>
+								<td class="p-2.5 md:p-3 font-mono text-zinc-500 dark:text-zinc-400 break-all">{prov.base_url}</td>
 								<td class="p-3">
 									{#if prov.api_key}
 										<span
@@ -364,7 +366,7 @@
 										<span class="text-[11px] text-zinc-400 italic">None (Local)</span>
 									{/if}
 								</td>
-								<td class="p-3">
+								<td class="hidden md:table-cell p-3">
 									{#if !prov.models || prov.models.length === 0}
 										<span class="text-zinc-400 italic">No models configured</span>
 									{:else}
@@ -391,7 +393,7 @@
 										</div>
 									{/if}
 								</td>
-								<td class="p-3 pr-4 text-right">
+								<td class="p-2.5 pr-3 md:p-3 md:pr-4 text-right">
 									<div class="flex items-center justify-end gap-1">
 										<button
 											type="button"

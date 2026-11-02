@@ -5,6 +5,7 @@
 	import { api, type Agent, type ServerAccount } from '$lib/api';
 	import { authState } from '$lib/stores/auth.svelte';
 	import { themeStore } from '$lib/stores/theme.svelte';
+	import { navState } from '$lib/stores/nav.svelte';
 	import Avatar from '$lib/components/Avatar.svelte';
 	import {
 		Plus,
@@ -15,12 +16,19 @@
 		Sun,
 		Moon,
 		Bot,
-		Trash2
+		Trash2,
+		Menu,
+		X,
+		ArrowLeft
 	} from 'lucide-svelte';
 
 	let { children } = $props();
 
 	let searchQuery = $state('');
+	// Mobile: the navigation sidebar is an off-canvas drawer below `lg`.
+	// Mobile drill-down, level 1: selecting an agent or nav item hides this and
+	// shows the next screen. The back control on that screen returns here.
+	const sidebarOpen = $derived(navState.level1);
 	let agents = $state<Agent[]>([]);
 	let isNewAgentModalOpen = $state(false);
 	let newAgentName = $state('');
@@ -160,8 +168,11 @@
 </svelte:head>
 
 <div id="app-root" class="flex h-screen w-screen overflow-hidden bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans antialiased selection:bg-indigo-500 selection:text-white transition-colors duration-150">
-	<!-- 🧱 LEFT SIDEBAR (Navigation) -->
-	<aside id="app-sidebar" class="flex w-72 flex-col border-r border-zinc-200 dark:border-zinc-800 bg-zinc-100/60 dark:bg-zinc-900/60 backdrop-blur-xl">
+<!-- 🧱 LEFT SIDEBAR (Navigation) -->
+	<aside
+ id="app-sidebar"
+ class="h-full w-full shrink-0 flex-col border-r border-zinc-200 bg-zinc-100/60 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-900/60 lg:flex lg:w-72 {sidebarOpen ? 'flex' : 'hidden'}"
+ >
 		<!-- Brand & Header -->
 		<div id="sidebar-header" class="flex items-center justify-between border-b border-zinc-200/80 dark:border-zinc-800/80 px-4 py-3.5">
 			<a href="/" class="flex items-center gap-2.5 group">
@@ -174,7 +185,16 @@
 				</div>
 			</a>
 
-			<!-- Theme Toggle Button -->
+			<button
+type="button"
+class="ml-auto mr-1 flex h-7 w-7 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors lg:hidden"
+onclick={() => navState.hideLevel1()}
+aria-label="Close navigation"
+>
+<X class="h-4 w-4" />
+</button>
+
+<!-- Theme Toggle Button -->
 			<button
 				type="button"
 				class="flex h-7 w-7 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors"
@@ -234,6 +254,7 @@
 					>
 						<a
 							href="/?agent_id={agent.id}"
+							onclick={() => navState.hideLevel1()}
 							class="flex-1 min-w-0 flex items-center gap-2 mr-2"
 							title={agent.name}
 						>
@@ -290,6 +311,7 @@
 		<nav id="sidebar-navigation" class="border-t border-zinc-200/80 dark:border-zinc-800/80 p-2 bg-zinc-100/90 dark:bg-zinc-900/90 space-y-0.5">
 			<a
 				href="/providers"
+				onclick={() => navState.hideLevel1()}
 				class="flex items-center gap-2.5 rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors {page.url.pathname === '/providers' ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-white font-medium' : ''}"
 			>
 				<Cpu class="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
@@ -297,13 +319,15 @@
 			</a>
 			<a
 				href="/mcp"
+				onclick={() => navState.hideLevel1()}
 				class="flex items-center gap-2.5 rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors {page.url.pathname === '/mcp' ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-white font-medium' : ''}"
 			>
 				<Radio class="h-4 w-4 text-amber-500 dark:text-amber-400" />
-				<span>MCP Servers</span>
+				<span>Plugins</span>
 			</a>
 			<a
 				href="/settings"
+				onclick={() => navState.hideLevel1()}
 				class="flex items-center gap-2.5 rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors {page.url.pathname.startsWith('/settings') ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-white font-medium' : ''}"
 			>
 				<Settings class="h-4 w-4 text-cyan-500 dark:text-cyan-400" />
@@ -315,6 +339,7 @@
 				<a
 					id="sidebar-account-profile"
 					href="/settings/profile"
+					onclick={() => navState.hideLevel1()}
 					class="mt-2 flex items-center justify-between gap-2 rounded-xl border-t border-zinc-200/70 dark:border-zinc-800/80 pt-2 px-1 pb-1 text-[11px] text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
 					title="Manage your server profile"
 				>
@@ -342,7 +367,10 @@
 	</aside>
 
 	<!-- 🖥️ MAIN CONTENT (Right Canvas) -->
-	<main id="app-main" class="flex flex-1 flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-950 transition-colors duration-150">
+	<main
+		id="app-main"
+		class="flex-1 flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-950 transition-colors duration-150 lg:flex {sidebarOpen ? 'hidden' : 'flex'}"
+	>
 		{@render children()}
 	</main>
 </div>
