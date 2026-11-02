@@ -3,21 +3,21 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NeuxDOT — Apple-Style Kinetic UI Animation</title>
+  <title>NeuxDOT — Apple-Style Kinetic UI Reel</title>
   <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
   <style>
     :root {
       --bg: #000000;
-      --card-bg: rgba(18, 18, 24, 0.75);
-      --border: rgba(255, 255, 255, 0.12);
-      --accent-pink: #FF2D55;
-      --accent-purple: #AF52DE;
-      --accent-blue: #0A84FF;
-      --accent-cyan: #30D158;
-      --text-main: #FFFFFF;
-      --text-muted: #86868B;
-      --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
-      --ease-spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      --apple-pink: #FF2D55;
+      --apple-purple: #AF52DE;
+      --apple-blue: #0A84FF;
+      --apple-green: #30D158;
+      --apple-yellow: #FFD60A;
+      --apple-orange: #FF9F0A;
+      --apple-glass: rgba(28, 28, 34, 0.65);
+      --apple-border: rgba(255, 255, 255, 0.18);
+      --apple-ease: cubic-bezier(0.12, 0.98, 0.24, 1.0);
+      --spring-snap: cubic-bezier(0.175, 0.885, 0.32, 1.25);
     }
 
     * {
@@ -33,7 +33,7 @@
       overflow: hidden;
       background: var(--bg);
       font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', Roboto, sans-serif;
-      color: var(--text-main);
+      color: #FFFFFF;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -49,52 +49,50 @@
       background: #000000;
     }
 
-    /* Cinematic Gradient Lighting Orbs */
-    .ambient-glow {
+    /* Cinematic Specular Sheen & Volumetric Fog */
+    .cinematic-glow {
       position: absolute;
       border-radius: 50%;
       filter: blur(140px);
       pointer-events: none;
-      opacity: 0.35;
-      transition: all 1.2s var(--ease-apple);
+      opacity: 0.4;
+      transition: all 0.8s var(--apple-ease);
     }
-    #glow-1 {
+    #glow-pink {
       width: 900px;
       height: 900px;
-      background: radial-gradient(circle, #AF52DE 0%, transparent 70%);
+      background: radial-gradient(circle, var(--apple-pink) 0%, transparent 70%);
       top: -200px;
       right: -200px;
     }
-    #glow-2 {
+    #glow-blue {
       width: 800px;
       height: 800px;
-      background: radial-gradient(circle, #FF2D55 0%, transparent 70%);
+      background: radial-gradient(circle, var(--apple-blue) 0%, transparent 70%);
       bottom: -200px;
       left: -100px;
     }
-    #glow-3 {
+    #glow-green {
       width: 600px;
       height: 600px;
-      background: radial-gradient(circle, #0A84FF 0%, transparent 70%);
-      top: 300px;
-      left: 500px;
-      opacity: 0.2;
+      background: radial-gradient(circle, var(--apple-green) 0%, transparent 70%);
+      top: 250px;
+      left: 600px;
+      opacity: 0.15;
     }
 
-    /* 3D Perspective World Container */
+    /* 3D Camera Rig & Perspective World */
     #world {
       width: 100%;
       height: 100%;
       position: absolute;
       top: 0;
       left: 0;
-      perspective: 1600px;
+      perspective: 1400px;
       display: flex;
       justify-content: center;
       align-items: center;
     }
-
-    /* Dynamic Camera Layer */
     #camera {
       width: 100%;
       height: 100%;
@@ -103,465 +101,411 @@
       display: flex;
       justify-content: center;
       align-items: center;
-      transition: transform 1.0s var(--ease-apple);
+      transition: transform 0.6s var(--apple-ease);
     }
 
     /* ================= KINETIC TYPOGRAPHY LAYER ================= */
-    .kinetic-text-group {
+    .kinetic-text {
       position: absolute;
-      text-align: center;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
+      text-align: center;
       pointer-events: none;
-      z-index: 50;
-      transition: all 0.8s var(--ease-apple);
+      z-index: 80;
+      transition: all 0.5s var(--apple-ease);
     }
-
-    .k-eyebrow {
-      font-size: 20px;
-      font-weight: 700;
+    .k-tag {
+      font-size: 19px;
+      font-weight: 800;
       text-transform: uppercase;
-      letter-spacing: 0.3em;
-      color: #FF2D55;
-      margin-bottom: 20px;
+      letter-spacing: 0.25em;
+      color: var(--apple-pink);
+      margin-bottom: 16px;
       opacity: 0;
       transform: translateY(20px);
-      transition: all 0.6s var(--ease-apple);
+      transition: all 0.4s var(--apple-ease);
     }
-
-    .k-headline {
-      font-size: 96px;
+    .k-hero {
+      font-size: 110px;
       font-weight: 900;
       letter-spacing: -0.04em;
-      line-height: 1.02;
+      line-height: 0.98;
       opacity: 0;
-      transform: translateY(40px) scale(0.95);
-      transition: all 0.7s var(--ease-apple);
+      transform: translateY(40px) scale(0.92);
+      transition: all 0.5s var(--apple-ease);
     }
-
-    .k-headline .gradient-apple {
+    .k-hero .white-grad {
       background: linear-gradient(180deg, #FFFFFF 0%, #A1A1A6 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-    .k-headline .gradient-pink {
+    .k-hero .pink-grad {
       background: linear-gradient(135deg, #FF2D55 0%, #AF52DE 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-    .k-headline .gradient-cyan {
+    .k-hero .green-grad {
       background: linear-gradient(135deg, #30D158 0%, #0A84FF 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-
     .k-sub {
       font-size: 32px;
       font-weight: 500;
-      color: var(--text-muted);
+      color: #86868B;
       margin-top: 24px;
       max-width: 900px;
-      line-height: 1.4;
+      line-height: 1.35;
       opacity: 0;
-      transform: translateY(30px);
-      transition: all 0.7s var(--ease-apple) 0.1s;
+      transform: translateY(24px);
+      transition: all 0.5s var(--apple-ease) 0.08s;
     }
 
-    /* Active Kinetic State */
-    .kinetic-text-group.active .k-eyebrow {
-      opacity: 1;
-      transform: translateY(0);
-    }
-    .kinetic-text-group.active .k-headline {
+    .kinetic-text.active .k-tag,
+    .kinetic-text.active .k-hero,
+    .kinetic-text.active .k-sub {
       opacity: 1;
       transform: translateY(0) scale(1);
     }
-    .kinetic-text-group.active .k-sub {
-      opacity: 1;
-      transform: translateY(0);
-    }
-
-    /* Exit Kinetic State */
-    .kinetic-text-group.exit .k-headline {
+    .kinetic-text.exit .k-hero {
       opacity: 0;
       transform: translateY(-50px) scale(1.08);
       filter: blur(8px);
     }
-    .kinetic-text-group.exit .k-sub,
-    .kinetic-text-group.exit .k-eyebrow {
+    .kinetic-text.exit .k-tag,
+    .kinetic-text.exit .k-sub {
       opacity: 0;
-      transform: translateY(-30px);
+      transform: translateY(-20px);
     }
 
-    /* ================= 3D NEUXDOT UI WINDOW ================= */
-    #ui-window {
-      width: 1360px;
-      height: 820px;
+    /* ================= 1. NATIVE FROSTED NOTIFICATIONS STACK ================= */
+    #notif-stack {
       position: absolute;
-      background: rgba(18, 18, 22, 0.88);
-      backdrop-filter: blur(40px) saturate(180%);
-      border-radius: 24px;
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      box-shadow: 0 40px 100px -20px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0 80px rgba(175, 82, 222, 0.2);
-      transform-style: preserve-3d;
-      transition: all 1.2s var(--ease-apple);
+      top: 140px;
       display: flex;
       flex-direction: column;
-      overflow: hidden;
-      opacity: 0;
-      transform: translateY(180px) rotateX(24deg) scale(0.85);
-    }
-
-    /* Window Titlebar (macOS Apple Style) */
-    .window-header {
-      height: 54px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 20px;
-      background: rgba(255, 255, 255, 0.03);
-    }
-    .traffic-lights {
-      display: flex;
-      gap: 9px;
-    }
-    .light {
-      width: 13px;
-      height: 13px;
-      border-radius: 50%;
-    }
-    .light.red { background: #FF5F56; }
-    .light.yellow { background: #FFBD2E; }
-    .light.green { background: #27C93F; }
-
-    .window-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: #A1A1A6;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .window-badge {
-      padding: 3px 10px;
-      border-radius: 6px;
-      background: rgba(48, 209, 88, 0.15);
-      border: 1px solid rgba(48, 209, 88, 0.4);
-      color: #30D158;
-      font-size: 11px;
-      font-weight: 700;
-    }
-
-    /* Window Body: Sidebar + Main Stage */
-    .window-body {
-      flex: 1;
-      display: flex;
-      overflow: hidden;
-    }
-
-    /* Left Sidebar */
-    .sidebar {
-      width: 320px;
-      border-right: 1px solid rgba(255, 255, 255, 0.08);
-      background: rgba(10, 10, 14, 0.5);
-      display: flex;
-      flex-direction: column;
-      padding: 20px;
       gap: 16px;
-    }
-    .sidebar-user {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 10px 12px;
-      background: rgba(255, 255, 255, 0.05);
-      border-radius: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-    }
-    .avatar-mascot {
-      width: 40px;
-      height: 40px;
-      border-radius: 10px;
-      background: #18181B;
-      border: 1.5px solid #FF2D55;
-      padding: 2px;
-    }
-    .agent-name {
-      font-size: 15px;
-      font-weight: 700;
-    }
-    .agent-status {
-      font-size: 12px;
-      color: #30D158;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .status-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #30D158;
-      box-shadow: 0 0 6px #30D158;
-    }
-
-    /* Sidebar Items */
-    .nav-group {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .nav-item {
-      padding: 10px 14px;
-      border-radius: 10px;
-      font-size: 13.5px;
-      font-weight: 600;
-      color: #A1A1A6;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      transition: all 0.2s;
-    }
-    .nav-item.active {
-      background: rgba(255, 45, 85, 0.15);
-      color: #FFFFFF;
-      border: 1px solid rgba(255, 45, 85, 0.35);
-    }
-    .buffer-meter {
-      margin-top: auto;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 14px;
-      padding: 14px;
-    }
-    .buffer-label {
-      display: flex;
-      justify-content: space-between;
-      font-size: 12px;
-      font-weight: 700;
-      color: #A1A1A6;
-      margin-bottom: 8px;
-    }
-    .buffer-track {
-      width: 100%;
-      height: 6px;
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 3px;
-      overflow: hidden;
-    }
-    .buffer-bar {
-      height: 100%;
-      width: 18%;
-      background: linear-gradient(90deg, #30D158, #0A84FF);
-      border-radius: 3px;
-      transition: width 0.8s var(--ease-apple);
-    }
-
-    /* Main UI View: Chat Console */
-    .main-view {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      padding: 24px;
-      gap: 16px;
-      background: rgba(14, 14, 18, 0.4);
-      position: relative;
-    }
-    .chat-card {
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 16px;
-      padding: 16px 20px;
-      font-size: 14px;
-      line-height: 1.5;
-      max-width: 820px;
-      opacity: 0;
-      transform: translateY(20px);
-      transition: all 0.6s var(--ease-apple);
-    }
-    .chat-card.user {
-      align-self: flex-end;
-      background: linear-gradient(135deg, #0A84FF, #0071E3);
-      color: #FFFFFF;
-      font-weight: 500;
-      border: none;
-    }
-    .chat-card.agent {
-      align-self: flex-start;
-      border-left: 3px solid #FF2D55;
-    }
-    .chat-card.visible {
-      opacity: 1;
-      transform: translateY(0);
-    }
-
-    /* Response Hook Widget */
-    .hook-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 12px;
-      background: rgba(175, 82, 222, 0.15);
-      border: 1px solid rgba(175, 82, 222, 0.4);
-      border-radius: 8px;
-      font-family: 'SF Mono', Consolas, monospace;
-      font-size: 11.5px;
-      color: #DDA0DD;
-      margin-top: 8px;
-    }
-
-    /* ================= 9 INVARIANT META-TOOLS FLOATING DOCK ================= */
-    #tools-dock {
-      position: absolute;
-      bottom: 60px;
-      display: flex;
-      gap: 14px;
-      padding: 16px 24px;
-      background: rgba(24, 24, 32, 0.85);
-      backdrop-filter: blur(30px);
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      border-radius: 28px;
-      box-shadow: 0 30px 60px -10px rgba(0, 0, 0, 0.8), 0 0 40px rgba(255, 45, 85, 0.25);
-      opacity: 0;
-      transform: translateY(120px) scale(0.9);
-      transition: all 0.9s var(--ease-spring);
       z-index: 60;
+      transition: all 0.6s var(--apple-ease);
     }
-    #tools-dock.visible {
+    .notif-card {
+      width: 520px;
+      background: rgba(36, 36, 44, 0.72);
+      backdrop-filter: blur(40px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 22px;
+      padding: 18px 22px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      opacity: 0;
+      transform: translateY(-40px) scale(0.9);
+      transition: all 0.45s var(--spring-snap);
+    }
+    .notif-card.show {
       opacity: 1;
       transform: translateY(0) scale(1);
     }
-    .tool-dock-item {
+    .notif-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
       display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 16px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 16px;
-      font-family: 'SF Mono', monospace;
-      font-size: 12px;
-      font-weight: 700;
-      color: #FFFFFF;
-      transition: all 0.3s var(--ease-apple);
-    }
-    .tool-dock-item .tool-icon {
-      font-size: 24px;
-      filter: drop-shadow(0 4px 10px rgba(255, 45, 85, 0.4));
-    }
-    .tool-dock-item:hover, .tool-dock-item.pulse {
-      background: rgba(255, 45, 85, 0.25);
-      border-color: #FF2D55;
-      transform: translateY(-8px) scale(1.08);
-      box-shadow: 0 10px 25px rgba(255, 45, 85, 0.4);
-    }
-
-    /* ================= DETERMINISTIC SLEEP TIMER WIDGET ================= */
-    #sleep-widget {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      width: 360px;
-      height: 360px;
-      margin-left: -180px;
-      margin-top: -180px;
-      background: rgba(18, 18, 24, 0.92);
-      backdrop-filter: blur(40px);
-      border: 2px solid rgba(48, 209, 88, 0.5);
-      border-radius: 50%;
-      display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 0 100px rgba(48, 209, 88, 0.35);
+      font-size: 22px;
+    }
+    .notif-icon.alert { background: rgba(255, 45, 85, 0.2); border: 1px solid rgba(255, 45, 85, 0.5); }
+    .notif-icon.check { background: rgba(48, 209, 88, 0.2); border: 1px solid rgba(48, 209, 88, 0.5); }
+    .notif-body { flex: 1; }
+    .notif-title { font-size: 15px; font-weight: 700; color: #FFFFFF; display: flex; justify-content: space-between; }
+    .notif-time { font-size: 12px; color: #86868B; font-weight: 500; }
+    .notif-desc { font-size: 13.5px; color: #D1D1D6; margin-top: 4px; line-height: 1.35; }
+
+    /* ================= 2. NOTES APP KINETIC CHECKLIST ================= */
+    #notes-app {
+      width: 640px;
+      background: rgba(24, 24, 30, 0.78);
+      backdrop-filter: blur(45px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 28px;
+      padding: 32px 36px;
+      box-shadow: 0 40px 90px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
       opacity: 0;
-      transform: scale(0.6) rotate(-20deg);
-      transition: all 0.8s var(--ease-spring);
-      z-index: 70;
+      transform: translateY(80px) rotateX(15deg) scale(0.9);
+      transition: all 0.6s var(--apple-ease);
+      z-index: 55;
     }
-    #sleep-widget.visible {
+    #notes-app.show {
       opacity: 1;
-      transform: scale(1) rotate(0deg);
+      transform: translateY(0) rotateX(0deg) scale(1);
     }
-    #sleep-widget .timer-val {
-      font-size: 64px;
-      font-weight: 900;
-      font-family: 'SF Mono', monospace;
-      color: #30D158;
-      letter-spacing: -2px;
+    .notes-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 16px;
     }
-    #sleep-widget .timer-lbl {
-      font-size: 14px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 2px;
+    .notes-title {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #FFD60A;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .checklist-item {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 18px;
+      font-weight: 600;
       color: #86868B;
-      margin-top: 6px;
+      transition: all 0.3s var(--apple-ease);
+    }
+    .check-circle {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      transition: all 0.35s var(--spring-snap);
+    }
+    .checklist-item.checked {
+      color: #FFFFFF;
+    }
+    .checklist-item.checked .check-circle {
+      background: #FFD60A;
+      border-color: #FFD60A;
+      color: #000000;
+      font-weight: 900;
+      transform: scale(1.18);
+      box-shadow: 0 0 20px rgba(255, 214, 10, 0.5);
     }
 
-    /* Push Event Envelope */
-    .push-envelope {
+    /* ================= 3. CONTROL CENTER TOGGLES & SLIDERS ================= */
+    #control-center {
       position: absolute;
-      top: -30px;
-      background: #FF2D55;
-      color: #FFFFFF;
-      padding: 8px 18px;
-      border-radius: 9999px;
-      font-size: 13px;
-      font-weight: 800;
-      box-shadow: 0 10px 30px rgba(255, 45, 85, 0.6);
+      display: grid;
+      grid-template-columns: repeat(2, 280px);
+      gap: 18px;
+      z-index: 55;
       opacity: 0;
-      transform: translateY(20px);
-      transition: all 0.4s var(--ease-spring);
+      transform: scale(0.85) rotateY(-18deg);
+      transition: all 0.6s var(--apple-ease);
     }
-    .push-envelope.active {
+    #control-center.show {
+      opacity: 1;
+      transform: scale(1) rotateY(0deg);
+    }
+    .cc-tile {
+      background: rgba(30, 30, 38, 0.75);
+      backdrop-filter: blur(40px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 26px;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      height: 180px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.6);
+      transition: all 0.4s var(--apple-ease);
+    }
+    .cc-icon-btn {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      transition: all 0.4s var(--spring-snap);
+    }
+    .cc-tile.active .cc-icon-btn {
+      background: var(--apple-green);
+      box-shadow: 0 0 25px rgba(48, 209, 88, 0.6);
+      transform: scale(1.12);
+    }
+    .cc-label {
+      font-size: 16px;
+      font-weight: 800;
+      color: #FFFFFF;
+    }
+    .cc-sub {
+      font-size: 13px;
+      font-weight: 500;
+      color: #86868B;
+      margin-top: 2px;
+    }
+    /* Slider Tile */
+    .slider-track {
+      width: 100%;
+      height: 12px;
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-top: 14px;
+    }
+    .slider-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #0A84FF, #30D158);
+      border-radius: 6px;
+      transition: width 0.8s var(--apple-ease);
+    }
+
+    /* ================= 4. iMESSAGE CHAT BUBBLES ================= */
+    #imessage-flow {
+      position: absolute;
+      width: 680px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      z-index: 55;
+      opacity: 0;
+      transform: translateY(60px);
+      transition: all 0.6s var(--apple-ease);
+    }
+    #imessage-flow.show {
       opacity: 1;
       transform: translateY(0);
     }
+    .bubble {
+      max-width: 500px;
+      padding: 14px 20px;
+      font-size: 16px;
+      font-weight: 500;
+      line-height: 1.4;
+      border-radius: 22px;
+      opacity: 0;
+      transform: translateY(20px) scale(0.85);
+      transition: all 0.4s var(--spring-snap);
+    }
+    .bubble.show {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    .bubble.sent {
+      align-self: flex-end;
+      background: #0A84FF;
+      color: #FFFFFF;
+      border-bottom-right-radius: 6px;
+      box-shadow: 0 10px 25px rgba(10, 132, 255, 0.4);
+    }
+    .bubble.received {
+      align-self: flex-start;
+      background: #2C2C2E;
+      color: #FFFFFF;
+      border-bottom-left-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .pill-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 8px;
+      background: rgba(175, 82, 222, 0.25);
+      border: 1px solid rgba(175, 82, 222, 0.5);
+      color: #DDA0DD;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: 'SF Mono', monospace;
+      margin-top: 6px;
+    }
 
-    /* ================= FINAL CLIMAX MASCOT LOGO ================= */
-    #climax-card {
+    /* ================= 5. 3D GLASS STACK LAYERS (DEPTH OF FIELD) ================= */
+    #glass-stack {
+      position: absolute;
+      width: 1100px;
+      height: 640px;
+      transform-style: preserve-3d;
+      opacity: 0;
+      transition: all 0.8s var(--apple-ease);
+      z-index: 40;
+    }
+    #glass-stack.show {
+      opacity: 1;
+    }
+    .glass-layer {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      border-radius: 32px;
+      background: rgba(22, 22, 28, 0.75);
+      backdrop-filter: blur(40px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.8);
+      transition: all 0.8s var(--apple-ease);
+      padding: 30px;
+      display: flex;
+      flex-direction: column;
+    }
+    #layer-1 { transform: translateZ(260px) rotateX(15deg) rotateY(-18deg); }
+    #layer-2 { transform: translateZ(0px) rotateX(15deg) rotateY(-18deg); }
+    #layer-3 { transform: translateZ(-260px) rotateX(15deg) rotateY(-18deg); }
+
+    /* Focus Blur simulation (Optical Depth of Field) */
+    .dof-blur {
+      filter: blur(12px) brightness(0.6);
+      opacity: 0.45;
+    }
+    .dof-sharp {
+      filter: blur(0px) brightness(1.0);
+      opacity: 1.0;
+    }
+
+    /* ================= 6. FINAL CLIMAX LOGO ================= */
+    #climax-stage {
       position: absolute;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       text-align: center;
-      z-index: 80;
+      z-index: 90;
       opacity: 0;
-      transform: scale(0.8);
-      transition: all 1.0s var(--ease-apple);
+      transform: scale(0.85);
+      transition: all 0.8s var(--apple-ease);
     }
-    #climax-card.visible {
+    #climax-stage.show {
       opacity: 1;
       transform: scale(1);
     }
-    .climax-logo-box {
-      width: 180px;
-      height: 180px;
-      border-radius: 44px;
+    .apple-logo-card {
+      width: 160px;
+      height: 160px;
+      border-radius: 40px;
       background: #FFFFFF;
-      border: 4px solid #FF2D55;
-      padding: 16px;
-      box-shadow: 0 20px 60px rgba(255, 45, 85, 0.4), 0 0 100px rgba(175, 82, 222, 0.3);
+      border: 3px solid #FF2D55;
+      padding: 14px;
+      box-shadow: 0 30px 80px rgba(255, 45, 85, 0.4), 0 0 120px rgba(175, 82, 222, 0.35);
       margin-bottom: 28px;
-      animation: floatMascot 4s ease-in-out infinite alternate;
+      animation: floatApple 4s ease-in-out infinite alternate;
     }
-    @keyframes floatMascot {
-      from { transform: translateY(0) rotate(-2deg); }
-      to { transform: translateY(-16px) rotate(2deg); }
+    @keyframes floatApple {
+      from { transform: translateY(0); }
+      to { transform: translateY(-12px); }
     }
-    .climax-logo-box img {
+    .apple-logo-card img {
       width: 100%;
       height: 100%;
     }
 
-    /* ================= BOTTOM TIMELINE & RENDER CONTROLS ================= */
-    #timeline-hud {
+    /* ================= TIMELINE HUD ================= */
+    #hud {
       position: absolute;
       bottom: 24px;
       left: 50%;
@@ -570,14 +514,14 @@
       align-items: center;
       gap: 16px;
       background: rgba(28, 28, 36, 0.85);
-      backdrop-filter: blur(20px);
+      backdrop-filter: blur(24px);
       border: 1px solid rgba(255, 255, 255, 0.16);
       padding: 10px 24px;
       border-radius: 9999px;
       z-index: 100;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.7);
     }
-    .btn-ctrl {
+    .hud-btn {
       background: transparent;
       border: none;
       color: #FFFFFF;
@@ -591,10 +535,8 @@
       border-radius: 8px;
       transition: background 0.2s;
     }
-    .btn-ctrl:hover {
-      background: rgba(255, 255, 255, 0.1);
-    }
-    .btn-record {
+    .hud-btn:hover { background: rgba(255, 255, 255, 0.1); }
+    .hud-record {
       background: #FF2D55;
       color: #FFFFFF;
       padding: 6px 16px;
@@ -603,11 +545,8 @@
       font-weight: 800;
       box-shadow: 0 0 15px rgba(255, 45, 85, 0.5);
     }
-    .btn-record.recording {
-      background: #30D158;
-      box-shadow: 0 0 15px rgba(48, 209, 88, 0.6);
-    }
-    .scrub-track {
+    .hud-record.rec { background: #30D158; box-shadow: 0 0 15px rgba(48, 209, 88, 0.6); }
+    .hud-track {
       width: 320px;
       height: 6px;
       background: rgba(255, 255, 255, 0.15);
@@ -615,14 +554,14 @@
       position: relative;
       cursor: pointer;
     }
-    .scrub-fill {
+    .hud-fill {
       height: 100%;
       width: 0%;
       background: linear-gradient(90deg, #FF2D55, #AF52DE);
       border-radius: 3px;
       pointer-events: none;
     }
-    .time-code {
+    .hud-time {
       font-family: 'SF Mono', monospace;
       font-size: 13px;
       color: #A1A1A6;
@@ -632,418 +571,471 @@
 </head>
 <body>
 
-  <!-- Scaled 1920x1080 Viewport Canvas -->
   <div id="stage-scaler">
-    <!-- Ambient Glows -->
-    <div class="ambient-glow" id="glow-1"></div>
-    <div class="ambient-glow" id="glow-2"></div>
-    <div class="ambient-glow" id="glow-3"></div>
+    <div class="cinematic-glow" id="glow-pink"></div>
+    <div class="cinematic-glow" id="glow-blue"></div>
+    <div class="cinematic-glow" id="glow-green"></div>
 
-    <!-- 3D Scene Container -->
     <div id="world">
       <div id="camera">
 
-        <!-- ================= SCENE 1: THE INVARIANCE PROBLEM (KINETIC SLAM) ================= -->
-        <div class="kinetic-text-group active" id="scene-1">
-          <div class="k-eyebrow">The Latency Crisis</div>
-          <div class="k-headline">
-            Prompt Caching is <span class="gradient-pink">Broken.</span>
+        <!-- ================= 0. KINETIC TEXT 1 (DON'T BLINK) ================= -->
+        <div class="kinetic-text active" id="text-hook">
+          <div class="k-tag">Apple-Style UI Reel</div>
+          <div class="k-hero">
+            Don't <span class="pink-grad">Blink.</span>
           </div>
           <div class="k-sub">
-            Every traditional agent framework breaks prompt prefix caches on every single turn.
+            Traditional agent frameworks break prompt caches on every single turn.
           </div>
         </div>
 
-        <!-- ================= SCENE 2: THE NEUXDOT PARADIGM ================= -->
-        <div class="kinetic-text-group" id="scene-2">
-          <div class="k-eyebrow">The Solution</div>
-          <div class="k-headline">
-            Cache Hits. <span class="gradient-cyan">Every. Single. Turn.</span>
+        <!-- ================= 1. NATIVE FROSTED NOTIFICATIONS STACK ================= -->
+        <div id="notif-stack">
+          <div class="notif-card" id="notif-1">
+            <div class="notif-icon alert">⚠️</div>
+            <div class="notif-body">
+              <div class="notif-title">
+                <span>Prompt Cache Miss</span>
+                <span class="notif-time">Just now</span>
+              </div>
+              <div class="notif-desc">LangChain / CrewAI: Inlined 48KB volatile JSON schemas. Prefix cache broken.</div>
+            </div>
           </div>
-          <div class="k-sub">
-            100% cache-invariant runtime kernel. Your system prompt stays frozen forever.
+
+          <div class="notif-card" id="notif-2">
+            <div class="notif-icon alert">💥</div>
+            <div class="notif-body">
+              <div class="notif-title">
+                <span>Latency Penalty</span>
+                <span class="notif-time">Just now</span>
+              </div>
+              <div class="notif-desc">+3,850ms time-to-first-token. $0.06 wasted token spend.</div>
+            </div>
+          </div>
+
+          <div class="notif-card" id="notif-3">
+            <div class="notif-icon check">⚡</div>
+            <div class="notif-body">
+              <div class="notif-title">
+                <span>NeuxDOT Kernel Intercept</span>
+                <span class="notif-time">Instant</span>
+              </div>
+              <div class="notif-desc">100% Invariant system prompt preserved. Cache hit confirmed.</div>
+            </div>
           </div>
         </div>
 
-        <!-- ================= SCENE 3: 9 INVARIANT META-TOOLS ================= -->
-        <div class="kinetic-text-group" id="scene-3">
-          <div class="k-eyebrow">Zero-Trust Discovery</div>
-          <div class="k-headline">
-            9 Meta-Tools. <span class="gradient-pink">Infinite Extensibility.</span>
+        <!-- ================= 2. NOTES APP KINETIC CHECKLIST ================= -->
+        <div id="notes-app">
+          <div class="notes-header">
+            <div class="notes-title">
+              <span>📝</span>
+              <span>NeuxDOT Kernel Invariants</span>
+            </div>
+            <div style="font-size: 13px; color: #86868B; font-weight: 700;">ALL CHECKS PASSING</div>
           </div>
-          <div class="k-sub">
-            Tools pull schemas dynamically on-demand. Unauthorized endpoints are completely invisible.
+
+          <div class="checklist-item" id="chk-1">
+            <div class="check-circle" id="circ-1"></div>
+            <span>100% Deterministic Prompt Cache Invariance</span>
+          </div>
+
+          <div class="checklist-item" id="chk-2">
+            <div class="check-circle" id="circ-2"></div>
+            <span>9 Immutable Meta-Tools (Zero-Trust Discovery)</span>
+          </div>
+
+          <div class="checklist-item" id="chk-3">
+            <div class="check-circle" id="circ-3"></div>
+            <span>Sandboxed Wasmtime Runtime with Host-Managed KV</span>
+          </div>
+
+          <div class="checklist-item" id="chk-4">
+            <div class="check-circle" id="circ-4"></div>
+            <span>Unprompted Push Streaming &amp; Single-Timer Sleep</span>
           </div>
         </div>
 
-        <!-- ================= SCENE 4: REALTIME SLEEP & PUSH EVENTS ================= -->
-        <div class="kinetic-text-group" id="scene-4">
-          <div class="k-eyebrow">Realtime Event Loop</div>
-          <div class="k-headline">
-            Sleep. <span class="gradient-apple">Interrupt.</span> <span class="gradient-cyan">Wake.</span>
+        <!-- ================= 3. CONTROL CENTER TOGGLES & SLIDERS ================= -->
+        <div id="control-center">
+          <div class="cc-tile" id="cc-tile-1">
+            <div class="cc-icon-btn">🔒</div>
+            <div>
+              <div class="cc-label">Zero-Trust Discovery</div>
+              <div class="cc-sub">Unauthorized Tools Hidden</div>
+            </div>
           </div>
-          <div class="k-sub">
-            Single-timer deterministic sleeping with instant wakeup upon unprompted push notifications.
+
+          <div class="cc-tile" id="cc-tile-2">
+            <div class="cc-icon-btn">⏳</div>
+            <div>
+              <div class="cc-label">Single-Timer Sleep</div>
+              <div class="cc-sub">Interruptible Wakeup</div>
+            </div>
+          </div>
+
+          <div class="cc-tile" id="cc-tile-3" style="grid-column: span 2; height: 140px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <div class="cc-label">Prompt Cache Invariance Rate</div>
+                <div class="cc-sub" id="cc-rate-sub">0% (Baseline)</div>
+              </div>
+              <div style="font-size: 32px; font-weight: 900; color: #30D158;" id="cc-rate-val">0%</div>
+            </div>
+            <div class="slider-track">
+              <div class="slider-fill" id="slider-bar"></div>
+            </div>
           </div>
         </div>
 
-        <!-- ================= SCENE 5: THE CLIMAX ================= -->
-        <div id="climax-card">
-          <div class="climax-logo-box">
+        <!-- ================= 4. iMESSAGE CHAT STREAM ================= -->
+        <div id="imessage-flow">
+          <div class="bubble sent" id="msg-1">
+            "Dispatch background agent Nexura to monitor server updates."
+          </div>
+
+          <div class="bubble received" id="msg-2">
+            <div>Executing <code>search_tools</code> via invariant meta-tool...</div>
+            <div class="pill-tag">🛡️ Zero-Trust Verified</div>
+          </div>
+
+          <div class="bubble received" id="msg-3">
+            <div>Subscribed to <code>extension://chat/messages</code>. Calling <code>sleep(30s)</code>.</div>
+            <div class="pill-tag" style="background: rgba(48, 209, 88, 0.2); border-color: rgba(48, 209, 88, 0.4); color: #30D158;">
+              ⏱️ Timer Active • Single-Timer Guard
+            </div>
+          </div>
+
+          <div class="bubble received" id="msg-4" style="border: 2px solid #FF2D55;">
+            <div style="color: #FF2D55; font-weight: 800; margin-bottom: 2px;">⚡ Unprompted MCP Push Notification</div>
+            <div>Event received on resource! Agent woken up without polling.</div>
+          </div>
+        </div>
+
+        <!-- ================= 5. 3D GLASS STACK LAYERS (OPTICAL DoF) ================= -->
+        <div id="glass-stack">
+          <!-- Layer 1: Front (Tools Deck) -->
+          <div class="glass-layer" id="layer-1">
+            <div style="font-size: 13px; font-weight: 800; color: #FF2D55; letter-spacing: 2px; text-transform: uppercase;">LAYER 01: 9 INVARIANT META-TOOLS</div>
+            <div style="font-size: 32px; font-weight: 900; margin-top: 6px;">Zero Prompt Leakage</div>
+            <div style="display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap;">
+              <span class="pill-tag">search_tools</span>
+              <span class="pill-tag">get_tool_schema</span>
+              <span class="pill-tag">call_tool</span>
+              <span class="pill-tag">list_servers</span>
+              <span class="pill-tag">setMemory</span>
+              <span class="pill-tag">sleep</span>
+            </div>
+          </div>
+
+          <!-- Layer 2: Middle (Main App Interface) -->
+          <div class="glass-layer" id="layer-2">
+            <div style="font-size: 13px; font-weight: 800; color: #0A84FF; letter-spacing: 2px; text-transform: uppercase;">LAYER 02: RUNTIME KERNEL ENGINE</div>
+            <div style="font-size: 32px; font-weight: 900; margin-top: 6px;">100% Frozen System Prompt</div>
+            <div style="margin-top: 20px; font-family: 'SF Mono', monospace; font-size: 14px; color: #86868B; line-height: 1.6;">
+              &gt; Context Buffer: 300,000 Chars<br/>
+              &gt; Strict Handlebars: {{agent.name}}, {{time}}, {{context_remaining}}<br/>
+              &gt; Optimistic Memory Locks (SHA-256)
+            </div>
+          </div>
+
+          <!-- Layer 3: Back (Wasmtime Sandbox) -->
+          <div class="glass-layer" id="layer-3">
+            <div style="font-size: 13px; font-weight: 800; color: #30D158; letter-spacing: 2px; text-transform: uppercase;">LAYER 03: WASMTIME EXTENSIONS</div>
+            <div style="font-size: 32px; font-weight: 900; margin-top: 6px;">Isolated Key-Value Storage</div>
+            <div style="margin-top: 20px; font-size: 15px; color: #86868B;">
+              Safe host ABI imports with zero socket or host filesystem access outside provisioned data hash sandbox.
+            </div>
+          </div>
+        </div>
+
+        <!-- ================= 6. CLIMAX LOGO ================= -->
+        <div id="climax-stage">
+          <div class="apple-logo-card">
             <img src="assets/logo.svg" alt="NeuxDOT Mascot Logo">
           </div>
-          <div class="k-headline" style="opacity: 1; transform: none; font-size: 78px;">
-            Determinism Never Looked <span class="gradient-pink">So Kawaii.</span>
+          <div class="k-hero" style="opacity: 1; transform: none; font-size: 84px;">
+            Determinism Never Looked <span class="pink-grad">So Kawaii.</span>
           </div>
-          <div class="k-sub" style="opacity: 1; transform: none; margin-top: 16px;">
-            Build cache-invariant, zero-trust autonomous agents today.
+          <div class="k-sub" style="opacity: 1; transform: none; margin-top: 14px;">
+            The Cache-Invariant, Zero-Trust MCP Agent Runtime &amp; Desktop.
           </div>
-          <div style="margin-top: 28px; padding: 12px 28px; border-radius: 9999px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); font-family: 'SF Mono', monospace; font-size: 18px; font-weight: 700;">
+          <div style="margin-top: 32px; padding: 12px 32px; border-radius: 9999px; background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.25); font-family: 'SF Mono', monospace; font-size: 18px; font-weight: 700; color: #FFFFFF;">
             ⭐ github.com/NeuxDOT/NeuxDOT
           </div>
-        </div>
-
-        <!-- ================= 3D NEUXDOT DESKTOP APP UI ================= -->
-        <div id="ui-window">
-          <!-- Window Header -->
-          <div class="window-header">
-            <div class="traffic-lights">
-              <div class="light red"></div>
-              <div class="light yellow"></div>
-              <div class="light green"></div>
-            </div>
-            <div class="window-title">
-              <span>NeuxDOT Desktop</span>
-              <span class="window-badge">⚡ CACHE INVARIANT</span>
-            </div>
-            <div style="font-size: 12px; color: #86868B; font-family: 'SF Mono', monospace;">
-              v0.1.0 • WAL Mode
-            </div>
-          </div>
-
-          <!-- Window Body -->
-          <div class="window-body">
-            <!-- Sidebar -->
-            <div class="sidebar">
-              <div class="sidebar-user">
-                <img class="avatar-mascot" src="assets/logo.svg" alt="Avatar">
-                <div>
-                  <div class="agent-name">Nexura</div>
-                  <div class="agent-status"><span class="status-dot"></span> Active Agent</div>
-                </div>
-              </div>
-
-              <div class="nav-group">
-                <div class="nav-item active">
-                  <span>💬 Agent Console</span>
-                  <span style="font-size: 11px; color: #FF2D55;">● Live</span>
-                </div>
-                <div class="nav-item">
-                  <span>🧩 WASM Extensions</span>
-                  <span>1 Active</span>
-                </div>
-                <div class="nav-item">
-                  <span>🌐 MCP Servers</span>
-                  <span>Connected</span>
-                </div>
-                <div class="nav-item">
-                  <span>⚙️ Settings &amp; Hooks</span>
-                </div>
-              </div>
-
-              <!-- Buffer Meter -->
-              <div class="buffer-meter">
-                <div class="buffer-label">
-                  <span>Running Buffer</span>
-                  <span>1,250 / 300,000</span>
-                </div>
-                <div class="buffer-track">
-                  <div class="buffer-bar" id="ui-buffer-bar"></div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Main View / Chat Thread -->
-            <div class="main-view">
-              <!-- Chat Card 1 (User) -->
-              <div class="chat-card user visible" id="chat-1">
-                Monitor system logs and alert me when external MCP resources are updated.
-              </div>
-
-              <!-- Chat Card 2 (Agent invocation) -->
-              <div class="chat-card agent visible" id="chat-2">
-                <div>Acknowledged. Subscribing to <code style="color: #FF2D55;">extension://chat/messages</code> and sleeping for 30s.</div>
-                <div class="hook-badge" id="chat-hook">
-                  ⏱️ {{time}} • 🛡️ Context Remaining: 298,750 chars
-                </div>
-              </div>
-
-              <!-- Chat Card 3 (Unprompted Event Wakeup) -->
-              <div class="chat-card agent" id="chat-3">
-                <div style="color: #30D158; font-weight: 700; margin-bottom: 4px;">⚡ Instant Event Wakeup</div>
-                <div>Received push notification envelope. Resuming operations without polling.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ================= 9 INVARIANT META-TOOLS FLOATING DOCK ================= -->
-        <div id="tools-dock">
-          <div class="tool-dock-item pulse" id="dock-tool-0"><span class="tool-icon">🔍</span><span>search_tools</span></div>
-          <div class="tool-dock-item" id="dock-tool-1"><span class="tool-icon">📄</span><span>get_tool_schema</span></div>
-          <div class="tool-dock-item" id="dock-tool-2"><span class="tool-icon">⚡</span><span>call_tool</span></div>
-          <div class="tool-dock-item" id="dock-tool-3"><span class="tool-icon">🌐</span><span>list_servers</span></div>
-          <div class="tool-dock-item" id="dock-tool-4"><span class="tool-icon">💾</span><span>setMemory</span></div>
-          <div class="tool-dock-item" id="dock-tool-5"><span class="tool-icon">✏️</span><span>editMemory</span></div>
-          <div class="tool-dock-item" id="dock-tool-6"><span class="tool-icon">📖</span><span>readMemory</span></div>
-          <div class="tool-dock-item" id="dock-tool-7"><span class="tool-icon">🧹</span><span>compact</span></div>
-          <div class="tool-dock-item" id="dock-tool-8"><span class="tool-icon">⏳</span><span>sleep</span></div>
-        </div>
-
-        <!-- ================= DETERMINISTIC SLEEP WIDGET ================= -->
-        <div id="sleep-widget">
-          <div class="push-envelope" id="push-badge">🌸 UNPROMPTED MCP PUSH</div>
-          <div class="timer-val" id="sleep-countdown">00:30</div>
-          <div class="timer-lbl">Deterministic Sleep</div>
         </div>
 
       </div>
     </div>
   </div>
 
-  <!-- ================= BOTTOM TIMELINE & EXPORT CONTROLS ================= -->
-  <div id="timeline-hud">
-    <button class="btn-ctrl" id="btn-play">▶ Play</button>
-    <div class="scrub-track" id="scrub-bar">
-      <div class="scrub-fill" id="scrub-fill"></div>
+  <!-- ================= TIMELINE HUD ================= -->
+  <div id="hud">
+    <button class="hud-btn" id="btn-play">▶ Play</button>
+    <div class="hud-track" id="scrub-bar">
+      <div class="hud-fill" id="scrub-fill"></div>
     </div>
-    <span class="time-code" id="time-label">00:00 / 00:30</span>
-    <button class="btn-ctrl btn-record" id="btn-record">🎥 Record Video</button>
+    <span class="hud-time" id="time-label">00:00 / 00:24</span>
+    <button class="hud-btn hud-record" id="btn-record">🎥 Record 60FPS Video</button>
   </div>
 
   <script>
-    // ================= STAGE RESPONSIVE AUTO-SCALER =================
+    // ================= RESPONSIVE STAGE AUTO-SCALER =================
     const scaler = document.getElementById('stage-scaler');
     function resizeStage() {
-      const scaleX = window.innerWidth / 1920;
-      const scaleY = window.innerHeight / 1080;
-      const scale = Math.min(scaleX, scaleY);
+      const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
       scaler.style.transform = `scale(${scale})`;
     }
     window.addEventListener('resize', resizeStage);
     resizeStage();
 
-    // ================= TIMELINE ANIMATION ENGINE =================
-    const TOTAL_DURATION = 30.0; // 30 seconds Apple-style sequence
+    // ================= TIMELINE & SOUND ENGINE =================
+    const TOTAL_DURATION = 24.0; // 24-second ultra-fast Apple "Don't Blink" reel
     let currentTime = 0;
     let isPlaying = true;
     let isRecording = false;
 
-    // Elements
     const camera = document.getElementById('camera');
-    const uiWindow = document.getElementById('ui-window');
-    const toolsDock = document.getElementById('tools-dock');
-    const sleepWidget = document.getElementById('sleep-widget');
-    const climaxCard = document.getElementById('climax-card');
-    const pushBadge = document.getElementById('push-badge');
-    const sleepCount = document.getElementById('sleep-countdown');
-    const chat3 = document.getElementById('chat-3');
-    const bufferBar = document.getElementById('ui-buffer-bar');
+    const textHook = document.getElementById('text-hook');
+    const notifStack = document.getElementById('notif-stack');
+    const notif1 = document.getElementById('notif-1');
+    const notif2 = document.getElementById('notif-2');
+    const notif3 = document.getElementById('notif-3');
+
+    const notesApp = document.getElementById('notes-app');
+    const chk1 = document.getElementById('chk-1');
+    const chk2 = document.getElementById('chk-2');
+    const chk3 = document.getElementById('chk-3');
+    const chk4 = document.getElementById('chk-4');
+
+    const cc = document.getElementById('control-center');
+    const cc1 = document.getElementById('cc-tile-1');
+    const cc2 = document.getElementById('cc-tile-2');
+    const sliderBar = document.getElementById('slider-bar');
+    const ccRateVal = document.getElementById('cc-rate-val');
+    const ccRateSub = document.getElementById('cc-rate-sub');
+
+    const msgFlow = document.getElementById('imessage-flow');
+    const msg1 = document.getElementById('msg-1');
+    const msg2 = document.getElementById('msg-2');
+    const msg3 = document.getElementById('msg-3');
+    const msg4 = document.getElementById('msg-4');
+
+    const glassStack = document.getElementById('glass-stack');
+    const layer1 = document.getElementById('layer-1');
+    const layer2 = document.getElementById('layer-2');
+    const layer3 = document.getElementById('layer-3');
+
+    const climaxStage = document.getElementById('climax-stage');
     const scrubFill = document.getElementById('scrub-fill');
     const timeLabel = document.getElementById('time-label');
     const btnPlay = document.getElementById('btn-play');
     const btnRecord = document.getElementById('btn-record');
 
-    const sceneTexts = [
-      document.getElementById('scene-1'),
-      document.getElementById('scene-2'),
-      document.getElementById('scene-3'),
-      document.getElementById('scene-4')
-    ];
-
-    // ================= SOUND SYNTHESIZER (WEB AUDIO API) =================
+    // Web Audio Sound Synthesizer (Apple-style clicks, chimes, whooshes)
     let audioCtx = null;
     function getAudioCtx() {
-      if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      }
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       return audioCtx;
     }
 
-    function playSound(type) {
+    function triggerSound(type) {
       if (!isPlaying && !isRecording) return;
       try {
         const ctx = getAudioCtx();
+        const t = ctx.currentTime;
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.connect(gain);
         gain.connect(ctx.destination);
-        const t = ctx.currentTime;
 
-        if (type === 'whoosh') {
+        if (type === 'tick') {
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(1400, t);
+          osc.frequency.exponentialRampToValueAtTime(800, t + 0.04);
+          gain.gain.setValueAtTime(0.18, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+          osc.start(t); osc.stop(t + 0.04);
+        } else if (type === 'notif') {
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(587.33, t); // D5
+          osc.frequency.setValueAtTime(880, t + 0.08); // A5
+          gain.gain.setValueAtTime(0.15, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+          osc.start(t); osc.stop(t + 0.3);
+        } else if (type === 'slam') {
           osc.type = 'sine';
           osc.frequency.setValueAtTime(120, t);
-          osc.frequency.exponentialRampToValueAtTime(600, t + 0.3);
-          gain.gain.setValueAtTime(0.12, t);
-          gain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
-          osc.start(t);
-          osc.stop(t + 0.3);
-        } else if (type === 'slam') {
-          osc.type = 'triangle';
-          osc.frequency.setValueAtTime(140, t);
-          osc.frequency.exponentialRampToValueAtTime(35, t + 0.4);
-          gain.gain.setValueAtTime(0.3, t);
-          gain.gain.exponentialRampToValueAtTime(0.01, t + 0.4);
-          osc.start(t);
-          osc.stop(t + 0.4);
-        } else if (type === 'chime') {
+          osc.frequency.exponentialRampToValueAtTime(30, t + 0.35);
+          gain.gain.setValueAtTime(0.35, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+          osc.start(t); osc.stop(t + 0.35);
+        } else if (type === 'whoosh') {
           osc.type = 'sine';
-          osc.frequency.setValueAtTime(880, t);
-          osc.frequency.exponentialRampToValueAtTime(1760, t + 0.25);
-          gain.gain.setValueAtTime(0.15, t);
-          gain.gain.exponentialRampToValueAtTime(0.01, t + 0.25);
-          osc.start(t);
-          osc.stop(t + 0.25);
+          osc.frequency.setValueAtTime(180, t);
+          osc.frequency.exponentialRampToValueAtTime(650, t + 0.2);
+          gain.gain.setValueAtTime(0.1, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+          osc.start(t); osc.stop(t + 0.2);
         }
       } catch (e) {}
     }
 
-    // ================= SCENE KEYFRAME SEQUENCER =================
-    function updateFrame(time) {
-      // Timeline progress
+    // ================= KEYFRAME TIME-BASED SEQUENCER =================
+    function updateSequence(time) {
       const p = Math.min(1.0, time / TOTAL_DURATION);
       scrubFill.style.width = (p * 100) + '%';
-      
       const s = Math.floor(time % 60).toString().padStart(2, '0');
       const ms = Math.floor((time * 100) % 100).toString().padStart(2, '0');
-      timeLabel.innerText = `00:${s}.${ms} / 00:30`;
+      timeLabel.innerText = `00:${s}.${ms} / 00:24`;
 
-      // Helper to activate text
-      function showText(index) {
-        sceneTexts.forEach((el, i) => {
-          if (i === index) {
-            el.classList.add('active');
-            el.classList.remove('exit');
-          } else {
-            el.classList.remove('active');
-            el.classList.add('exit');
-          }
-        });
-      }
+      // BEAT 1: (0.0s - 4.2s) DON'T BLINK & NOTIFICATION STACK SLAM
+      if (time < 4.2) {
+        textHook.classList.add('active');
+        textHook.classList.remove('exit');
+        notifStack.style.opacity = '1';
+        notesApp.classList.remove('show');
+        cc.classList.remove('show');
+        msgFlow.classList.remove('show');
+        glassStack.classList.remove('show');
+        climaxStage.classList.remove('show');
 
-      // ================= KEYFRAME LOGIC =================
-      // SCENE 1: (0.0s - 4.5s) Kinetic Typography Slam
-      if (time < 4.5) {
-        showText(0);
-        climaxCard.classList.remove('visible');
-        toolsDock.classList.remove('visible');
-        sleepWidget.classList.remove('visible');
-
-        // UI Window hidden
-        uiWindow.style.opacity = '0';
-        uiWindow.style.transform = 'translateY(180px) rotateX(24deg) scale(0.85)';
         camera.style.transform = 'translateZ(0px) rotateX(0deg) rotateY(0deg)';
+
+        notif1.classList.toggle('show', time >= 0.8);
+        notif2.classList.toggle('show', time >= 1.6);
+        notif3.classList.toggle('show', time >= 2.5);
       }
-      // SCENE 2: (4.5s - 10.0s) 3D Isometric UI Reveal
-      else if (time < 10.0) {
-        showText(1);
-        climaxCard.classList.remove('visible');
-        toolsDock.classList.remove('visible');
-        sleepWidget.classList.remove('visible');
+      // BEAT 2: (4.2s - 8.5s) NOTES APP KINETIC CHECKLIST
+      else if (time < 8.5) {
+        textHook.classList.remove('active');
+        textHook.classList.add('exit');
+        notifStack.style.opacity = '0';
+        notesApp.classList.add('show');
+        cc.classList.remove('show');
+        msgFlow.classList.remove('show');
+        glassStack.classList.remove('show');
+        climaxStage.classList.remove('show');
 
-        // 3D Isometric glide in
-        uiWindow.style.opacity = '1';
-        uiWindow.style.transform = 'translateY(40px) rotateX(16deg) rotateY(-18deg) rotateZ(2deg) scale(0.92)';
-        camera.style.transform = 'translateZ(-80px) translateY(-20px)';
+        camera.style.transform = 'translateZ(-40px) rotateX(6deg) rotateY(-8deg)';
+
+        // Checklist checks popping on to the vocal beat
+        chk1.classList.toggle('checked', time >= 4.8);
+        if (time >= 4.8) document.getElementById('circ-1').innerText = '✓';
+        else document.getElementById('circ-1').innerText = '';
+
+        chk2.classList.toggle('checked', time >= 5.6);
+        if (time >= 5.6) document.getElementById('circ-2').innerText = '✓';
+        else document.getElementById('circ-2').innerText = '';
+
+        chk3.classList.toggle('checked', time >= 6.4);
+        if (time >= 6.4) document.getElementById('circ-3').innerText = '✓';
+        else document.getElementById('circ-3').innerText = '';
+
+        chk4.classList.toggle('checked', time >= 7.2);
+        if (time >= 7.2) document.getElementById('circ-4').innerText = '✓';
+        else document.getElementById('circ-4').innerText = '';
       }
-      // SCENE 3: (10.0s - 16.5s) 9 Meta-Tools Dock Pops Up
-      else if (time < 16.5) {
-        showText(2);
-        climaxCard.classList.remove('visible');
-        sleepWidget.classList.remove('visible');
+      // BEAT 3: (8.5s - 13.0s) CONTROL CENTER TOGGLES & SLIDERS
+      else if (time < 13.0) {
+        notesApp.classList.remove('show');
+        cc.classList.add('show');
+        msgFlow.classList.remove('show');
+        glassStack.classList.remove('show');
+        climaxStage.classList.remove('show');
 
-        // UI Window rotates back slightly
-        uiWindow.style.opacity = '0.9';
-        uiWindow.style.transform = 'translateY(-30px) rotateX(10deg) scale(0.86)';
-        camera.style.transform = 'translateZ(-120px) translateY(-40px)';
+        camera.style.transform = 'translateZ(-60px) rotateX(-4deg) rotateY(10deg)';
 
-        // Tools Dock visible & pulsing
-        toolsDock.classList.add('visible');
-        
-        // Pulse dock items based on time
-        const toolIdx = Math.floor((time - 10.0) * 1.5) % 9;
-        document.querySelectorAll('.tool-dock-item').forEach((item, i) => {
-          item.classList.toggle('pulse', i === toolIdx);
-        });
-      }
-      // SCENE 4: (16.5s - 23.5s) Deterministic Sleep & Push Notification
-      else if (time < 23.5) {
-        showText(3);
-        climaxCard.classList.remove('visible');
-        toolsDock.classList.remove('visible');
+        cc1.classList.toggle('active', time >= 9.2);
+        cc2.classList.toggle('active', time >= 10.0);
 
-        // UI Window blurs back
-        uiWindow.style.opacity = '0.35';
-        uiWindow.style.transform = 'translateY(-60px) scale(0.75) translateZ(-200px)';
-        camera.style.transform = 'translateZ(-50px)';
-
-        // Sleep Widget Appears
-        sleepWidget.classList.add('visible');
-
-        // Countdown animation
-        const countdown = Math.max(0, 30 - Math.floor((time - 16.5) * 4));
-        sleepCount.innerText = `00:${countdown.toString().padStart(2, '0')}`;
-
-        // At 20.5s: Push event envelope slams in!
-        if (time >= 20.5) {
-          pushBadge.classList.add('active');
-          sleepWidget.style.borderColor = '#FF2D55';
-          sleepWidget.style.boxShadow = '0 0 100px rgba(255, 45, 85, 0.6)';
-          chat3.classList.add('visible');
+        // Slider fill animation from 0 to 100%
+        if (time >= 10.5) {
+          const sliderProg = Math.min(1.0, (time - 10.5) / 1.5);
+          sliderBar.style.width = (sliderProg * 100) + '%';
+          const pct = Math.floor(sliderProg * 100);
+          ccRateVal.innerText = `${pct}%`;
+          ccRateSub.innerText = pct === 100 ? '100% Invariant Guarantee' : 'Calibrating Prefix Cache...';
         } else {
-          pushBadge.classList.remove('active');
-          sleepWidget.style.borderColor = 'rgba(48, 209, 88, 0.5)';
-          sleepWidget.style.boxShadow = '0 0 100px rgba(48, 209, 88, 0.35)';
+          sliderBar.style.width = '0%';
+          ccRateVal.innerText = '0%';
+          ccRateSub.innerText = '0% (Baseline)';
         }
       }
-      // SCENE 5: (23.5s - 30.0s) The Apple Climax
-      else {
-        sceneTexts.forEach(el => el.classList.remove('active', 'exit'));
-        toolsDock.classList.remove('visible');
-        sleepWidget.classList.remove('visible');
-        uiWindow.style.opacity = '0';
-        uiWindow.style.transform = 'scale(0.6) translateZ(-400px)';
+      // BEAT 4: (13.0s - 17.5s) iMESSAGE CHAT RAPID-FIRE
+      else if (time < 17.5) {
+        cc.classList.remove('show');
+        msgFlow.classList.add('show');
+        glassStack.classList.remove('show');
+        climaxStage.classList.remove('show');
 
-        // Climax card shines
-        climaxCard.classList.add('visible');
-        camera.style.transform = 'translateZ(0px)';
+        camera.style.transform = 'translateZ(-30px) rotateX(4deg) rotateY(-4deg)';
+
+        msg1.classList.toggle('show', time >= 13.2);
+        msg2.classList.toggle('show', time >= 14.1);
+        msg3.classList.toggle('show', time >= 15.0);
+        msg4.classList.toggle('show', time >= 16.0);
+      }
+      // BEAT 5: (17.5s - 21.5s) 3D GLASS STACK LAYERS (OPTICAL DoF)
+      else if (time < 21.5) {
+        msgFlow.classList.remove('show');
+        glassStack.classList.add('show');
+        climaxStage.classList.remove('show');
+
+        // Dynamic Camera Sweep across Z-depths
+        const tRel = time - 17.5;
+        if (tRel < 1.3) {
+          // Focus Layer 1 (Front)
+          camera.style.transform = 'translateZ(-100px) rotateX(12deg) rotateY(-14deg)';
+          layer1.className = 'glass-layer dof-sharp';
+          layer2.className = 'glass-layer dof-blur';
+          layer3.className = 'glass-layer dof-blur';
+        } else if (tRel < 2.6) {
+          // Rack focus to Layer 2 (Middle)
+          camera.style.transform = 'translateZ(140px) rotateX(12deg) rotateY(-14deg)';
+          layer1.className = 'glass-layer dof-blur';
+          layer2.className = 'glass-layer dof-sharp';
+          layer3.className = 'glass-layer dof-blur';
+        } else {
+          // Rack focus to Layer 3 (Back)
+          camera.style.transform = 'translateZ(380px) rotateX(12deg) rotateY(-14deg)';
+          layer1.className = 'glass-layer dof-blur';
+          layer2.className = 'glass-layer dof-blur';
+          layer3.className = 'glass-layer dof-sharp';
+        }
+      }
+      // BEAT 6: (21.5s - 24.0s) APPLE LOGO LOCKUP CLIMAX
+      else {
+        glassStack.classList.remove('show');
+        climaxStage.classList.add('show');
+        camera.style.transform = 'translateZ(0px) rotateX(0deg) rotateY(0deg)';
       }
     }
 
     // ================= ANIMATION TICKER LOOP =================
-    let lastTimestamp = performance.now();
+    let lastTime = performance.now();
     function tick(timestamp) {
       if (isPlaying) {
-        const dt = (timestamp - lastTimestamp) / 1000;
+        const dt = (timestamp - lastTime) / 1000;
         currentTime += dt;
         if (currentTime >= TOTAL_DURATION) {
           currentTime = 0;
         }
-        updateFrame(currentTime);
+        updateSequence(currentTime);
       }
-      lastTimestamp = timestamp;
+      lastTime = timestamp;
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
 
-    // ================= USER INTERACTION CONTROLS =================
+    // ================= INTERACTION & SCRUBBING =================
     btnPlay.addEventListener('click', () => {
       isPlaying = !isPlaying;
       btnPlay.innerText = isPlaying ? '❚❚ Pause' : '▶ Play';
       getAudioCtx().resume();
     });
 
-    // Spacebar to toggle
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space') {
         e.preventDefault();
@@ -1051,69 +1043,63 @@
       }
     });
 
-    // Scrub bar click/drag
     const scrubBar = document.getElementById('scrub-bar');
     scrubBar.addEventListener('click', (e) => {
       const rect = scrubBar.getBoundingClientRect();
       const p = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       currentTime = p * TOTAL_DURATION;
-      updateFrame(currentTime);
+      updateSequence(currentTime);
     });
 
-    // ================= FRAME-BY-FRAME DETERMINISTIC API =================
-    // Ideal for puppeteer, playwright, or automated headful video capture!
-    window.renderFrame = function(frameIndex, totalFrames = 900) {
+    // ================= DETERMINISTIC FRAME-BY-FRAME API =================
+    // Call window.renderFrame(i, 720) in Puppeteer/Playwright to capture perfectly!
+    window.renderFrame = function(frameIndex, totalFrames = 720) {
       isPlaying = false;
       currentTime = (frameIndex / totalFrames) * TOTAL_DURATION;
-      updateFrame(currentTime);
+      updateSequence(currentTime);
     };
 
     // ================= BROWSER-NATIVE SCREEN RECORDER =================
     btnRecord.addEventListener('click', async () => {
       if (isRecording) return;
       isRecording = true;
-      btnRecord.innerText = '🔴 Recording...';
-      btnRecord.classList.add('recording');
+      btnRecord.innerText = '🔴 Recording 60FPS...';
+      btnRecord.classList.add('rec');
 
-      // Seek to 0 and play
       currentTime = 0;
       isPlaying = true;
-      updateFrame(0);
+      updateSequence(0);
 
       try {
-        // Capture stream from window
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: { frameRate: 60, width: 1920, height: 1080 }
         });
 
         const recorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
         const chunks = [];
-
         recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
         recorder.onstop = () => {
           const blob = new Blob(chunks, { type: 'video/webm' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = 'NeuxDOT_Apple_Style_Promo.webm';
+          a.download = 'NeuxDOT_Apple_UI_Reel_60FPS.webm';
           a.click();
-          btnRecord.innerText = '🎥 Record Video';
-          btnRecord.classList.remove('recording');
+          btnRecord.innerText = '🎥 Record 60FPS Video';
+          btnRecord.classList.remove('rec');
           isRecording = false;
         };
 
         recorder.start();
 
-        // Stop automatically after duration
         setTimeout(() => {
           recorder.stop();
           stream.getTracks().forEach(t => t.stop());
         }, (TOTAL_DURATION + 0.5) * 1000);
-
       } catch (err) {
-        console.warn("Screen capture cancelled or unavailable:", err);
-        btnRecord.innerText = '🎥 Record Video';
-        btnRecord.classList.remove('recording');
+        console.warn("Recording cancelled:", err);
+        btnRecord.innerText = '🎥 Record 60FPS Video';
+        btnRecord.classList.remove('rec');
         isRecording = false;
       }
     });
