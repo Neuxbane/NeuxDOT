@@ -1,0 +1,20 @@
+{
+  "name": "computer-mcp",
+  "version": "2.0.0",
+  "description": "Standalone HTTP/SSE Model Context Protocol (MCP) v2 Server with One-Time API Key Authentication, bash execution with truncation security, and filesystem tools",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "computer",
+    "bash",
+    "filesystem",
+    "neuxdot"
+  ],
+  "author": "NeuxDOT Team",
+  "license": "MIT"
+}

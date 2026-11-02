@@ -190,6 +190,11 @@
 												<div class="space-y-0.5 max-w-[70%]">
 													<div class="flex items-center gap-2">
 														<span class="text-xs font-mono font-medium text-zinc-900 dark:text-zinc-100">{tool.name}</span>
+														{#if tool.unique_name}
+															<span class="rounded px-1.5 py-0.2 text-[9px] font-mono text-zinc-500 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700" title="Callable unique name">
+																{tool.unique_name}
+															</span>
+														{/if}
 														{#if tool.is_enabled}
 															<span class="rounded px-1.5 py-0.2 text-[9px] font-mono bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
 																Discoverable

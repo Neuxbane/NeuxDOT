@@ -69,8 +69,10 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
         .create_mcp_server(
             &account.id,
             "Filesystem MCP",
+            Some("fs"),
             "stdio",
             "node ./mcp-servers/fs.js",
+            None,
         )
         .await?;
     assert_eq!(mcp.name, "Filesystem MCP");

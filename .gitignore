@@ -38,18 +38,26 @@ data/
 logs/
 *.log
 
-# Sensitive Environment & Secrets
+# Sensitive Environment, Secrets & Keys
 .env
 .env.*
 !.env.example
 *.pem
 *.key
 *.cert
+*.crt
 *.pfx
 *.p12
 *.secret
+*.token
+*.auth
+*api_key*
+*apikey*
 credentials.json
 secrets.json
+service-account*.json
+id_rsa*
+id_ed25519*
 
 # IDE & OS Metadata
 .DS_Store

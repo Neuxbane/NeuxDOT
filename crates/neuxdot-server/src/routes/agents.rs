@@ -16,7 +16,9 @@ use crate::state::AppState;
 pub struct AgentToolItem {
     pub mcp_id: String,
     pub server_name: String,
+    pub server_alias: String,
     pub name: String,
+    pub unique_name: String,
     pub description: Option<String>,
     pub input_schema: Option<serde_json::Value>,
     pub is_enabled: bool,
@@ -454,10 +456,14 @@ pub async fn get_agent_tools_handler(
                                 let desc = t.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
                                 let schema = t.get("inputSchema").cloned();
                                 let is_enabled = permissions.iter().find(|p| p.mcp_id == s.id && p.tool_name == name).map(|p| p.is_enabled).unwrap_or(true);
+                                let server_alias = s.get_alias();
+                                let unique_name = format!("{}.{}", server_alias, name);
 
                                 tools_res.push(AgentToolItem {
                                     mcp_id: s.id.clone(),
                                     server_name: s.name.clone(),
+                                    server_alias,
+                                    unique_name,
                                     name,
                                     description: desc,
                                     input_schema: schema,

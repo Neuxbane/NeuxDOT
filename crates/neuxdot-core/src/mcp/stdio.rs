@@ -11,6 +11,49 @@ use tracing::{debug, info, warn};
 
 use super::client::{JsonRpcRequest, JsonRpcResponse, McpError, McpNotification, McpTransport};
 
+pub fn parse_env_vars(raw: &str) -> HashMap<String, String> {
+    let mut envs = HashMap::new();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return envs;
+    }
+
+    // Try parsing as JSON object: {"KEY": "VAL"}
+    if trimmed.starts_with('{') {
+        if let Ok(map) = serde_json::from_str::<HashMap<String, Value>>(trimmed) {
+            for (k, v) in map {
+                let v_str = match v {
+                    Value::String(s) => s,
+                    _ => v.to_string(),
+                };
+                envs.insert(k, v_str);
+            }
+            return envs;
+        }
+    }
+
+    // Otherwise, parse line by line: "KEY=VALUE" or "KEY: VALUE"
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let sep = if line.contains('=') {
+            '='
+        } else if line.contains(':') {
+            ':'
+        } else {
+            continue;
+        };
+
+        if let Some((k, v)) = line.split_once(sep) {
+            envs.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+
+    envs
+}
+
 pub struct StdioTransport {
     stdin: Mutex<ChildStdin>,
     pending_requests: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpError>>>>>,
@@ -21,6 +64,7 @@ pub struct StdioTransport {
 impl StdioTransport {
     pub async fn spawn(
         command_line: &str,
+        env_raw: Option<&str>,
         notification_tx: mpsc::UnboundedSender<McpNotification>,
     ) -> Result<Arc<Self>, McpError> {
         let parts: Vec<&str> = command_line.split_whitespace().collect();
@@ -31,8 +75,17 @@ impl StdioTransport {
         let cmd = parts[0];
         let args = &parts[1..];
 
-        let mut child = Command::new(cmd)
-            .args(args)
+        let mut command = Command::new(cmd);
+        command.args(args);
+
+        if let Some(raw) = env_raw {
+            let envs = parse_env_vars(raw);
+            for (k, v) in envs {
+                command.env(k, v);
+            }
+        }
+
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -153,5 +206,26 @@ impl McpTransport for StdioTransport {
         let mut child = self.child.lock().await;
         let _ = child.kill().await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_json_envs() {
+        let raw = r#"{"GITHUB_TOKEN": "ghp_12345", "DEBUG": "1"}"#;
+        let envs = parse_env_vars(raw);
+        assert_eq!(envs.get("GITHUB_TOKEN").unwrap(), "ghp_12345");
+        assert_eq!(envs.get("DEBUG").unwrap(), "1");
+    }
+
+    #[test]
+    fn test_parse_line_envs() {
+        let raw = "API_KEY=my_secret_key\nPORT=8080\n";
+        let envs = parse_env_vars(raw);
+        assert_eq!(envs.get("API_KEY").unwrap(), "my_secret_key");
+        assert_eq!(envs.get("PORT").unwrap(), "8080");
     }
 }

@@ -48,6 +48,12 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE agent_pushed_messages ADD COLUMN is_consumed BOOLEAN DEFAULT 0")
         .execute(&pool)
         .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN headers_or_env TEXT DEFAULT NULL")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN alias TEXT DEFAULT NULL")
+        .execute(&pool)
+        .await;
 
     Ok(pool)
 }

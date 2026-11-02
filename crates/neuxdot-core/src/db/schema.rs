@@ -152,8 +152,47 @@ pub struct McpServer {
     pub id: String,
     pub account_id: String,
     pub name: String,
+    #[sqlx(default)]
+    pub alias: Option<String>,
     pub transport: String, // "stdio" or "http"
     pub url_or_command: String,
+    #[sqlx(default)]
+    pub headers_or_env: Option<String>,
+}
+
+pub fn slugify_alias(name: &str) -> String {
+    let cleaned = name.replace("[WASM]", "").replace("[wasm]", "");
+    let mut s = String::with_capacity(cleaned.len());
+    let mut prev_was_underscore = false;
+
+    for c in cleaned.chars() {
+        if c.is_ascii_alphanumeric() {
+            s.push(c.to_ascii_lowercase());
+            prev_was_underscore = false;
+        } else if !prev_was_underscore && !s.is_empty() {
+            s.push('_');
+            prev_was_underscore = true;
+        }
+    }
+
+    let trimmed = s.trim_matches('_');
+    if trimmed.is_empty() {
+        "mcp".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+impl McpServer {
+    pub fn get_alias(&self) -> String {
+        if let Some(a) = &self.alias {
+            let trimmed = a.trim();
+            if !trimmed.is_empty() {
+                return slugify_alias(trimmed);
+            }
+        }
+        slugify_alias(&self.name)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -247,4 +286,43 @@ pub struct ExtensionKvItem {
     pub key: String,
     pub value: String,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slugify_alias() {
+        assert_eq!(slugify_alias("Telegram"), "telegram");
+        assert_eq!(slugify_alias("Discord Bot"), "discord_bot");
+        assert_eq!(slugify_alias("[WASM] Agent Chat Console"), "agent_chat_console");
+        assert_eq!(slugify_alias("Filesystem-MCP 1.0"), "filesystem_mcp_1_0");
+        assert_eq!(slugify_alias(""), "mcp");
+    }
+
+    #[test]
+    fn test_mcp_server_get_alias() {
+        let server = McpServer {
+            id: "1".into(),
+            account_id: "acc".into(),
+            name: "Telegram Bot".into(),
+            alias: Some("tg".into()),
+            transport: "http".into(),
+            url_or_command: "http://localhost:3000".into(),
+            headers_or_env: None,
+        };
+        assert_eq!(server.get_alias(), "tg");
+
+        let server_no_alias = McpServer {
+            id: "2".into(),
+            account_id: "acc".into(),
+            name: "Discord Bot".into(),
+            alias: None,
+            transport: "http".into(),
+            url_or_command: "http://localhost:3000".into(),
+            headers_or_env: None,
+        };
+        assert_eq!(server_no_alias.get_alias(), "discord_bot");
+    }
 }

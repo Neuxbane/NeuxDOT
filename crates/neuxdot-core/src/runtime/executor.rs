@@ -18,6 +18,115 @@ use crate::mcp::http::HttpTransport;
 use crate::mcp::stdio::StdioTransport;
 use crate::mcp::wasm_stdio::WasmStdioTransport;
 
+#[derive(Debug, Clone)]
+pub struct ToolRegistryEntry {
+    pub server_id: String,
+    pub server_alias: String,
+    pub original_tool_name: String,
+    pub tool: McpTool,
+}
+
+pub fn resolve_tool<'a>(
+    registry: &'a HashMap<String, ToolRegistryEntry>,
+    name: &str,
+) -> Result<&'a ToolRegistryEntry, String> {
+    // 1. Direct exact match (e.g. "telegram.chat_send")
+    if let Some(entry) = registry.get(name) {
+        return Ok(entry);
+    }
+
+    // 2. Delimiter variants (e.g. "telegram.chat_send", "telegram__chat_send", "telegram:chat_send", "telegram_chat_send")
+    if let Some((prefix, suffix)) = name
+        .split_once('.')
+        .or_else(|| name.split_once("__"))
+        .or_else(|| name.split_once(':'))
+        .or_else(|| name.split_once('_'))
+    {
+        let candidate_dot = format!("{}.{}", prefix, suffix);
+        if let Some(entry) = registry.get(&candidate_dot) {
+            return Ok(entry);
+        }
+        let candidate_under = format!("{}__{}", prefix, suffix);
+        if let Some(entry) = registry.get(&candidate_under) {
+            return Ok(entry);
+        }
+    }
+
+    // 3. Match by original_tool_name (e.g. "chat_send")
+    let matches: Vec<(&String, &ToolRegistryEntry)> = registry
+        .iter()
+        .filter(|(_, entry)| entry.original_tool_name == name)
+        .collect();
+
+    match matches.len() {
+        1 => Ok(matches[0].1),
+        0 => Err(format!("Tool '{}' not found in active MCP servers", name)),
+        _ => {
+            let mut candidates: Vec<String> = matches.iter().map(|(k, _)| (*k).clone()).collect();
+            candidates.sort();
+            Err(format!(
+                "Ambiguous tool '{}'. Multiple MCP servers provide this tool: please specify with the server alias (e.g. '{}' or '{}')",
+                name,
+                candidates[0],
+                candidates[1]
+            ))
+        }
+    }
+}
+
+pub fn sanitize_chat_messages(messages: Vec<Value>) -> Vec<Value> {
+    let mut sanitized = Vec::with_capacity(messages.len());
+    let mut active_tool_call_ids = std::collections::HashSet::new();
+    let mut tool_id_to_name = std::collections::HashMap::new();
+
+    for mut msg in messages {
+        let role = msg["role"].as_str().unwrap_or("").to_string();
+
+        if role == "assistant" {
+            active_tool_call_ids.clear();
+            tool_id_to_name.clear();
+
+            if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                for tc in tool_calls {
+                    if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
+                        active_tool_call_ids.insert(id.to_string());
+                        if let Some(fn_name) = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
+                            tool_id_to_name.insert(id.to_string(), fn_name.to_string());
+                        }
+                    }
+                }
+            }
+            sanitized.push(msg);
+        } else if role == "tool" {
+            let tid = msg.get("tool_call_id").and_then(|t| t.as_str()).unwrap_or("");
+
+            if !tid.is_empty() && active_tool_call_ids.contains(tid) {
+                // Ensure name is present for Gemini / OpenAI proxy compliance
+                if msg.get("name").is_none() || msg["name"].as_str().unwrap_or("").is_empty() {
+                    if let Some(name) = tool_id_to_name.get(tid) {
+                        msg["name"] = Value::String(name.clone());
+                    }
+                }
+                sanitized.push(msg);
+            } else {
+                warn!("Sanitizing orphaned tool message (id: '{}') into system context", tid);
+                let content = msg["content"].as_str().unwrap_or("");
+                sanitized.push(json!({
+                    "role": "system",
+                    "content": format!("[Previous Tool Context]: {}", content)
+                }));
+            }
+        } else {
+            // "user" or "system" resets active tool call expectation
+            active_tool_call_ids.clear();
+            tool_id_to_name.clear();
+            sanitized.push(msg);
+        }
+    }
+
+    sanitized
+}
+
 pub struct AgentExecutor {
     pub db: Arc<Database>,
     pub agent: Agent,
@@ -91,7 +200,7 @@ impl AgentExecutor {
         wake_signal_tx: mpsc::UnboundedSender<String>,
     ) -> (
         HashMap<String, Arc<McpClientSession>>,
-        HashMap<String, (String, McpTool)>,
+        HashMap<String, ToolRegistryEntry>,
     ) {
         let mut sessions = HashMap::new();
         let mut tool_registry = HashMap::new();
@@ -101,7 +210,13 @@ impl AgentExecutor {
 
             let transport: Option<Arc<dyn crate::mcp::client::McpTransport>> =
                 if server.transport == "stdio" {
-                    match StdioTransport::spawn(&server.url_or_command, notif_tx).await {
+                    match StdioTransport::spawn(
+                        &server.url_or_command,
+                        server.headers_or_env.as_deref(),
+                        notif_tx,
+                    )
+                    .await
+                    {
                         Ok(t) => Some(t),
                         Err(e) => {
                             self.emit(AgentEvent::AgentError {
@@ -135,7 +250,11 @@ impl AgentExecutor {
                         }
                     }
                 } else {
-                    Some(HttpTransport::new(&server.url_or_command, notif_tx))
+                    Some(HttpTransport::new(
+                        &server.url_or_command,
+                        server.headers_or_env.as_deref(),
+                        notif_tx,
+                    ))
                 };
 
             if let Some(transport) = transport {
@@ -174,6 +293,7 @@ impl AgentExecutor {
 
                 match session.list_tools().await {
                     Ok(tools) => {
+                        let server_alias = server.get_alias();
                         for tool in tools {
                             if disabled_tools.contains(&tool.name) {
                                 info!(
@@ -182,8 +302,16 @@ impl AgentExecutor {
                                 );
                                 continue;
                             }
-                            tool_registry
-                                .insert(tool.name.clone(), (server.id.clone(), tool));
+                            let unique_tool_name = format!("{}.{}", server_alias, tool.name);
+                            tool_registry.insert(
+                                unique_tool_name,
+                                ToolRegistryEntry {
+                                    server_id: server.id.clone(),
+                                    server_alias: server_alias.clone(),
+                                    original_tool_name: tool.name.clone(),
+                                    tool,
+                                },
+                            );
                         }
                     }
                     Err(e) => {
@@ -334,8 +462,8 @@ impl AgentExecutor {
             .map_err(|e| e.to_string())?;
         db_history.push(user_item);
 
-        // Convert DB history items to OpenAI messages format
-        let mut messages: Vec<Value> = db_history
+        // Convert DB history items to OpenAI messages format and sanitize
+        let raw_messages: Vec<Value> = db_history
             .iter()
             .map(|item| {
                 let mut obj = json!({
@@ -353,6 +481,7 @@ impl AgentExecutor {
                 obj
             })
             .collect();
+        let mut messages = sanitize_chat_messages(raw_messages);
 
         let router = ProviderRouter::new(self.models.clone(), &self.agent.strategy);
         let meta_tools = get_meta_tools_definitions();
@@ -365,9 +494,10 @@ impl AgentExecutor {
             let strategy_name = self.agent.strategy.clone();
             let event_tx_clone = self.event_tx.clone();
 
+            let sanitized_for_call = sanitize_chat_messages(messages.clone());
             let completion_result = router
                 .execute_chat_completion(
-                    messages.clone(),
+                    sanitized_for_call,
                     Some(meta_tools.clone()),
                     move |target| {
                         let envelope = EventEnvelope::new(
@@ -505,12 +635,17 @@ impl AgentExecutor {
                             let limit = fn_args["limit"].as_u64().unwrap_or(10) as usize;
 
                             let mut matches = vec![];
-                            for (name, (_srv_id, tool)) in &tool_registry {
-                                let desc = tool.description.as_deref().unwrap_or("").to_lowercase();
-                                if name.to_lowercase().contains(&query) || desc.contains(&query) {
+                            for (unique_name, entry) in &tool_registry {
+                                let desc = entry.tool.description.as_deref().unwrap_or("").to_lowercase();
+                                if unique_name.to_lowercase().contains(&query)
+                                    || desc.contains(&query)
+                                    || entry.original_tool_name.to_lowercase().contains(&query)
+                                {
                                     matches.push(json!({
-                                        "name": name,
-                                        "description": tool.description
+                                        "name": unique_name,
+                                        "server_alias": entry.server_alias,
+                                        "original_name": entry.original_tool_name,
+                                        "description": entry.tool.description
                                     }));
                                 }
                                 if matches.len() >= limit {
@@ -534,17 +669,21 @@ impl AgentExecutor {
                                 tool_name: name.to_string(),
                             });
 
-                            if let Some((_srv_id, tool)) = tool_registry.get(name) {
-                                (
-                                    json!({
-                                        "name": tool.name,
-                                        "description": tool.description,
-                                        "inputSchema": tool.input_schema
-                                    }),
-                                    true,
-                                )
-                            } else {
-                                (json!({ "error": format!("Tool '{}' not found", name) }), false)
+                            match resolve_tool(&tool_registry, name) {
+                                Ok(entry) => {
+                                    let unique_name = format!("{}.{}", entry.server_alias, entry.original_tool_name);
+                                    (
+                                        json!({
+                                            "name": unique_name,
+                                            "original_name": entry.original_tool_name,
+                                            "server_alias": entry.server_alias,
+                                            "description": entry.tool.description,
+                                            "inputSchema": entry.tool.input_schema
+                                        }),
+                                        true,
+                                    )
+                                }
+                                Err(err) => (json!({ "error": err }), false),
                             }
                         }
 
@@ -552,30 +691,28 @@ impl AgentExecutor {
                             let name = fn_args["name"].as_str().unwrap_or("");
                             let mut arguments = fn_args.get("arguments").cloned().unwrap_or(json!({}));
 
-                            // If tool is chat_send, unconditionally route to this agent's actual ID
-                            if name == "chat_send" {
-                                if let Some(obj) = arguments.as_object_mut() {
-                                    obj.insert("agent_id".to_string(), json!(self.agent.id));
-                                }
-                            }
-
-                            if let Some((srv_id, _tool)) = tool_registry.get(name) {
-                                if let Some(session) = sessions.get(srv_id) {
-                                    match session.call_tool(name, arguments).await {
-                                        Ok(res) => (res, true),
-                                        Err(e) => (json!({ "error": e.to_string() }), false),
+                            match resolve_tool(&tool_registry, name) {
+                                Ok(entry) => {
+                                    // If tool is chat_send, unconditionally route to this agent's actual ID
+                                    if entry.original_tool_name == "chat_send" {
+                                        if let Some(obj) = arguments.as_object_mut() {
+                                            obj.insert("agent_id".to_string(), json!(self.agent.id));
+                                        }
                                     }
-                                } else {
-                                    (
-                                        json!({ "error": "MCP server session not active" }),
-                                        false,
-                                    )
+
+                                    if let Some(session) = sessions.get(&entry.server_id) {
+                                        match session.call_tool(&entry.original_tool_name, arguments).await {
+                                            Ok(res) => (res, true),
+                                            Err(e) => (json!({ "error": e.to_string() }), false),
+                                        }
+                                    } else {
+                                        (
+                                            json!({ "error": "MCP server session not active" }),
+                                            false,
+                                        )
+                                    }
                                 }
-                            } else {
-                                (
-                                    json!({ "error": format!("Tool '{}' not found", name) }),
-                                    false,
-                                )
+                                Err(err) => (json!({ "error": err }), false),
                             }
                         }
 
@@ -936,6 +1073,7 @@ impl AgentExecutor {
                         messages.push(json!({
                             "role": "tool",
                             "tool_call_id": call_id,
+                            "name": fn_name,
                             "content": tool_content_str
                         }));
 
@@ -967,5 +1105,137 @@ impl AgentExecutor {
         });
 
         Ok(final_response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_tool_exact_and_fallback() {
+        let mut registry = HashMap::new();
+        registry.insert(
+            "telegram.chat_send".to_string(),
+            ToolRegistryEntry {
+                server_id: "srv_tg".into(),
+                server_alias: "telegram".into(),
+                original_tool_name: "chat_send".into(),
+                tool: McpTool {
+                    name: "chat_send".into(),
+                    description: Some("Send telegram message".into()),
+                    input_schema: None,
+                },
+            },
+        );
+
+        // 1. Direct exact match with dot notation
+        let resolved = resolve_tool(&registry, "telegram.chat_send").unwrap();
+        assert_eq!(resolved.server_id, "srv_tg");
+        assert_eq!(resolved.original_tool_name, "chat_send");
+
+        // 2. Delimiter variants (e.g. double underscore, single underscore)
+        let resolved_variant1 = resolve_tool(&registry, "telegram__chat_send").unwrap();
+        assert_eq!(resolved_variant1.server_id, "srv_tg");
+
+        let resolved_variant2 = resolve_tool(&registry, "telegram_chat_send").unwrap();
+        assert_eq!(resolved_variant2.server_id, "srv_tg");
+
+        // 3. Fallback when unambiguous
+        let resolved_fallback = resolve_tool(&registry, "chat_send").unwrap();
+        assert_eq!(resolved_fallback.server_id, "srv_tg");
+    }
+
+    #[test]
+    fn test_resolve_tool_ambiguous_conflict() {
+        let mut registry = HashMap::new();
+        registry.insert(
+            "telegram.chat_send".to_string(),
+            ToolRegistryEntry {
+                server_id: "srv_tg".into(),
+                server_alias: "telegram".into(),
+                original_tool_name: "chat_send".into(),
+                tool: McpTool {
+                    name: "chat_send".into(),
+                    description: Some("Telegram".into()),
+                    input_schema: None,
+                },
+            },
+        );
+        registry.insert(
+            "discord.chat_send".to_string(),
+            ToolRegistryEntry {
+                server_id: "srv_dc".into(),
+                server_alias: "discord".into(),
+                original_tool_name: "chat_send".into(),
+                tool: McpTool {
+                    name: "chat_send".into(),
+                    description: Some("Discord".into()),
+                    input_schema: None,
+                },
+            },
+        );
+
+        // Calling exact alias works
+        assert_eq!(
+            resolve_tool(&registry, "telegram.chat_send").unwrap().server_id,
+            "srv_tg"
+        );
+        assert_eq!(
+            resolve_tool(&registry, "discord.chat_send").unwrap().server_id,
+            "srv_dc"
+        );
+
+        // Calling naked chat_send should fail with ambiguous error
+        let err = resolve_tool(&registry, "chat_send").unwrap_err();
+        assert!(err.contains("Ambiguous tool 'chat_send'"));
+        assert!(err.contains("discord.chat_send"));
+        assert!(err.contains("telegram.chat_send"));
+    }
+
+    #[test]
+    fn test_sanitize_chat_messages_orphaned_tools() {
+        // Simulating the exact state that caused Gemini error:
+        // [system, tool (call_43399), tool (call_43402), user]
+        let raw = vec![
+            json!({ "role": "system", "content": "You are Neuxbane." }),
+            json!({ "role": "tool", "tool_call_id": "call_43399", "content": "{\"compacted\": true}" }),
+            json!({ "role": "tool", "tool_call_id": "call_43402", "content": "chat sent" }),
+            json!({ "role": "user", "content": "hello" }),
+        ];
+
+        let sanitized = sanitize_chat_messages(raw);
+        assert_eq!(sanitized.len(), 4);
+        assert_eq!(sanitized[0]["role"], "system");
+        // Orphaned tool calls MUST be converted to system context to avoid Gemini functionResponse error
+        assert_eq!(sanitized[1]["role"], "system");
+        assert!(sanitized[1]["content"].as_str().unwrap().contains("compacted"));
+        assert_eq!(sanitized[2]["role"], "system");
+        assert_eq!(sanitized[3]["role"], "user");
+    }
+
+    #[test]
+    fn test_sanitize_chat_messages_valid_tool_call() {
+        // Valid tool call: assistant has tool_calls matching tool message
+        let raw = vec![
+            json!({ "role": "user", "content": "hello" }),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_123",
+                    "type": "function",
+                    "function": { "name": "search_tools", "arguments": "{}" }
+                }]
+            }),
+            json!({ "role": "tool", "tool_call_id": "call_123", "content": "result" }),
+        ];
+
+        let sanitized = sanitize_chat_messages(raw);
+        assert_eq!(sanitized.len(), 3);
+        assert_eq!(sanitized[1]["role"], "assistant");
+        assert_eq!(sanitized[2]["role"], "tool");
+        // Ensure "name" is injected from assistant tool_call
+        assert_eq!(sanitized[2]["name"], "search_tools");
     }
 }

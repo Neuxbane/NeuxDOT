@@ -14,15 +14,19 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 pub struct CreateMcpRequest {
     pub name: String,
+    pub alias: Option<String>,
     pub transport: String, // "stdio" or "http"
     pub url_or_command: String,
+    pub headers_or_env: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct UpdateMcpRequest {
     pub name: String,
+    pub alias: Option<String>,
     pub transport: String,
     pub url_or_command: String,
+    pub headers_or_env: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -63,8 +67,10 @@ pub async fn create_mcp_handler(
         .create_mcp_server(
             &auth.account_id,
             &payload.name,
+            payload.alias.as_deref(),
             &transport,
             &payload.url_or_command,
+            payload.headers_or_env.as_deref(),
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
@@ -99,7 +105,14 @@ pub async fn update_mcp_handler(
 
     let updated = state
         .db
-        .update_mcp_server(&id, &payload.name, &transport, &payload.url_or_command)
+        .update_mcp_server(
+            &id,
+            &payload.name,
+            payload.alias.as_deref(),
+            &transport,
+            &payload.url_or_command,
+            payload.headers_or_env.as_deref(),
+        )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
 

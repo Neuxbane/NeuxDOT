@@ -57,8 +57,10 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    alias TEXT,
     transport TEXT NOT NULL,
-    url_or_command TEXT NOT NULL
+    url_or_command TEXT NOT NULL,
+    headers_or_env TEXT
 );
 
 CREATE TABLE IF NOT EXISTS agent_mcp (

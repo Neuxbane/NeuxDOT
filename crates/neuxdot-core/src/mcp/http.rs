@@ -1,13 +1,74 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::client::{JsonRpcRequest, JsonRpcResponse, McpError, McpNotification, McpTransport};
+
+pub fn parse_custom_headers(raw: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return headers;
+    }
+
+    // Try parsing as JSON object first: e.g. {"Authorization": "Bearer ...", "X-API-Key": "..."}
+    if trimmed.starts_with('{') {
+        if let Ok(map) = serde_json::from_str::<HashMap<String, Value>>(trimmed) {
+            for (k, v) in map {
+                let v_str = match v {
+                    Value::String(s) => s,
+                    _ => v.to_string(),
+                };
+                if let (Ok(name), Ok(val)) = (
+                    HeaderName::from_bytes(k.as_bytes()),
+                    HeaderValue::from_str(&v_str),
+                ) {
+                    headers.insert(name, val);
+                } else {
+                    warn!("Invalid HTTP header name or value: {} = {}", k, v_str);
+                }
+            }
+            return headers;
+        }
+    }
+
+    // Otherwise, parse line by line: "Key: Value" or "Key=Value"
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let sep = if line.contains(':') {
+            ':'
+        } else if line.contains('=') {
+            '='
+        } else {
+            continue;
+        };
+
+        if let Some((k, v)) = line.split_once(sep) {
+            let key = k.trim();
+            let val = v.trim();
+            if let (Ok(name), Ok(header_val)) = (
+                HeaderName::from_bytes(key.as_bytes()),
+                HeaderValue::from_str(val),
+            ) {
+                headers.insert(name, header_val);
+            } else {
+                warn!("Invalid HTTP header name or value: {} = {}", key, val);
+            }
+        }
+    }
+
+    headers
+}
 
 pub struct HttpTransport {
     url: String,
@@ -18,9 +79,17 @@ pub struct HttpTransport {
 impl HttpTransport {
     pub fn new(
         url: &str,
+        headers_raw: Option<&str>,
         notification_tx: mpsc::UnboundedSender<McpNotification>,
     ) -> Arc<Self> {
-        let client = Client::builder().build().unwrap_or_default();
+        let mut builder = Client::builder();
+        if let Some(raw) = headers_raw {
+            let parsed_headers = parse_custom_headers(raw);
+            if !parsed_headers.is_empty() {
+                builder = builder.default_headers(parsed_headers);
+            }
+        }
+        let client = builder.build().unwrap_or_default();
         let sse_url = url.to_string();
 
         // Background SSE/Stream listener for server pushed information
@@ -100,5 +169,32 @@ impl McpTransport for HttpTransport {
 
     async fn close(&self) -> Result<(), McpError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_json_headers() {
+        let raw = r#"{"Authorization": "Bearer test-token-123", "X-Custom": "val"}"#;
+        let headers = parse_custom_headers(raw);
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer test-token-123"
+        );
+        assert_eq!(headers.get("x-custom").unwrap().to_str().unwrap(), "val");
+    }
+
+    #[test]
+    fn test_parse_lines_headers() {
+        let raw = "Authorization: Bearer my-key\nX-Api-Key: 12345\n";
+        let headers = parse_custom_headers(raw);
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer my-key"
+        );
+        assert_eq!(headers.get("x-api-key").unwrap().to_str().unwrap(), "12345");
     }
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api, type McpServer, type Agent } from '$lib/api';
-	import { Radio, Plus, Trash2, Edit3, X, ArrowLeft, Bell, Send, Check } from 'lucide-svelte';
+	import { Radio, Plus, Trash2, Edit3, X, ArrowLeft, Bell, Send, Check, Key } from 'lucide-svelte';
 
 	let servers = $state<McpServer[]>([]);
 	let agents = $state<Agent[]>([]);
@@ -10,8 +10,10 @@
 	let editingServer = $state<McpServer | null>(null);
 
 	let formName = $state('');
+	let formAlias = $state('');
 	let formTransport = $state('stdio');
 	let formUrlOrCommand = $state('node ./mcp-tools/server.js');
+	let formHeadersOrEnv = $state('');
 	let isSaving = $state(false);
 
 	// Push simulation modal
@@ -43,16 +45,20 @@
 	function openCreateModal() {
 		editingServer = null;
 		formName = '';
+		formAlias = '';
 		formTransport = 'stdio';
 		formUrlOrCommand = 'node ./mcp-tools/server.js';
+		formHeadersOrEnv = '';
 		isModalOpen = true;
 	}
 
 	function openEditModal(s: McpServer) {
 		editingServer = s;
 		formName = s.name;
+		formAlias = s.alias || '';
 		formTransport = s.transport;
 		formUrlOrCommand = s.url_or_command;
+		formHeadersOrEnv = s.headers_or_env || '';
 		isModalOpen = true;
 	}
 
@@ -72,15 +78,19 @@
 			if (editingServer) {
 				const updated = await api.mcp.update(editingServer.id, {
 					name: formName.trim(),
+					alias: formAlias.trim() || undefined,
 					transport: formTransport,
-					url_or_command: formUrlOrCommand.trim()
+					url_or_command: formUrlOrCommand.trim(),
+					headers_or_env: formHeadersOrEnv.trim() || undefined
 				});
 				servers = servers.map((s) => (s.id === updated.id ? updated : s));
 			} else {
 				const created = await api.mcp.create({
 					name: formName.trim(),
+					alias: formAlias.trim() || undefined,
 					transport: formTransport,
-					url_or_command: formUrlOrCommand.trim()
+					url_or_command: formUrlOrCommand.trim(),
+					headers_or_env: formHeadersOrEnv.trim() || undefined
 				});
 				servers = [...servers, created];
 			}
@@ -191,7 +201,23 @@
 					<tbody class="divide-y divide-zinc-200/60 dark:divide-zinc-800/60 text-zinc-700 dark:text-zinc-300">
 						{#each servers as srv (srv.id)}
 							<tr class="hover:bg-zinc-50/70 dark:hover:bg-zinc-800/50 transition-colors">
-								<td class="p-3 pl-4 font-medium text-zinc-900 dark:text-white">{srv.name}</td>
+								<td class="p-3 pl-4 font-medium text-zinc-900 dark:text-white">
+									<div class="flex items-center gap-2">
+										<span>{srv.name}</span>
+										<span class="rounded px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700" title="Tool alias prefix">
+											@{srv.alias || srv.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')}
+										</span>
+										{#if srv.headers_or_env}
+											<span
+												class="inline-flex items-center gap-1 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-mono text-emerald-600 dark:text-emerald-400"
+												title={srv.transport === 'http' ? 'Custom HTTP Headers / Auth configured' : 'Custom Environment Variables configured'}
+											>
+												<Key class="h-2.5 w-2.5" />
+												<span>{srv.transport === 'http' ? 'Auth' : 'Env'}</span>
+											</span>
+										{/if}
+									</div>
+								</td>
 								<td class="p-3">
 									<span class="rounded-full px-2 py-0.5 text-[10px] font-mono uppercase {srv.transport === 'wasm_stdio' ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20' : srv.transport === 'stdio' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20' : 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20'}">
 										{srv.transport}
@@ -268,6 +294,22 @@
 				</div>
 
 				<div>
+					<label for="mcp-alias" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+						Unique Tool Call Alias (Optional)
+					</label>
+					<input
+						id="mcp-alias"
+						type="text"
+						bind:value={formAlias}
+						placeholder="e.g. telegram, discord, fs (defaults to server name slug)"
+						class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none"
+					/>
+					<p class="mt-1 text-[11px] text-zinc-500">
+						Tools are exposed to agents as <code>{formAlias.trim() || 'alias'}.tool_name</code> to prevent name collisions across servers.
+					</p>
+				</div>
+
+				<div>
 					<label for="mcp-transport" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Transport</label>
 					<select
 						id="mcp-transport"
@@ -292,6 +334,26 @@
 							: 'http://localhost:3001/sse'}
 						class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none"
 					/>
+				</div>
+
+				<div>
+					<label for="mcp-headers" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+						{formTransport === 'http' ? 'Headers & Authentication (Optional)' : 'Environment Variables (Optional)'}
+					</label>
+					<textarea
+						id="mcp-headers"
+						rows="3"
+						bind:value={formHeadersOrEnv}
+						placeholder={formTransport === 'http'
+							? '{"Authorization": "Bearer YOUR_API_KEY"}\nor\nAuthorization: Bearer YOUR_API_KEY\nX-API-Key: custom_secret'
+							: '{"GITHUB_TOKEN": "ghp_xxx"}\nor\nKEY=VALUE'}
+						class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none"
+					></textarea>
+					<p class="mt-1 text-[11px] text-zinc-500">
+						{formTransport === 'http'
+							? 'Accepts JSON object or line-by-line "Header: Value" syntax.'
+							: 'Accepts JSON object or line-by-line "KEY=VALUE" syntax.'}
+					</p>
 				</div>
 
 				<div class="mt-6 flex justify-end gap-2 border-t border-zinc-100 dark:border-zinc-800 pt-3">

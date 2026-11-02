@@ -76,8 +76,10 @@ export interface McpServer {
 	id: string;
 	account_id: string;
 	name: string;
+	alias?: string;
 	transport: string;
 	url_or_command: string;
+	headers_or_env?: string;
 }
 
 export interface AgentPushedMessage {
@@ -92,7 +94,9 @@ export interface AgentPushedMessage {
 export interface AgentToolItem {
 	mcp_id: string;
 	server_name: string;
+	server_alias?: string;
 	name: string;
+	unique_name?: string;
 	description?: string;
 	input_schema?: any;
 	is_enabled: boolean;
@@ -385,13 +389,13 @@ class ApiClient {
 	mcp = {
 		list: () => this.request<McpServer[]>('/api/mcp'),
 
-		create: (data: { name: string; transport: string; url_or_command: string }) =>
+		create: (data: { name: string; alias?: string; transport: string; url_or_command: string; headers_or_env?: string }) =>
 			this.request<McpServer>('/api/mcp', {
 				method: 'POST',
 				body: JSON.stringify(data)
 			}),
 
-		update: (id: string, data: { name: string; transport: string; url_or_command: string }) =>
+		update: (id: string, data: { name: string; alias?: string; transport: string; url_or_command: string; headers_or_env?: string }) =>
 			this.request<McpServer>(`/api/mcp/${id}`, {
 				method: 'PUT',
 				body: JSON.stringify(data)

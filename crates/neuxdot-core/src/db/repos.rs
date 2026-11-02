@@ -554,18 +554,22 @@ impl Database {
         &self,
         account_id: &str,
         name: &str,
+        alias: Option<&str>,
         transport: &str,
         url_or_command: &str,
+        headers_or_env: Option<&str>,
     ) -> Result<McpServer, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO mcp_servers (id, account_id, name, transport, url_or_command) VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO mcp_servers (id, account_id, name, alias, transport, url_or_command, headers_or_env) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(&id)
         .bind(account_id)
         .bind(name)
+        .bind(alias)
         .bind(transport)
         .bind(url_or_command)
+        .bind(headers_or_env)
         .execute(&self.pool)
         .await?;
 
@@ -578,15 +582,19 @@ impl Database {
         &self,
         id: &str,
         name: &str,
+        alias: Option<&str>,
         transport: &str,
         url_or_command: &str,
+        headers_or_env: Option<&str>,
     ) -> Result<McpServer, sqlx::Error> {
         sqlx::query(
-            "UPDATE mcp_servers SET name = ?, transport = ?, url_or_command = ? WHERE id = ?",
+            "UPDATE mcp_servers SET name = ?, alias = ?, transport = ?, url_or_command = ?, headers_or_env = ? WHERE id = ?",
         )
         .bind(name)
+        .bind(alias)
         .bind(transport)
         .bind(url_or_command)
+        .bind(headers_or_env)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -800,15 +808,21 @@ impl Database {
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| format!("[WASM] {}", ext.name));
+                    let server_alias = mcp.get("alias")
+                        .or_else(|| mcp.get("server_alias"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| ext.name.clone());
                     let transport = "wasm_stdio";
                     let url_or_command = format!("wasm://{}", ext.id);
 
                     sqlx::query(
                         r#"
-                        INSERT INTO mcp_servers (id, account_id, name, transport, url_or_command)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO mcp_servers (id, account_id, name, alias, transport, url_or_command)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         ON CONFLICT (id) DO UPDATE SET
                             name = excluded.name,
+                            alias = excluded.alias,
                             transport = excluded.transport,
                             url_or_command = excluded.url_or_command
                         "#,
@@ -816,6 +830,7 @@ impl Database {
                     .bind(&mcp_id)
                     .bind(account_id)
                     .bind(&server_name)
+                    .bind(&server_alias)
                     .bind(transport)
                     .bind(&url_or_command)
                     .execute(&self.pool)
