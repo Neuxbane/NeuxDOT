@@ -11,7 +11,8 @@ Designed to connect with **NeuxDOT** and any standard MCP client.
 - **Standalone HTTP/SSE Server**: Zero external dependencies. Runs on pure Node.js (Node 18+).
 - **One-Time API Key Generation**: Every time the server starts, it generates a fresh cryptographically secure API key and prints the ready-to-paste NeuxDOT configuration to the console.
 - **Strict Authentication**: Rejects unauthenticated requests with HTTP `401 Unauthorized` and `WWW-Authenticate: Bearer realm="computer-mcp"`.
-- **Background Execution & Timeouts**: `terminal` supports detached background execution and configurable timeouts.
+- **Automatic Detach on Timeout**: If a command exceeds its `timeout`, it automatically detaches into the background with its PID reported so the agent or user can continue working without hanging.
+- **Background Terminal Management**: Supports explicit background runs (`runInBackground: true`), listing active processes (`list_terminal`), inspecting incremental output (`check_terminal`), and terminating jobs (`kill_terminal`).
 
 ---
 
@@ -19,7 +20,10 @@ Designed to connect with **NeuxDOT** and any standard MCP client.
 
 | Tool | Parameters | Description |
 |---|---|---|
-| **`terminal`** | `bash: string`<br>`runInBackground?: boolean` *(default: false)*<br>`timeout?: string` *(default: "120s")* | Executes a bash command in the terminal environment with timeout or background execution support. Truncation is managed by the meta tool executor. |
+| **`terminal`** | `bash: string`<br>`runInBackground?: boolean` *(default: false)*<br>`timeout?: string` *(default: "120s")* | Executes a bash command in the terminal. If execution runs longer than `timeout`, it automatically detaches into the background and returns its PID. |
+| **`list_terminal`** | `activeOnly?: boolean` *(default: false)* | Lists all managed terminal processes (running, detached, completed, or failed) with duration and status. |
+| **`check_terminal`** | `pid: number`<br>`tailLines?: number` | Checks process status and inspects output for a specific PID (supports line tailing). |
+| **`kill_terminal`** | `pid: number`<br>`signal?: string` *(default: "SIGTERM")* | Sends a signal to terminate a running or detached terminal process. |
 | **`list`** | `path?: string` *(default: ".")* | Lists files and directories with entry type, byte size, and last modified timestamps. |
 | **`read`** | `path: string`<br>`from?: number`<br>`to?: number` | Reads a file with optional 1-based line slicing (`from` to `to`) and line numbering. |
 | **`set`** | `path: string`<br>`content: string` | Creates or overwrites a file with content (automatically creates parent directories). |
@@ -85,6 +89,9 @@ When launched, the server outputs its dynamic one-time credentials:
 4. Enable the server on your agent:
    - Your agent now has access to:
      - `computer.terminal`
+     - `computer.list_terminal`
+     - `computer.check_terminal`
+     - `computer.kill_terminal`
      - `computer.list`
      - `computer.read`
      - `computer.set`

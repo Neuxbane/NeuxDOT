@@ -16,6 +16,9 @@ const ONE_TIME_API_KEY =
 // Connected SSE clients for server push notifications
 const sseClients = new Set();
 
+// Managed background and active terminal processes
+const managedTerminals = new Map();
+
 /**
  * Parses duration strings like "120s", "5m", "500ms" into milliseconds.
  */
@@ -46,7 +49,8 @@ function parseTimeout(val, defaultMs = 120000) {
 const TOOLS = [
   {
     name: 'terminal',
-    description: 'Execute a bash command in the terminal environment',
+    description:
+      'Execute a bash command in the terminal environment. If execution exceeds the timeout, it automatically detaches into the background with a PID.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -66,6 +70,57 @@ const TOOLS = [
         },
       },
       required: ['bash'],
+    },
+  },
+  {
+    name: 'list_terminal',
+    description: 'List all managed terminal processes (running, detached, completed, or failed)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        activeOnly: {
+          type: 'boolean',
+          description: 'If true, only returns active/running or detached processes (default: false)',
+          default: false,
+        },
+      },
+    },
+  },
+  {
+    name: 'check_terminal',
+    description: 'Check status and latest output for a specific terminal process ID (PID)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pid: {
+          type: 'integer',
+          description: 'The process ID of the terminal to inspect',
+        },
+        tailLines: {
+          type: 'integer',
+          description: 'Optional number of trailing lines of output to return',
+        },
+      },
+      required: ['pid'],
+    },
+  },
+  {
+    name: 'kill_terminal',
+    description: 'Send a termination signal (SIGTERM/SIGKILL) to a managed terminal process',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pid: {
+          type: 'integer',
+          description: 'Process ID (PID) of the terminal process to kill',
+        },
+        signal: {
+          type: 'string',
+          description: 'Signal to send (e.g. SIGTERM, SIGKILL). Default: SIGTERM',
+          default: 'SIGTERM',
+        },
+      },
+      required: ['pid'],
     },
   },
   {
@@ -160,42 +215,203 @@ async function callTool(name, args = {}) {
       const runInBackground = Boolean(args.runInBackground);
       const timeoutMs = parseTimeout(args.timeout ?? '120s', 120000);
 
-      if (runInBackground) {
-        const child = spawn('/bin/bash', ['-c', command], {
-          detached: true,
-          stdio: 'ignore',
+      const child = spawn('/bin/bash', ['-c', command], {
+        detached: process.platform !== 'win32',
+      });
+
+      const entry = {
+        pid: child.pid,
+        command,
+        startTime: Date.now(),
+        endTime: null,
+        status: 'running',
+        exitCode: null,
+        output: '',
+        child,
+      };
+      managedTerminals.set(child.pid, entry);
+
+      if (child.stdout) {
+        child.stdout.on('data', (chunk) => {
+          entry.output += chunk.toString();
+          if (entry.output.length > 50 * 1024 * 1024) {
+            entry.output = entry.output.slice(-50 * 1024 * 1024);
+          }
         });
-        child.unref();
+      }
+
+      if (child.stderr) {
+        child.stderr.on('data', (chunk) => {
+          entry.output += chunk.toString();
+          if (entry.output.length > 50 * 1024 * 1024) {
+            entry.output = entry.output.slice(-50 * 1024 * 1024);
+          }
+        });
+      }
+
+      child.on('close', (code) => {
+        entry.endTime = Date.now();
+        entry.exitCode = code ?? 0;
+        entry.status = code === 0 ? 'completed' : 'failed';
+      });
+
+      child.on('error', (err) => {
+        entry.endTime = Date.now();
+        entry.exitCode = 1;
+        entry.status = 'failed';
+        entry.output += `\n[Process Error]: ${err.message}\n`;
+      });
+
+      if (runInBackground) {
         return {
           status: 'running_in_background',
           pid: child.pid,
           command,
+          message: `Process started in background with PID ${child.pid}. Use check_terminal(pid: ${child.pid}) to inspect output.`,
         };
       }
 
       return new Promise((resolve) => {
-        exec(
-          command,
-          {
-            shell: '/bin/bash',
-            timeout: timeoutMs,
-            maxBuffer: 50 * 1024 * 1024, // 50MB buffer
-          },
-          (err, stdout, stderr) => {
-            const exitCode = err?.code ?? (err ? 1 : 0);
-            const combined = [
-              stdout ? stdout : '',
-              stderr ? (stdout ? '\n[STDERR]\n' + stderr : stderr) : '',
-            ].join('');
+        let settled = false;
 
+        const timer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            entry.status = 'detached_due_to_timeout';
             resolve({
-              exit_code: exitCode,
-              output: combined || '(no output produced)',
-              timed_out: Boolean(err?.killed),
+              status: 'detached_due_to_timeout',
+              pid: child.pid,
+              command,
+              timeout: args.timeout || '120s',
+              message: `Command exceeded timeout of ${args.timeout || '120s'}. Process was automatically detached into the background with PID ${child.pid}. Use check_terminal(pid: ${child.pid}) to inspect its output or list_terminal() to view all active processes.`,
+              output_so_far: entry.output || '(no output produced yet)',
             });
           }
-        );
+        }, timeoutMs);
+
+        child.on('close', (code) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve({
+              status: code === 0 ? 'completed' : 'failed',
+              exit_code: code ?? 0,
+              output: entry.output || '(no output produced)',
+            });
+          }
+        });
+
+        child.on('error', (err) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve({
+              status: 'failed',
+              exit_code: 1,
+              output: entry.output || err.message,
+            });
+          }
+        });
       });
+    }
+
+    case 'list_terminal': {
+      const activeOnly = Boolean(args.activeOnly);
+      const list = [];
+      const now = Date.now();
+
+      for (const [pid, entry] of managedTerminals.entries()) {
+        const isRunning =
+          entry.status === 'running' || entry.status === 'detached_due_to_timeout';
+        if (activeOnly && !isRunning) {
+          continue;
+        }
+
+        const durationMs = (entry.endTime ?? now) - entry.startTime;
+        list.push({
+          pid,
+          command: entry.command,
+          status: entry.status,
+          exit_code: entry.exitCode,
+          duration_seconds: Math.round(durationMs / 1000),
+          output_length_chars: entry.output.length,
+          start_time: new Date(entry.startTime).toISOString(),
+          end_time: entry.endTime ? new Date(entry.endTime).toISOString() : null,
+        });
+      }
+
+      return {
+        count: list.length,
+        terminals: list,
+      };
+    }
+
+    case 'check_terminal': {
+      const pid = parseInt(args.pid, 10);
+      if (isNaN(pid)) {
+        throw new Error("Missing or invalid 'pid' parameter");
+      }
+
+      const entry = managedTerminals.get(pid);
+      if (!entry) {
+        throw new Error(
+          `No managed terminal process found with PID ${pid}. Use list_terminal() to view available PIDs.`
+        );
+      }
+
+      const now = Date.now();
+      const durationMs = (entry.endTime ?? now) - entry.startTime;
+
+      let output = entry.output;
+      if (args.tailLines && args.tailLines > 0) {
+        const lines = output.split('\n');
+        output = lines.slice(-args.tailLines).join('\n');
+      }
+
+      return {
+        pid: entry.pid,
+        command: entry.command,
+        status: entry.status,
+        exit_code: entry.exitCode,
+        duration_seconds: Math.round(durationMs / 1000),
+        output: output || '(no output produced yet)',
+        total_output_chars: entry.output.length,
+        start_time: new Date(entry.startTime).toISOString(),
+        end_time: entry.endTime ? new Date(entry.endTime).toISOString() : null,
+      };
+    }
+
+    case 'kill_terminal': {
+      const pid = parseInt(args.pid, 10);
+      if (isNaN(pid)) {
+        throw new Error("Missing or invalid 'pid' parameter");
+      }
+      const entry = managedTerminals.get(pid);
+      if (!entry) {
+        throw new Error(`No managed terminal process found with PID ${pid}`);
+      }
+      const signal = args.signal || 'SIGTERM';
+      try {
+        if (process.platform !== 'win32') {
+          process.kill(-entry.pid, signal);
+        } else {
+          process.kill(entry.pid, signal);
+        }
+      } catch {
+        try {
+          process.kill(entry.pid, signal);
+        } catch (err) {
+          throw new Error(`Failed to kill process ${pid}: ${err.message}`);
+        }
+      }
+      entry.status = 'killed';
+      entry.endTime = Date.now();
+      return {
+        pid,
+        status: 'killed',
+        signal,
+        message: `Signal ${signal} sent to process ${pid}`,
+      };
     }
 
     case 'list': {
@@ -534,6 +750,9 @@ server.listen(PORT, HOST, () => {
 ╠════════════════════════════════════════════════════════════════════════════╣
 ║ Tools available:                                                           ║
 ║   - terminal(bash, runInBackground=false, timeout="120s")                  ║
+║   - list_terminal(activeOnly=false)                                        ║
+║   - check_terminal(pid, tailLines?)                                        ║
+║   - kill_terminal(pid, signal="SIGTERM")                                   ║
 ║   - list(path=".")                                                         ║
 ║   - read(path, from?, to?)                                                 ║
 ║   - set(path, content)                                                     ║
