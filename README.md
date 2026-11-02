@@ -22,6 +22,7 @@
 
 **[ 🌸 The Paradigm ](#-the-neuxdot-paradigm)** &nbsp;•&nbsp;
 **[ 🏛️ Architecture ](#-system-architecture)** &nbsp;•&nbsp;
+**[ 🖼️ Screenshots ](#-screenshots)** &nbsp;•&nbsp;
 **[ ✨ 11 Meta-Tools ](#1--11-invariant-meta-tools-cache-stability-guarantee)** &nbsp;•&nbsp;
 **[ 🧩 Unified Plugins ](#2--unified-plugin-system)** &nbsp;•&nbsp;
 **[ 🧠 Instruction Presets ](#3--agent-instruction-presets)** &nbsp;•&nbsp;
@@ -46,7 +47,7 @@ Traditional Framework:
 [ Volatile System Prompt (Tool Schemas + Server State) ] ➔ 💥 Cache Miss Every Turn!
 
 NeuxDOT Architecture:
-[ ❄️ Invariant Static Prompt + 9 Meta-Tools ] ➔ ⚡ 100% Cache Hit Across All Turns!
+[ ❄️ Invariant Static Prompt + 11 Meta-Tools ] ➔ ⚡ 100% Cache Hit Across All Turns!
 ```
 
 NeuxDOT eliminates this flaw at the runtime kernel layer:
@@ -58,6 +59,44 @@ NeuxDOT eliminates this flaw at the runtime kernel layer:
 * ⏳ **Single-Timer Deterministic Sleeping**: Native `sleep(duration)` with timer supersedence, cancellation guarantees, and instant wake-up on push events.
 * 🎀 **Pure Handlebars Templating**: No hardcoded system prompt injections. Complete user control over prompt structure and memory formatting.
 * 🪝 **Transparent Response Hooks**: Custom message telemetry evaluated with `{{time}}` and `{{context_remaining}}` injected into every tool execution event.
+
+---
+
+## 🖼️ Screenshots
+
+The dashboard ships with a full **bright / dark** theme pair. Every screen below is the real
+SvelteKit UI, not a mockup.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="assets/multi_servers_multi_accounts_bright.png">
+        <img src="assets/multi_servers_multi_accounts_bright.png" alt="Server Accounts — multi-server, multi-account with roles and password change" width="100%" />
+      </a>
+      <sub><b>☀️ Multi-Server / Multi-Account</b> — root &amp; member roles, connected server profiles, and password change scoped to the signed-in account.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <a href="assets/account_server_profile_bright.png">
+        <img src="assets/account_server_profile_bright.png" alt="Server Profile — display name, cropped avatar, fallback color and shape" width="100%" />
+      </a>
+      <sub><b>☀️ Server Profile</b> — display name, cropped &amp; compressed profile picture, URL fallback, and colored-initials preview.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="assets/agent_setting_dark.png">
+        <img src="assets/agent_setting_dark.png" alt="Agent settings — granular tool permissions and push MCP subscriptions" width="100%" />
+      </a>
+      <sub><b>🌙 Agent Settings &amp; Tool Permissions</b> — zero-trust per-tool toggles and unprompted push subscriptions, grouped under a live plugin panel.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <a href="assets/costom_mcp_dark.png">
+        <img src="assets/costom_mcp_dark.png" alt="Add Plugin — WASM, stdio, HTTP/SSE or custom cURL tools with live test runner" width="100%" />
+      </a>
+      <sub><b>🌙 Add Plugin (Custom cURL)</b> — paste a cURL command; arguments, schema and captures are parsed automatically, with a live test runner.</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
