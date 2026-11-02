@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -9,7 +10,8 @@ CREATE TABLE IF NOT EXISTS profiles (
     account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
     display_name TEXT,
     avatar_color TEXT,
-    avatar_shape TEXT
+    avatar_shape TEXT,
+    avatar_url TEXT
 );
 
 CREATE TABLE IF NOT EXISTS providers (
@@ -31,19 +33,37 @@ CREATE TABLE IF NOT EXISTS provider_models (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Per-account reusable system instructions ("Agent Instructions" presets).
+-- Strictly owner-scoped: every query filters by account_id.
+CREATE TABLE IF NOT EXISTS agent_instruction_presets (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_instruction_presets_account
+    ON agent_instruction_presets(account_id, created_at);
+
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     avatar_color TEXT,
     avatar_shape TEXT,
+    avatar_url TEXT,
     strategy TEXT NOT NULL DEFAULT 'fallback',
     system_prompt TEXT,
     is_active BOOLEAN DEFAULT 0,
     allow_output_text BOOLEAN DEFAULT 0,
     output_text_error_message TEXT DEFAULT 'Output Text is not allowed, consider use correct tool or sleep.',
     max_running_history_chars INTEGER DEFAULT 300000,
-    response_hooks_json TEXT DEFAULT '[]'
+    response_hooks_json TEXT DEFAULT '[]',
+    -- Selected Agent Instructions preset (NULL = Custom / free-text prompt)
+    instruction_preset_id TEXT REFERENCES agent_instruction_presets(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS agent_providers (

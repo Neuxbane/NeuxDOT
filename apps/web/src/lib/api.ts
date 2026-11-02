@@ -1,8 +1,66 @@
+export type AccountRole = 'root' | 'member';
+
 export interface Profile {
 	account_id: string;
 	display_name?: string;
 	avatar_color?: string;
 	avatar_shape?: string;
+	/** Data URL (uploaded picture) or absolute http(s) URL. */
+	avatar_url?: string;
+}
+
+/** Payload accepted by PUT /api/profile */
+export interface ProfileUpdatePayload {
+	display_name?: string;
+	avatar_color?: string;
+	avatar_shape?: string;
+	avatar_url?: string;
+}
+
+/** Response of GET /api/auth/me */
+export interface AuthMe {
+	account_id: string;
+	username: string;
+	role: AccountRole;
+	profile?: Profile | null;
+}
+
+/** Response of GET /api/auth/login */
+export interface AuthLoginResponse {
+	token: string;
+	account_id: string;
+	username: string;
+	role?: AccountRole;
+}
+
+/** Row returned by GET /api/accounts (root only). */
+export interface ManagedAccount {
+	id: string;
+	username: string;
+	role: AccountRole;
+	display_name?: string;
+	avatar_url?: string;
+	created_at?: string;
+}
+
+export interface CreateAccountPayload {
+	username: string;
+	password: string;
+	display_name?: string;
+	role?: AccountRole;
+}
+
+export interface UpdateAccountPayload {
+	username?: string;
+	display_name?: string;
+	role?: AccountRole;
+	avatar_url?: string;
+}
+
+export interface ChangePasswordPayload {
+	old_password: string;
+	new_password: string;
+	confirm_password: string;
 }
 
 export interface ModelConfigPayload {
@@ -49,18 +107,38 @@ export interface ResponseHook {
 	enabled: boolean;
 }
 
+/** A reusable system instruction owned by one account. */
+export interface InstructionPreset {
+id: string;
+account_id: string;
+name: string;
+description: string;
+content: string;
+created_at?: string;
+updated_at?: string;
+}
+
+export interface InstructionPresetPayload {
+name: string;
+description?: string;
+content: string;
+}
+
 export interface Agent {
 	id: string;
 	account_id: string;
 	name: string;
 	avatar_color?: string;
 	avatar_shape?: string;
+	avatar_url?: string;
 	strategy: string;
 	system_prompt?: string;
 	is_active: boolean;
 	allow_output_text?: boolean;
 	output_text_error_message?: string;
 	max_running_history_chars?: number;
+/** Selected Agent Instructions preset; null/undefined = Custom. */
+instruction_preset_id?: string | null;
 	response_hooks_json?: string;
 }
 
@@ -133,8 +211,11 @@ export interface ServerAccount {
 	serverUrl: string;
 	username: string;
 	token: string;
+	role?: AccountRole;
 	displayName?: string;
 	avatarColor?: string;
+	avatarShape?: string;
+	avatarUrl?: string;
 }
 
 export interface ExtensionUiHook {
@@ -235,19 +316,57 @@ class ApiClient {
 			throw new Error(errorData.error || `Request failed with status ${res.status}`);
 		}
 
-		return res.json();
+		// Several endpoints (DELETE /api/accounts/:id and friends) answer with
+		// 204 No Content, which has an empty body. Calling res.json() on those
+		// throws "Unexpected end of JSON input" and makes a successful request
+		// look like a failure.
+		if (res.status === 204 || res.headers.get('content-length') === '0') {
+			return undefined as T;
+		}
+
+		const text = await res.text();
+		if (!text) {
+			return undefined as T;
+		}
+		return JSON.parse(text) as T;
 	}
 
 	// Auth
 	auth = {
 		login: (username: string, password: string) =>
-			this.request<{ token: string; account_id: string; username: string }>('/api/auth/login', {
+			this.request<AuthLoginResponse>('/api/auth/login', {
 				method: 'POST',
 				body: JSON.stringify({ username, password })
 			}),
 
-		me: () =>
-			this.request<{ account_id: string; username: string; profile: Profile | null }>('/api/auth/me')
+		me: () => this.request<AuthMe>('/api/auth/me')
+	};
+
+	// Accounts (root only; non-root receives 403)
+	accounts = {
+		list: () => this.request<ManagedAccount[]>('/api/accounts'),
+
+		create: (data: CreateAccountPayload) =>
+			this.request<ManagedAccount>('/api/accounts', {
+				method: 'POST',
+				body: JSON.stringify(data)
+			}),
+
+		update: (id: string, data: UpdateAccountPayload) =>
+			this.request<ManagedAccount>(`/api/accounts/${id}`, {
+				method: 'PATCH',
+				body: JSON.stringify(data)
+			}),
+
+		delete: (id: string) =>
+			this.request<{ deleted: boolean }>(`/api/accounts/${id}`, { method: 'DELETE' }),
+
+		/** Change the password of the *currently authenticated* account (401 = wrong old password, 400 = mismatch). */
+		changePassword: (id: string, data: ChangePasswordPayload) =>
+			this.request<{ success: boolean }>(`/api/accounts/${id}/password`, {
+				method: 'POST',
+				body: JSON.stringify(data)
+			})
 	};
 
 	// Agents
@@ -260,6 +379,7 @@ class ApiClient {
 			name: string;
 			avatar_color?: string;
 			avatar_shape?: string;
+			avatar_url?: string;
 			strategy?: string;
 			system_prompt?: string;
 			provider_ids?: string[];
@@ -282,6 +402,7 @@ class ApiClient {
 				name?: string;
 				avatar_color?: string;
 				avatar_shape?: string;
+				avatar_url?: string;
 				strategy?: string;
 				system_prompt?: string;
 				is_active?: boolean;
@@ -415,12 +536,32 @@ class ApiClient {
 	profile = {
 		get: () => this.request<Profile>('/api/profile'),
 
-		update: (data: { display_name?: string; avatar_color?: string; avatar_shape?: string }) =>
+		update: (data: ProfileUpdatePayload) =>
 			this.request<Profile>('/api/profile', {
 				method: 'PUT',
 				body: JSON.stringify(data)
 			})
 	};
+
+// Agent Instructions presets (owner-scoped to the signed-in account)
+instructionPresets = {
+list: () => this.request<InstructionPreset[]>('/api/instruction-presets'),
+
+create: (data: InstructionPresetPayload) =>
+this.request<InstructionPreset>('/api/instruction-presets', {
+method: 'POST',
+body: JSON.stringify(data)
+}),
+
+update: (id: string, data: Partial<InstructionPresetPayload>) =>
+this.request<InstructionPreset>(`/api/instruction-presets/${id}`, {
+method: 'PATCH',
+body: JSON.stringify(data)
+}),
+
+delete: (id: string) =>
+this.request<void>(`/api/instruction-presets/${id}`, { method: 'DELETE' })
+};
 
 	// Extensions & WASM Modules
 	extensions = {
@@ -497,6 +638,16 @@ class ApiClient {
 				body: JSON.stringify({ action, payload })
 			})
 	};
+}
+
+export const ROLE_ROOT: AccountRole = 'root';
+export const ROLE_MEMBER: AccountRole = 'member';
+
+/** True when the given account/role holds root (administrative) privileges. */
+export function isRoot(account?: { role?: AccountRole | null } | AccountRole | null): boolean {
+	if (!account) return false;
+	if (typeof account === 'string') return account === ROLE_ROOT;
+	return account.role === ROLE_ROOT;
 }
 
 export const api = new ApiClient();

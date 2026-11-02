@@ -52,6 +52,7 @@ pub struct CreateAgentRequest {
     pub name: String,
     pub avatar_color: Option<String>,
     pub avatar_shape: Option<String>,
+    pub avatar_url: Option<String>,
     pub strategy: Option<String>,
     pub system_prompt: Option<String>,
     pub provider_ids: Option<Vec<String>>,
@@ -62,6 +63,8 @@ pub struct CreateAgentRequest {
     pub max_running_history_chars: Option<i64>,
     pub response_hooks_json: Option<String>,
     pub response_hooks: Option<Vec<serde_json::Value>>,
+    /// Selected Agent Instructions preset (omitted = Custom / free-text).
+    pub instruction_preset_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +72,7 @@ pub struct PatchAgentRequest {
     pub name: Option<String>,
     pub avatar_color: Option<String>,
     pub avatar_shape: Option<String>,
+    pub avatar_url: Option<String>,
     pub strategy: Option<String>,
     pub system_prompt: Option<String>,
     pub is_active: Option<bool>,
@@ -80,6 +84,9 @@ pub struct PatchAgentRequest {
     pub max_running_history_chars: Option<i64>,
     pub response_hooks_json: Option<String>,
     pub response_hooks: Option<Vec<serde_json::Value>>,
+    /// Selected Agent Instructions preset. Send `""` (or explicit null) to go
+    /// back to Custom; omit to leave the selection untouched.
+    pub instruction_preset_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -156,12 +163,14 @@ pub async fn create_agent_handler(
             &payload.name,
             payload.avatar_color.as_deref(),
             payload.avatar_shape.as_deref(),
+            payload.avatar_url.as_deref(),
             payload.strategy.as_deref().unwrap_or("fallback"),
             payload.system_prompt.as_deref(),
             payload.allow_output_text,
             payload.output_text_error_message.as_deref(),
             payload.max_running_history_chars,
             hooks_json.as_deref(),
+            payload.instruction_preset_id.as_deref(),
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
@@ -208,6 +217,7 @@ pub async fn patch_agent_handler(
             payload.name.as_deref(),
             payload.avatar_color.as_deref(),
             payload.avatar_shape.as_deref(),
+            payload.avatar_url.as_deref(),
             payload.strategy.as_deref(),
             payload.system_prompt.as_deref(),
             payload.is_active,
@@ -215,6 +225,7 @@ pub async fn patch_agent_handler(
             payload.output_text_error_message.as_deref(),
             payload.max_running_history_chars,
             hooks_json.as_deref(),
+            payload.instruction_preset_id.as_deref(),
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;

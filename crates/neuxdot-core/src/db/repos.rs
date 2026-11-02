@@ -4,6 +4,14 @@ use uuid::Uuid;
 
 use super::schema::*;
 
+/// Normalizes an optional avatar URL: whitespace-only values mean "no picture".
+fn normalize_avatar_url(avatar_url: Option<&str>) -> Option<&str> {
+    match avatar_url {
+        Some(url) if url.trim().is_empty() => None,
+        other => other,
+    }
+}
+
 #[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
@@ -19,24 +27,37 @@ impl Database {
     }
 
     // --- Accounts ---
+    /// Creates a regular (`member`) account together with its default profile.
     pub async fn create_account(
         &self,
         username: &str,
         password_hash: &str,
     ) -> Result<Account, sqlx::Error> {
+        self.create_account_with_role(username, password_hash, ROLE_MEMBER)
+            .await
+    }
+
+    /// Creates an account with an explicit role together with its default profile.
+    pub async fn create_account_with_role(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: &str,
+    ) -> Result<Account, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO accounts (id, username, password_hash) VALUES (?, ?, ?)"
+            "INSERT INTO accounts (id, username, password_hash, role) VALUES (?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(username)
         .bind(password_hash)
+        .bind(role)
         .execute(&self.pool)
         .await?;
 
         // Also create a default profile
         let _ = sqlx::query(
-            "INSERT INTO profiles (account_id, display_name, avatar_color, avatar_shape) VALUES (?, ?, ?, ?)"
+            "INSERT INTO profiles (account_id, display_name, avatar_color, avatar_shape) VALUES (?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(username)
@@ -48,6 +69,67 @@ impl Database {
         self.get_account_by_id(&id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn list_accounts(&self) -> Result<Vec<Account>, sqlx::Error> {
+        sqlx::query_as::<_, Account>(
+            "SELECT * FROM accounts ORDER BY CASE WHEN role = 'root' THEN 0 ELSE 1 END, username ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn count_accounts_with_role(&self, role: &str) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE role = ?")
+            .bind(role)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    /// True when the given account is the only remaining account with the `root` role.
+    pub async fn is_last_root(&self, account_id: &str) -> Result<bool, sqlx::Error> {
+        let Some(account) = self.get_account_by_id(account_id).await? else {
+            return Ok(false);
+        };
+        if !account.is_root() {
+            return Ok(false);
+        }
+        let root_count = self.count_accounts_with_role(ROLE_ROOT).await?;
+        Ok(root_count <= 1)
+    }
+
+    /// Updates the mutable account fields. `None` values are left untouched.
+    pub async fn update_account(
+        &self,
+        account_id: &str,
+        username: Option<&str>,
+        role: Option<&str>,
+    ) -> Result<Account, sqlx::Error> {
+        sqlx::query(
+            r#"
+            UPDATE accounts
+            SET username = coalesce(?, username),
+                role = coalesce(?, role)
+            WHERE id = ?
+            "#,
+        )
+        .bind(username)
+        .bind(role)
+        .bind(account_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_account_by_id(account_id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn delete_account(&self, account_id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn update_account_password(
@@ -70,6 +152,14 @@ impl Database {
         let existing = self.get_account_by_username("root").await?;
 
         if let Some(acc) = existing {
+            let mut acc = acc;
+            if !acc.is_root() {
+                // Older databases may predate the role column / backfill.
+                if let Ok(updated) = self.update_account(&acc.id, None, Some(ROLE_ROOT)).await {
+                    acc = updated;
+                }
+            }
+
             let created_at_str = sqlx::query_scalar::<_, String>(
                 "SELECT datetime(created_at) FROM accounts WHERE id = ?"
             )
@@ -95,7 +185,7 @@ impl Database {
                 .map_err(|e| sqlx::Error::Protocol(format!("Password hashing error: {}", e)))?;
 
             sqlx::query(
-                "INSERT INTO accounts (id, username, password_hash, created_at) VALUES (?, 'root', ?, ?)"
+                "INSERT INTO accounts (id, username, password_hash, role, created_at) VALUES (?, 'root', ?, 'root', ?)"
             )
             .bind(&id)
             .bind(&password_hash)
@@ -143,29 +233,47 @@ impl Database {
             .await
     }
 
+    /// Updates profile fields. `None` values are left untouched; an empty
+    /// `avatar_url` clears the custom picture.
     pub async fn update_profile(
         &self,
         account_id: &str,
         display_name: Option<&str>,
         avatar_color: Option<&str>,
         avatar_shape: Option<&str>,
+        avatar_url: Option<&str>,
     ) -> Result<Profile, sqlx::Error> {
+        let normalized_avatar = match avatar_url {
+            Some(url) if url.trim().is_empty() => None,
+            other => other,
+        };
+
         sqlx::query(
             r#"
-            INSERT INTO profiles (account_id, display_name, avatar_color, avatar_shape)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO profiles (account_id, display_name, avatar_color, avatar_shape, avatar_url)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(account_id) DO UPDATE SET
                 display_name = coalesce(excluded.display_name, profiles.display_name),
                 avatar_color = coalesce(excluded.avatar_color, profiles.avatar_color),
-                avatar_shape = coalesce(excluded.avatar_shape, profiles.avatar_shape)
+                avatar_shape = coalesce(excluded.avatar_shape, profiles.avatar_shape),
+                avatar_url = coalesce(excluded.avatar_url, profiles.avatar_url)
             "#,
         )
         .bind(account_id)
         .bind(display_name)
         .bind(avatar_color)
         .bind(avatar_shape)
+        .bind(normalized_avatar)
         .execute(&self.pool)
         .await?;
+
+        if avatar_url.is_some() && normalized_avatar.is_none() {
+            // Explicit empty value => clear the custom picture.
+            sqlx::query("UPDATE profiles SET avatar_url = NULL WHERE account_id = ?")
+                .bind(account_id)
+                .execute(&self.pool)
+                .await?;
+        }
 
         self.get_profile(account_id)
             .await?
@@ -380,18 +488,20 @@ impl Database {
         name: &str,
         avatar_color: Option<&str>,
         avatar_shape: Option<&str>,
+        avatar_url: Option<&str>,
         strategy: &str,
         system_prompt: Option<&str>,
         allow_output_text: Option<bool>,
         output_text_error_message: Option<&str>,
         max_running_history_chars: Option<i64>,
         response_hooks_json: Option<&str>,
+        instruction_preset_id: Option<&str>,
     ) -> Result<Agent, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         sqlx::query(
             r#"
-            INSERT INTO agents (id, account_id, name, avatar_color, avatar_shape, strategy, system_prompt, is_active, allow_output_text, output_text_error_message, max_running_history_chars, response_hooks_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+            INSERT INTO agents (id, account_id, name, avatar_color, avatar_shape, avatar_url, strategy, system_prompt, is_active, allow_output_text, output_text_error_message, max_running_history_chars, response_hooks_json, instruction_preset_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id)
@@ -399,12 +509,14 @@ impl Database {
         .bind(name)
         .bind(avatar_color.unwrap_or("#6366f1"))
         .bind(avatar_shape.unwrap_or("circle"))
+        .bind(normalize_avatar_url(avatar_url))
         .bind(strategy)
         .bind(system_prompt)
         .bind(allow_output_text.unwrap_or(false))
         .bind(output_text_error_message.unwrap_or("Output Text is not allowed, consider use correct tool or sleep."))
         .bind(max_running_history_chars.unwrap_or(300_000))
         .bind(response_hooks_json.unwrap_or("[]"))
+        .bind(instruction_preset_id)
         .execute(&self.pool)
         .await?;
 
@@ -417,6 +529,7 @@ impl Database {
         name: Option<&str>,
         avatar_color: Option<&str>,
         avatar_shape: Option<&str>,
+        avatar_url: Option<&str>,
         strategy: Option<&str>,
         system_prompt: Option<&str>,
         is_active: Option<bool>,
@@ -424,12 +537,19 @@ impl Database {
         output_text_error_message: Option<&str>,
         max_running_history_chars: Option<i64>,
         response_hooks_json: Option<&str>,
+        instruction_preset_id: Option<&str>,
     ) -> Result<Agent, sqlx::Error> {
         let current = self.get_agent(id).await?.ok_or(sqlx::Error::RowNotFound)?;
 
         let final_name = name.unwrap_or(&current.name);
         let final_avatar_color = avatar_color.or(current.avatar_color.as_deref());
         let final_avatar_shape = avatar_shape.or(current.avatar_shape.as_deref());
+        // `None` leaves the picture untouched; an explicitly empty value clears it to NULL.
+        let final_avatar_url = match avatar_url {
+            Some(url) if url.trim().is_empty() => None,
+            Some(url) => Some(url),
+            None => current.avatar_url.as_deref(),
+        };
         let final_strategy = strategy.unwrap_or(&current.strategy);
         let final_system_prompt = system_prompt.or(current.system_prompt.as_deref());
         let final_is_active = is_active.unwrap_or(current.is_active);
@@ -438,17 +558,25 @@ impl Database {
             output_text_error_message.or(current.output_text_error_message.as_deref());
         let final_max_history = max_running_history_chars.unwrap_or(current.max_running_history_chars);
         let final_hooks_json = response_hooks_json.or(current.response_hooks_json.as_deref()).unwrap_or("[]");
+        // `None` leaves the selection untouched; an explicitly empty value
+        // detaches the agent from its preset (back to Custom).
+        let final_preset_id = match instruction_preset_id {
+            Some(p) if p.trim().is_empty() => None,
+            Some(p) => Some(p),
+            None => current.instruction_preset_id.as_deref(),
+        };
 
         sqlx::query(
             r#"
             UPDATE agents
-            SET name = ?, avatar_color = ?, avatar_shape = ?, strategy = ?, system_prompt = ?, is_active = ?, allow_output_text = ?, output_text_error_message = ?, max_running_history_chars = ?, response_hooks_json = ?
+            SET name = ?, avatar_color = ?, avatar_shape = ?, avatar_url = ?, strategy = ?, system_prompt = ?, is_active = ?, allow_output_text = ?, output_text_error_message = ?, max_running_history_chars = ?, response_hooks_json = ?, instruction_preset_id = ?
             WHERE id = ?
             "#,
         )
         .bind(final_name)
         .bind(final_avatar_color)
         .bind(final_avatar_shape)
+        .bind(final_avatar_url)
         .bind(final_strategy)
         .bind(final_system_prompt)
         .bind(final_is_active)
@@ -456,6 +584,7 @@ impl Database {
         .bind(final_output_text_error_message)
         .bind(final_max_history)
         .bind(final_hooks_json)
+        .bind(final_preset_id)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -908,6 +1037,133 @@ impl Database {
         self.get_agent_memory(agent_id).await
     }
 
+    // --- Agent Instruction Presets (owner-scoped) ---
+    //
+    // Every query filters by `account_id`; a preset belonging to another
+    // account is indistinguishable from a missing one.
+
+    pub async fn list_instruction_presets(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<AgentInstructionPreset>, sqlx::Error> {
+        sqlx::query_as::<_, AgentInstructionPreset>(
+            "SELECT * FROM agent_instruction_presets WHERE account_id = ? ORDER BY created_at ASC, rowid ASC",
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn get_instruction_preset(
+        &self,
+        account_id: &str,
+        id: &str,
+    ) -> Result<Option<AgentInstructionPreset>, sqlx::Error> {
+        sqlx::query_as::<_, AgentInstructionPreset>(
+            "SELECT * FROM agent_instruction_presets WHERE id = ? AND account_id = ?",
+        )
+        .bind(id)
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn create_instruction_preset(
+        &self,
+        account_id: &str,
+        name: &str,
+        description: &str,
+        content: &str,
+    ) -> Result<AgentInstructionPreset, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO agent_instruction_presets (id, account_id, name, description, content)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&id)
+        .bind(account_id)
+        .bind(name)
+        .bind(description)
+        .bind(content)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_instruction_preset(account_id, &id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    /// Updates the fields that are `Some`. Returns `None` when the preset does
+    /// not exist *for this account*.
+    pub async fn update_instruction_preset(
+        &self,
+        account_id: &str,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        content: Option<&str>,
+    ) -> Result<Option<AgentInstructionPreset>, sqlx::Error> {
+        let Some(current) = self.get_instruction_preset(account_id, id).await? else {
+            return Ok(None);
+        };
+
+        let final_name = name.unwrap_or(&current.name);
+        let final_description = description.unwrap_or(&current.description);
+        let final_content = content.unwrap_or(&current.content);
+
+        sqlx::query(
+            r#"
+            UPDATE agent_instruction_presets
+            SET name = ?, description = ?, content = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND account_id = ?
+            "#,
+        )
+        .bind(final_name)
+        .bind(final_description)
+        .bind(final_content)
+        .bind(id)
+        .bind(account_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_instruction_preset(account_id, id).await
+    }
+
+    /// Deletes a preset owned by `account_id`. Returns false when not found.
+    /// Agents that referenced it are detached (`instruction_preset_id` -> NULL)
+    /// and keep their current `system_prompt` text, so nothing changes for them.
+    pub async fn delete_instruction_preset(
+        &self,
+        account_id: &str,
+        id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+
+        let affected = sqlx::query(
+            "DELETE FROM agent_instruction_presets WHERE id = ? AND account_id = ?",
+        )
+        .bind(id)
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        if affected > 0 {
+            let _ = sqlx::query(
+                "UPDATE agents SET instruction_preset_id = NULL WHERE instruction_preset_id = ? AND account_id = ?",
+            )
+            .bind(id)
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await;
+        }
+
+        tx.commit().await?;
+        Ok(affected > 0)
+    }
+
     // --- Agent Running History ---
     pub async fn get_agent_history(
         &self,
@@ -979,49 +1235,47 @@ impl Database {
         }
     }
 
-    /// Compacts the *working context* without destroying history.
+    /// Compacts the *working context*, reinstalling a freshly rendered
+    /// system instruction.
     ///
-    /// Semantics (long-horizon friendly):
-    ///   * the original base system prompt (row 0) is kept verbatim and is
-    ///     never re-interpolated — it appears exactly once, at the very start;
-    ///   * a `compact` tool call is answered **immediately after its assistant
-    ///     message** (assistant + tool reply stay an adjacent, valid group),
-    ///     so the provider never sees a dangling tool call;
-    ///   * only then is the compaction summary appended as a `system` row;
+    /// Semantics:
+    ///   * `system_instruction` is the **new** prompt (already interpolated by
+    ///     the caller from the agent's current `system_prompt`, memory and tool
+    ///     list). Compaction is the designated context-rebuild point, so this is
+    ///     where a changed instruction preset / memory actually takes effect;
+    ///   * the previous working rows are dropped, then the new instruction is
+    ///     written as row 0 — exactly once, at the very start;
+    ///   * the `compact` tool call is answered **immediately after its
+    ///     assistant message**, so the provider never sees a dangling call;
+    ///   * the compaction summary is appended afterwards as a `system` row;
     ///   * the full sequence remains in `agent_transcript` (append-only).
     ///
     /// Row order written by this call:
-    ///   `[base system] [assistant(compact...)] [tool replies...] [summary]`
+    ///   `[system instruction] [assistant(compact...)] [tool replies...] [summary]`
     pub async fn compact_agent_history(
         &self,
         agent_id: &str,
+        system_instruction: &str,
         summary: &str,
         assistant_msg: Option<&serde_json::Value>,
         tool_replies: &[(String, String)],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
-        // 1. Preserve the original system prompt (first row), if present.
-        let base_prompt: Option<String> = sqlx::query_scalar(
-            "SELECT content FROM agent_history WHERE agent_id = ? AND role = 'system' ORDER BY created_at ASC, rowid ASC LIMIT 1",
-        )
-        .bind(agent_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        // 2. Drop only the *working context* rows; the transcript is untouched.
+        // 1. Drop only the *working context* rows; the transcript is untouched.
         sqlx::query("DELETE FROM agent_history WHERE agent_id = ?")
             .bind(agent_id)
             .execute(&mut *tx)
             .await?;
 
-        if let Some(base) = base_prompt {
+        // 2. Install the freshly rendered instruction as the new row 0.
+        {
             sqlx::query(
                 "INSERT INTO agent_history (id, agent_id, role, content) VALUES (?, ?, 'system', ?)",
             )
             .bind(Uuid::new_v4().to_string())
             .bind(agent_id)
-            .bind(base)
+            .bind(system_instruction)
             .execute(&mut *tx)
             .await?;
         }

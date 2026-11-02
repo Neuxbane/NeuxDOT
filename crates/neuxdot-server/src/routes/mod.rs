@@ -1,13 +1,15 @@
+pub mod accounts;
 pub mod agents;
 pub mod auth;
 pub mod extensions;
 pub mod mcp;
+pub mod instruction_presets;
 pub mod profile;
 pub mod providers;
 pub mod ws;
 
 use axum::{
-    routing::{get, post, put},
+    routing::{get, patch, post, put},
     Router,
 };
 
@@ -18,6 +20,20 @@ pub fn build_router(state: AppState) -> Router {
         // Auth (login only - root user initialized via server CLI)
         .route("/api/auth/login", post(auth::login_handler))
         .route("/api/auth/me", get(auth::me_handler))
+        // Accounts (root-only administration)
+        .route(
+            "/api/accounts",
+            get(accounts::list_accounts_handler).post(accounts::create_account_handler),
+        )
+        .route(
+            "/api/accounts/:id",
+            axum::routing::patch(accounts::update_account_handler)
+                .delete(accounts::delete_account_handler),
+        )
+        .route(
+            "/api/accounts/:id/password",
+            post(accounts::change_password_handler),
+        )
         // Agents
         .route("/api/agents", get(agents::list_agents_handler).post(agents::create_agent_handler))
         .route(
@@ -71,6 +87,17 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/profile",
             get(profile::get_profile_handler).put(profile::update_profile_handler),
+        )
+        // Agent Instructions presets (owner-scoped)
+        .route(
+            "/api/instruction-presets",
+            get(instruction_presets::list_instruction_presets_handler)
+                .post(instruction_presets::create_instruction_preset_handler),
+        )
+        .route(
+            "/api/instruction-presets/:id",
+            patch(instruction_presets::update_instruction_preset_handler)
+                .delete(instruction_presets::delete_instruction_preset_handler),
         )
         // Extensions & Isolated Host-Managed Storage
         .route(

@@ -22,6 +22,7 @@ pub struct AuthResponse {
     pub token: String,
     pub account_id: String,
     pub username: String,
+    pub role: String,
 }
 
 pub async fn login_handler(
@@ -52,7 +53,7 @@ pub async fn login_handler(
         ));
     }
 
-    let token = create_token(&account.id, &account.username).map_err(|e| {
+    let token = create_token(&account.id, &account.username, &account.role).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -71,6 +72,7 @@ pub async fn login_handler(
             token,
             account_id: account.id,
             username: account.username,
+            role: account.role,
         }),
     ))
 }
@@ -93,6 +95,7 @@ pub async fn me_handler(
     Ok(Json(json!({
         "account_id": auth.account_id,
         "username": auth.username,
+        "role": auth.role,
         "profile": profile
     })))
 }

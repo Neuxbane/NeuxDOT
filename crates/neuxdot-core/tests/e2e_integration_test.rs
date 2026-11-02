@@ -30,9 +30,19 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
 
     // Update profile
     let updated_profile = db
-        .update_profile(&account.id, Some("NeuxBane Core"), Some("#6366f1"), Some("circle"))
+        .update_profile(
+            &account.id,
+            Some("NeuxBane Core"),
+            Some("#6366f1"),
+            Some("circle"),
+            Some("data:image/png;base64,AAAA"),
+        )
         .await?;
     assert_eq!(updated_profile.display_name.as_deref(), Some("NeuxBane Core"));
+    assert_eq!(
+        updated_profile.avatar_url.as_deref(),
+        Some("data:image/png;base64,AAAA")
+    );
 
     // 3. Provider Configuration and Provider Models (decoupled models table)
     let config = json!({
@@ -85,12 +95,14 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
             "Ares",
             Some("#6366f1"),
             Some("circle"),
+            None,
             "fallback",
             Some("You are {{agent.name}}, an autonomous engineer."),
             None,
             None,
             Some(300_000),
             Some("[]"),
+            None,
         )
         .await?;
     assert_eq!(agent.name, "Ares");
@@ -186,6 +198,7 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
             Some("Ares v2"),
             None,
             None,
+            None,
             Some("round-robin"),
             None,
             Some(true),
@@ -193,6 +206,7 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
             Some("Custom disallowed message"),
             Some(250_000),
             Some(r#"[{"id":"h1","message":"Time: {{time}}","source":"user","enabled":true}]"#),
+            None,
         )
         .await?;
     assert_eq!(patched.name, "Ares v2");
@@ -284,16 +298,28 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
         "call_compact_1".to_string(),
         json!({ "success": true }).to_string(),
     )];
-    db.compact_agent_history(&agent.id, &summary, Some(&compact_assistant), &replies)
-        .await?;
+    // Compaction reinstalls a freshly rendered system instruction: this is how a
+    // changed instruction preset / memory becomes live for a running agent.
+    let new_instruction = "You are Ares.\n### Agent Memory (Hash: newhash):\nupdated memory";
+    db.compact_agent_history(
+        &agent.id,
+        new_instruction,
+        &summary,
+        Some(&compact_assistant),
+        &replies,
+    )
+    .await?;
 
     let post_compact_history = db.get_agent_history(&agent.id).await?;
-    // Exact persisted order: [base system] [assistant] [tool] [summary].
+    // Exact persisted order: [new system instruction] [assistant] [tool] [summary].
     // The compact tool reply MUST be adjacent to its assistant message,
     // otherwise history repair mints a bogus "interrupted" response.
     assert_eq!(post_compact_history.len(), 4);
     assert_eq!(post_compact_history[0].role, "system");
-    assert_eq!(post_compact_history[0].content, "You are Ares.");
+    assert_eq!(
+        post_compact_history[0].content, new_instruction,
+        "compact must install the NEW instruction, not the old row 0"
+    );
     assert_eq!(post_compact_history[1].role, "assistant");
     assert!(post_compact_history[1]
         .tool_calls_json
@@ -305,11 +331,11 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(post_compact_history[3].role, "system");
     assert!(post_compact_history[3].content.contains("Compaction Summary"));
     assert!(post_compact_history[3].content.contains(&final_mem.hash));
-    // The base prompt must appear exactly once.
+    // The new instruction must appear exactly once (never duplicated).
     assert_eq!(
         post_compact_history
             .iter()
-            .filter(|h| h.content == "You are Ares.")
+            .filter(|h| h.content == new_instruction)
             .count(),
         1
     );

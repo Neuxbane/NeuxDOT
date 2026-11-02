@@ -2,12 +2,30 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+/// Role assigned to an account that holds full administrative privileges.
+pub const ROLE_ROOT: &str = "root";
+/// Default role for regular accounts.
+pub const ROLE_MEMBER: &str = "member";
+
+/// Returns true when `role` is a recognised account role.
+pub fn is_valid_role(role: &str) -> bool {
+    role == ROLE_ROOT || role == ROLE_MEMBER
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Account {
     pub id: String,
     pub username: String,
     pub password_hash: String,
+    #[sqlx(default)]
+    pub role: String,
     pub created_at: Option<DateTime<Utc>>,
+}
+
+impl Account {
+    pub fn is_root(&self) -> bool {
+        self.role == ROLE_ROOT
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -16,6 +34,21 @@ pub struct Profile {
     pub display_name: Option<String>,
     pub avatar_color: Option<String>,
     pub avatar_shape: Option<String>,
+    #[sqlx(default)]
+    pub avatar_url: Option<String>,
+}
+
+/// A reusable system instruction ("Agent Instructions" preset).
+/// Strictly owner-scoped by `account_id`.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentInstructionPreset {
+    pub id: String,
+    pub account_id: String,
+    pub name: String,
+    pub description: String,
+    pub content: String,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -97,6 +130,8 @@ pub struct Agent {
     pub name: String,
     pub avatar_color: Option<String>,
     pub avatar_shape: Option<String>,
+    #[sqlx(default)]
+    pub avatar_url: Option<String>,
     pub strategy: String,
     pub system_prompt: Option<String>,
     pub is_active: bool,
@@ -109,6 +144,9 @@ pub struct Agent {
     pub max_running_history_chars: i64,
     #[sqlx(default)]
     pub response_hooks_json: Option<String>,
+    /// Selected Agent Instructions preset; `None` = Custom (free-text prompt).
+    #[sqlx(default)]
+    pub instruction_preset_id: Option<String>,
 }
 
 impl Agent {

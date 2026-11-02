@@ -5,6 +5,7 @@
 	import { api, type Agent, type ServerAccount } from '$lib/api';
 	import { authState } from '$lib/stores/auth.svelte';
 	import { themeStore } from '$lib/stores/theme.svelte';
+	import Avatar from '$lib/components/Avatar.svelte';
 	import {
 		Plus,
 		Search,
@@ -14,7 +15,6 @@
 		Sun,
 		Moon,
 		Bot,
-		User,
 		Trash2
 	} from 'lucide-svelte';
 
@@ -45,6 +45,7 @@
 				serverUrl: loginServerUrl.trim(),
 				username: res.username,
 				token: res.token,
+				role: res.role ?? 'member',
 				displayName: res.username,
 				avatarColor: '#3b82f6'
 			};
@@ -57,18 +58,40 @@
 		}
 	}
 
-	// Load agents whenever authentication is active
+	// Load agents whenever authentication is active.
+	// Depends on WHICH account is active, not just `isAuthenticated`:
+	// switching between two stored server profiles keeps that flag true, so a
+	// boolean-only dependency would never re-run and the sidebar would keep
+	// showing the previous server's agents.
+	const agentScope = $derived(
+		authState.isAuthenticated
+			? `${authState.activeAccount?.serverUrl ?? ''}|${authState.activeAccount?.id ?? ''}`
+			: ''
+	);
+
 	$effect(() => {
-		if (authState.isAuthenticated) {
-			loadAgents();
+		if (!agentScope) {
+			agents = [];
+			return;
 		}
+		loadAgents();
 	});
 
+	// Bumped on every load so a slow response for a previously selected server
+	// cannot overwrite the list of the newly selected one.
+	let agentsRequestId = 0;
+
 	async function loadAgents() {
+		const requestId = ++agentsRequestId;
+		const scope = agentScope;
 		try {
-			agents = await api.agents.list();
+			const list = await api.agents.list();
+			if (requestId !== agentsRequestId || scope !== agentScope) return;
+			agents = list;
 		} catch (e) {
+			if (requestId !== agentsRequestId) return;
 			console.error('Failed to load agents:', e);
+			agents = [];
 		}
 	}
 
@@ -209,8 +232,24 @@
 							? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white font-medium shadow-xs border border-zinc-200/80 dark:border-zinc-700/80'
 							: 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/50 dark:hover:bg-zinc-800/40 border border-transparent'}"
 					>
-						<a href="/?agent_id={agent.id}" class="flex-1 truncate font-medium mr-2">
-							{agent.name}
+						<a
+							href="/?agent_id={agent.id}"
+							class="flex-1 min-w-0 flex items-center gap-2 mr-2"
+							title={agent.name}
+						>
+							<Avatar
+								src={agent.avatar_url}
+								name={agent.name}
+								color={agent.avatar_color || '#6366f1'}
+								shape={agent.avatar_shape === 'circle'
+									? 'circle'
+									: agent.avatar_shape === 'square'
+										? 'square'
+										: 'rounded'}
+								size="xs"
+								class="shrink-0"
+							/>
+							<span class="truncate font-medium">{agent.name}</span>
 						</a>
 
 						<div class="flex items-center gap-1">
@@ -265,7 +304,7 @@
 			</a>
 			<a
 				href="/settings"
-				class="flex items-center gap-2.5 rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors {page.url.pathname === '/settings' ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-white font-medium' : ''}"
+				class="flex items-center gap-2.5 rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors {page.url.pathname.startsWith('/settings') ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-white font-medium' : ''}"
 			>
 				<Settings class="h-4 w-4 text-cyan-500 dark:text-cyan-400" />
 				<span>Settings</span>
@@ -273,15 +312,31 @@
 
 			<!-- Profile Pill -->
 			{#if authState.activeAccount}
-				<div id="sidebar-account-profile" class="mt-2 flex items-center justify-between border-t border-zinc-200/70 dark:border-zinc-800/80 pt-2 px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-					<div class="flex items-center gap-1.5 truncate">
-						<User class="h-3.5 w-3.5 text-zinc-400" />
-						<span class="truncate font-medium text-zinc-700 dark:text-zinc-300">{authState.activeAccount.username}</span>
+				<a
+					id="sidebar-account-profile"
+					href="/settings/profile"
+					class="mt-2 flex items-center justify-between gap-2 rounded-xl border-t border-zinc-200/70 dark:border-zinc-800/80 pt-2 px-1 pb-1 text-[11px] text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+					title="Manage your server profile"
+				>
+					<div class="flex items-center gap-2 truncate min-w-0">
+						<Avatar
+							src={authState.avatarUrl}
+							name={authState.displayName}
+							color={authState.avatarColor}
+							shape={authState.avatarShape === 'circle' ? 'circle' : authState.avatarShape === 'square' ? 'square' : 'rounded'}
+							size="xs"
+						/>
+						<div class="flex flex-col truncate leading-tight">
+							<span class="truncate font-medium text-zinc-700 dark:text-zinc-300">{authState.displayName}</span>
+							<span class="text-[10px] uppercase tracking-wider text-zinc-400 dark:text-zinc-500 font-mono">
+								{authState.role}
+							</span>
+						</div>
 					</div>
-					<span class="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono truncate max-w-[90px]">
+					<span class="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono truncate max-w-[80px]">
 						{authState.activeAccount.serverUrl.replace(/^https?:\/\//, '')}
 					</span>
-				</div>
+				</a>
 			{/if}
 		</nav>
 	</aside>

@@ -679,7 +679,9 @@ mod tests {
         assert_eq!(ctx, "10%");
 
         // Rounding, clamping and zero-capacity safety.
-        assert_eq!(context_header(0, 100), format!("{} ctx:0%", ts_free()));
+        // Compare the suffix only: each call stamps its own timestamp, so
+        // comparing whole strings races the clock (seen as ...867Z vs ...868Z).
+        assert!(context_header(0, 100).ends_with("Z ctx:0%"));
         assert!(context_header(1, 3).ends_with("ctx:33%"));
         assert!(context_header(200, 100).ends_with("ctx:100%"));
         assert!(context_header(5, 0).ends_with("ctx:0%"));
@@ -687,11 +689,6 @@ mod tests {
         let body = with_context_header("payload", 1, 2);
         assert!(body.ends_with("\npayload"));
         assert!(body.starts_with("20"));
-    }
-
-    fn ts_free() -> String {
-        // A fresh timestamp prefix (same format as context_header's).
-        utc_now_millis()
     }
 
     #[test]

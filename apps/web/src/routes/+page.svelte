@@ -1,12 +1,14 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, type Agent, type Provider, type McpServer, type AgentDetail, type ExtensionItem, type ExtensionUiHook, type ResponseHook } from '$lib/api';
+	import { api, type Agent, type Provider, type McpServer, type AgentDetail, type ExtensionItem, type ExtensionUiHook, type ResponseHook, type InstructionPreset } from '$lib/api';
 	import { authState } from '$lib/stores/auth.svelte';
 	import { eventStore } from '$lib/stores/events.svelte';
 	import TerminalLog from '$lib/components/TerminalLog.svelte';
 	import ProviderSelect from '$lib/components/ProviderSelect.svelte';
 	import McpList from '$lib/components/McpList.svelte';
 	import ExtensionChatPanel from '$lib/components/ExtensionChatPanel.svelte';
+	import Avatar from '$lib/components/Avatar.svelte';
+import AvatarCropModal from '$lib/components/AvatarCropModal.svelte';
 	import {
 		HelpCircle,
 		CheckCircle2,
@@ -26,7 +28,8 @@
 		Plus,
 		CornerDownLeft,
 		MessageSquare,
-		FileCode
+		FileCode,
+		Upload
 	} from 'lucide-svelte';
 
 	let agentId = $derived(page.url.searchParams.get('agent_id'));
@@ -37,7 +40,14 @@
 	let allProviders = $state<Provider[]>([]);
 	let allMcpServers = $state<McpServer[]>([]);
 
-	let agentMemory = $state<{ content: string; current_hash: string; character_count: number } | null>(null);
+	let agentAvatarInput = $state<HTMLInputElement | null>(null);
+let agentAvatarError = $state('');
+// Agent Instructions presets for the active account.
+let instructionPresets = $state<InstructionPreset[]>([]);
+// File chosen by the user, pending the crop/compress modal.
+let agentAvatarPending = $state<File | null>(null);
+
+let agentMemory = $state<{ content: string; current_hash: string; character_count: number } | null>(null);
 	let showMemoryPreview = $state(false);
 
 	let bottomTab = $state<'terminal' | 'history'>('terminal');
@@ -118,7 +128,60 @@
 		}
 	});
 
-	async function loadAgentData(id: string) {
+	// Presets are per-account: reload them whenever the active account changes,
+// otherwise the selector would offer the previous account's instructions.
+let presetsRequestId = 0;
+
+async function loadInstructionPresets() {
+const requestId = ++presetsRequestId;
+const scope = `${authState.activeAccount?.serverUrl ?? ''}|${authState.activeAccount?.id ?? ''}`;
+try {
+const list = await api.instructionPresets.list();
+if (requestId !== presetsRequestId) return;
+if (scope !== `${authState.activeAccount?.serverUrl ?? ''}|${authState.activeAccount?.id ?? ''}`) return;
+instructionPresets = list;
+} catch (e) {
+if (requestId !== presetsRequestId) return;
+console.error('Failed to load instruction presets:', e);
+instructionPresets = [];
+}
+}
+
+$effect(() => {
+const scope = authState.isAuthenticated
+? `${authState.activeAccount?.serverUrl ?? ''}|${authState.activeAccount?.id ?? ''}`
+: '';
+if (!scope) {
+instructionPresets = [];
+return;
+}
+loadInstructionPresets();
+});
+
+const activeInstructionPreset = $derived(
+agent?.instruction_preset_id
+? (instructionPresets.find((p) => p.id === agent?.instruction_preset_id) ?? null)
+: null
+);
+
+async function selectInstructionPreset(presetId: string) {
+if (!agent) return;
+if (!presetId) {
+// Back to Custom: detach the preset, keep the current text editable.
+agent.instruction_preset_id = null;
+triggerAutoSave();
+return;
+}
+const preset = instructionPresets.find((p) => p.id === presetId);
+if (!preset) return;
+// Snapshot the preset text into the agent (decision A): editing the
+// preset later does not silently change a running agent.
+agent.instruction_preset_id = preset.id;
+agent.system_prompt = preset.content;
+triggerAutoSave();
+}
+
+async function loadAgentData(id: string) {
 		try {
 			const [detail, provs, mcps, mem, hist] = await Promise.all([
 				api.agents.get(id),
@@ -186,7 +249,51 @@
 		}
 	}
 
-	function triggerAutoSave() {
+	// Accepted size of the *source* file the user picks. It is cropped and
+// compressed before storage, so the source can be larger than the result.
+const MAX_AGENT_AVATAR_SOURCE_BYTES = 8 * 1024 * 1024;
+// Encoded size ceiling for the stored avatar data URL.
+const AGENT_AVATAR_OUTPUT_BYTES = 64 * 1024;
+
+function handleAgentAvatarFile(event: Event) {
+agentAvatarError = '';
+const input = event.currentTarget as HTMLInputElement;
+const file = input.files?.[0];
+// Allow re-selecting the same file later.
+input.value = '';
+if (!file) return;
+
+if (!file.type.startsWith('image/')) {
+agentAvatarError = 'Please choose an image file.';
+return;
+}
+// Generous source limit: the crop step downscales and compresses it.
+if (file.size > MAX_AGENT_AVATAR_SOURCE_BYTES) {
+agentAvatarError = `Image is too large (${Math.round(file.size / 1024)} KB). Max ${MAX_AGENT_AVATAR_SOURCE_BYTES / 1024} KB.`;
+return;
+}
+
+// Open the cropper; the compressed data URL is applied on confirm.
+agentAvatarPending = file;
+}
+
+function applyAgentAvatar(dataUrl: string) {
+agentAvatarPending = null;
+if (!agent) return;
+agent.avatar_url = dataUrl;
+triggerAutoSave();
+}
+
+function clearAgentAvatar() {
+if (!agent) return;
+agentAvatarError = '';
+// undefined -> the patch sends '' which clears the picture server-side
+// (omitting the field would mean "leave unchanged").
+agent.avatar_url = undefined;
+triggerAutoSave();
+}
+
+function triggerAutoSave() {
 		if (!agent) return;
 		if (debounceTimer) clearTimeout(debounceTimer);
 
@@ -196,6 +303,11 @@
 			try {
 				const updated = await api.agents.patch(agent.id, {
 					name: agent.name,
+					avatar_color: agent.avatar_color,
+					avatar_shape: agent.avatar_shape,
+					// '' explicitly clears the picture server-side; undefined would
+					// leave it unchanged.
+					avatar_url: agent.avatar_url ?? '',
 					strategy: agent.strategy,
 					system_prompt: agent.system_prompt,
 					is_active: agent.is_active,
@@ -339,9 +451,25 @@
 {:else}
 	<!-- 🖥️ ACTIVE AGENT VIEW -->
 	<div id="agent-workbench" class="flex h-full flex-col overflow-hidden">
+		{#if agentAvatarPending}
+			<AvatarCropModal
+				file={agentAvatarPending}
+				size={256}
+				maxBytes={AGENT_AVATAR_OUTPUT_BYTES}
+				onCancel={() => (agentAvatarPending = null)}
+				onApply={applyAgentAvatar}
+			/>
+		{/if}
 		<!-- Header -->
 		<header id="agent-header" class="flex items-center justify-between border-b border-zinc-200/80 dark:border-zinc-800/80 bg-white/70 dark:bg-zinc-900/40 backdrop-blur-md px-6 py-3.5">
 			<div class="flex items-center gap-3">
+				<Avatar
+					src={agent.avatar_url}
+					name={agent.name}
+					color={agent.avatar_color || '#6366f1'}
+					shape={agent.avatar_shape === 'circle' ? 'circle' : agent.avatar_shape === 'square' ? 'square' : 'rounded'}
+					size="sm"
+				/>
 				<h1 class="text-base font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight">{agent.name}</h1>
 				<button
 					type="button"
@@ -531,8 +659,76 @@
 					<!-- Main Scrollable Configuration Area -->
 					<div id="agent-config-scroll" class="flex-1 overflow-y-auto px-6 py-6 space-y-5">
 			<!-- Settings Form -->
-			<section id="agent-settings-section" class="grid grid-cols-1 md:grid-cols-3 gap-4">
-				<!-- Name -->
+			{#if activeAnchor === 'agent-settings-section'}
+			<section id="agent-settings-section" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+				<!-- Presentation: Avatar picture, color & shape -->
+				<div class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
+					<div class="flex items-center justify-between mb-1.5">
+						<span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+						Agent Avatar
+						</span>
+						{#if agent.avatar_url}
+						<button
+						type="button"
+						onclick={clearAgentAvatar}
+						class="text-[10px] font-medium text-zinc-400 hover:text-rose-500 transition-colors cursor-pointer"
+						title="Remove the profile picture and fall back to the color/shape"
+						>
+						Remove
+						</button>
+						{/if}
+					</div>
+					<div class="flex items-center gap-2">
+						<button
+						type="button"
+						onclick={() => agentAvatarInput?.click()}
+						class="group relative shrink-0 rounded-full transition-transform active:scale-95 cursor-pointer"
+						title="Upload a profile picture"
+						aria-label="Upload agent profile picture"
+						>
+						<Avatar
+						src={agent.avatar_url}
+						name={agent.name}
+						color={agent.avatar_color || '#6366f1'}
+						shape={agent.avatar_shape === 'circle' ? 'circle' : agent.avatar_shape === 'square' ? 'square' : 'rounded'}
+						size="md"
+						/>
+						<span class="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity">
+						<Upload class="h-4 w-4" />
+						</span>
+						</button>
+						<input
+						id="agent-avatar-color"
+						type="color"
+						bind:value={agent.avatar_color}
+						onchange={triggerAutoSave}
+						class="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-zinc-200 dark:border-zinc-750 bg-transparent p-0.5"
+						aria-label="Agent avatar color"
+						title="Fallback color (used when no picture is set)"
+						/>
+						<select
+						bind:value={agent.avatar_shape}
+						onchange={triggerAutoSave}
+						class="flex-1 min-w-0 rounded-lg border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-2 py-1.5 text-xs font-medium text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none"
+						aria-label="Agent avatar shape"
+						>
+						<option value="circle">Circle</option>
+						<option value="rounded">Rounded</option>
+						<option value="square">Square</option>
+						</select>
+					</div>
+					<input
+					bind:this={agentAvatarInput}
+					type="file"
+					accept="image/png,image/jpeg,image/webp,image/gif"
+					class="hidden"
+					onchange={handleAgentAvatarFile}
+					/>
+					{#if agentAvatarError}
+					<p class="mt-1.5 text-[10px] text-rose-500">{agentAvatarError}</p>
+					{/if}
+				</div>
+<!-- Name -->
 				<div class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
 					<label for="agent-name" class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-1.5">
 						Agent Name
@@ -585,8 +781,10 @@
 					/>
 				</div>
 			</section>
+			{/if}
 
 			<!-- Providers Multi-Select -->
+			{#if activeAnchor === 'agent-providers-section'}
 			<section id="agent-providers-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
 				<div class="flex items-center justify-between mb-2">
 					<span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
@@ -600,8 +798,10 @@
 					onchange={() => triggerAutoSave()}
 				/>
 			</section>
+			{/if}
 
 			<!-- System Prompt -->
+			{#if activeAnchor === 'agent-prompt-section'}
 			<section id="agent-prompt-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
 				<div class="flex items-center justify-between mb-2">
 					<div class="flex items-center gap-1.5">
@@ -618,17 +818,62 @@
 					</div>
 					<span class="text-[11px] font-mono text-zinc-400">Variables: {'{{agent.name}}'}, {'{{agent.memory}}'}, {'{{tools.preset}}'}</span>
 				</div>
-				<textarea
-					id="system-prompt"
-					rows="4"
-					bind:value={agent.system_prompt}
-					oninput={triggerAutoSave}
-					placeholder="You are {'{{agent.name}}'}, an autonomous AI assistant..."
-					class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 p-3 text-xs font-mono text-zinc-900 dark:text-zinc-200 placeholder-zinc-400 focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none transition-colors"
-				></textarea>
+<!-- Instruction preset selector -->
+<div class="mb-3 flex flex-wrap items-center gap-2">
+<select
+id="instruction-preset"
+value={agent.instruction_preset_id ?? ''}
+onchange={(e) => selectInstructionPreset((e.currentTarget as HTMLSelectElement).value)}
+class="min-w-0 flex-1 rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none"
+aria-label="Agent instructions preset"
+>
+<option value="">Custom (default)</option>
+{#each instructionPresets as preset (preset.id)}
+<option value={preset.id}>{preset.name}</option>
+{/each}
+</select>
+<a
+href="/settings/instructions"
+class="shrink-0 text-[11px] text-zinc-500 hover:text-zinc-900 dark:hover:text-white underline transition-colors"
+>
+Manage presets
+</a>
+</div>
+
+{#if agent.instruction_preset_id}
+<div class="mb-2 rounded-lg border border-violet-500/20 bg-violet-500/5 px-2.5 py-1.5">
+<p class="text-[10px] text-violet-600 dark:text-violet-400">
+Using the <strong>{activeInstructionPreset?.name ?? 'preset'}</strong> instructions. Select
+<strong>Custom (default)</strong> to edit the text by hand.
+</p>
+</div>
+<textarea
+id="system-prompt"
+rows="4"
+readonly
+value={agent.system_prompt ?? ''}
+class="w-full cursor-not-allowed rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-100 dark:bg-zinc-900 p-3 text-xs font-mono text-zinc-500 dark:text-zinc-400 focus:outline-none"
+></textarea>
+{:else}
+<textarea
+id="system-prompt"
+rows="4"
+bind:value={agent.system_prompt}
+oninput={triggerAutoSave}
+placeholder="You are {'{{agent.name}}'}, an autonomous AI assistant..."
+class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 p-3 text-xs font-mono text-zinc-900 dark:text-zinc-200 placeholder-zinc-400 focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none transition-colors"
+></textarea>
+{/if}
+
+<p class="mt-2 text-[10px] text-zinc-400 dark:text-zinc-500">
+Changes apply to the agent's next fresh context (after <strong>compact</strong> or a history reset).
+A running conversation keeps its current instructions so the prompt cache stays warm.
+</p>
 			</section>
+			{/if}
 
 			<!-- 🧠 Persistent Memory Status & Meta-Tool Inspection -->
+			{#if activeAnchor === 'agent-memory-section'}
 			<section id="agent-memory-section" class="rounded-2xl border border-pink-500/20 bg-pink-500/5 p-4 space-y-2">
 				<div class="flex items-center justify-between">
 					<div class="flex items-center gap-2">
@@ -672,8 +917,10 @@
 					</div>
 				{/if}
 			</section>
+			{/if}
 
 			<!-- 🛑 Flow Control & Output Text Permissions -->
+			{#if activeAnchor === 'agent-permissions-section'}
 			<section id="agent-permissions-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 space-y-3 shadow-xs">
 				<div class="flex items-center justify-between">
 					<div>
@@ -728,8 +975,10 @@
 					</div>
 				{/if}
 			</section>
+			{/if}
 
 			<!-- MCP Checklist -->
+			{#if activeAnchor === 'agent-mcp-section'}
 			<section id="agent-mcp-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 shadow-xs">
 				<div class="flex items-center justify-between mb-2">
 					<span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
@@ -744,8 +993,10 @@
 					onchange={() => triggerAutoSave()}
 				/>
 			</section>
+			{/if}
 
 			<!-- 🪝 Response Hooks Section -->
+			{#if activeAnchor === 'agent-hooks-section'}
 			<section id="agent-hooks-section" class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-4 space-y-3 shadow-xs">
 				<div class="flex items-center justify-between">
 					<div class="flex items-center gap-2">
@@ -839,6 +1090,7 @@
 					</div>
 				{/if}
 			</section>
+			{/if}
 
 			<!-- 💬 FLOATING PROMPT PILL BAR (Reference Image 2 / Grok Feel) -->
 			<div id="agent-prompt-bar" class="sticky bottom-4 z-20">
@@ -875,6 +1127,7 @@
 			</div>
 
 			<!-- Bottom Area: Terminal Log & Running History -->
+			{#if activeAnchor === 'agent-terminal-section'}
 			<section id="agent-terminal-section">
 				<div class="flex items-center justify-between mb-2">
 					<div class="flex items-center gap-2">
@@ -940,6 +1193,7 @@
 					</div>
 				{/if}
 			</section>
+			{/if}
 		</div>
 		{:else if selectedExtension && selectedHook}
 			<ExtensionChatPanel

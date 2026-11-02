@@ -1666,10 +1666,31 @@ impl AgentExecutor {
                         "compact" => {
                             let mem = self.db.get_agent_memory(&self.agent.id).await.unwrap();
 
-                            // The base system prompt is NOT re-interpolated
-                            // here. It stays verbatim at row 0 of the working
-                            // context and appears exactly once in the
-                            // transcript; compaction only adds a summary.
+                            // Compaction is the designated context-rebuild
+                            // point: re-render the system instruction from the
+                            // agent's CURRENT system_prompt (which is where a
+                            // selected instruction preset lands), memory and
+                            // tool list, then install it as the new row 0.
+                            // This is the only place a changed preset becomes
+                            // live for an already-running agent, and it costs
+                            // no cache hit because history is rebuilt anyway.
+                            let base_template = self
+                                .agent
+                                .system_prompt
+                                .as_deref()
+                                .unwrap_or("You are {{agent.name}}, an autonomous AI assistant.");
+
+                            let rendered_instruction = interpolate_prompt(
+                                base_template,
+                                &self.agent.id,
+                                &self.agent.name,
+                                &self.agent.strategy,
+                                &mem.content,
+                                &mem.hash,
+                                &allowed_tools,
+                                max_history_chars,
+                            );
+
                             let summary = format!(
                                 "Earlier turns were compacted by the agent.\n\
                                  Memory hash: {}\n\
@@ -1731,6 +1752,7 @@ impl AgentExecutor {
                                 .db
                                 .compact_agent_history(
                                     &self.agent.id,
+                                    &rendered_instruction,
                                     &summary,
                                     Some(&assistant_group),
                                     &replies,
@@ -1749,28 +1771,11 @@ impl AgentExecutor {
                             )
                             .await;
 
-                            // In-memory context mirrors the persisted order.
-                            // Row 0 is the untouched base prompt.
-                            let base_prompt_row = self
-                                .db
-                                .get_agent_history(&self.agent.id)
-                                .await
-                                .unwrap_or_default()
-                                .into_iter()
-                                .find(|h| h.role == "system")
-                                .map(|h| h.content)
-                                .unwrap_or_else(|| {
-                                    self.agent
-                                        .system_prompt
-                                        .clone()
-                                        .unwrap_or_else(|| {
-                                            "You are {{agent.name}}, an autonomous AI assistant."
-                                                .to_string()
-                                        })
-                                });
+                            // In-memory context mirrors the persisted order:
+                            // row 0 is the freshly rendered instruction.
                             let mut group_msgs: Vec<Value> = vec![json!({
                                 "role": "system",
-                                "content": base_prompt_row
+                                "content": rendered_instruction
                             })];
                             group_msgs.push(assistant_group);
                             for (cid, content) in replies.iter() {

@@ -45,6 +45,26 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE agents ADD COLUMN response_hooks_json TEXT DEFAULT '[]'")
         .execute(&pool)
         .await;
+    // Per-account Agent Instructions presets (created before the agents column
+    // that references it, so the FK resolves on an existing database too).
+    let _ = sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_instruction_presets (
+            id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE agents ADD COLUMN instruction_preset_id TEXT DEFAULT NULL")
+        .execute(&pool)
+        .await;
     let _ = sqlx::query("ALTER TABLE agent_pushed_messages ADD COLUMN is_consumed BOOLEAN DEFAULT 0")
         .execute(&pool)
         .await;
@@ -52,6 +72,23 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
         .execute(&pool)
         .await;
     let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN alias TEXT DEFAULT NULL")
+        .execute(&pool)
+        .await;
+
+    // Roles: every account is a 'member' unless promoted to 'root'.
+    let _ = sqlx::query("ALTER TABLE accounts ADD COLUMN role TEXT NOT NULL DEFAULT 'member'")
+        .execute(&pool)
+        .await;
+    // Custom profile picture (data URL or external URL).
+    let _ = sqlx::query("ALTER TABLE profiles ADD COLUMN avatar_url TEXT DEFAULT NULL")
+        .execute(&pool)
+        .await;
+    // Custom agent picture (data URL or external URL).
+    let _ = sqlx::query("ALTER TABLE agents ADD COLUMN avatar_url TEXT DEFAULT NULL")
+        .execute(&pool)
+        .await;
+    // Existing installs: the bootstrap account named 'root' keeps administrative access.
+    let _ = sqlx::query("UPDATE accounts SET role = 'root' WHERE username = 'root'")
         .execute(&pool)
         .await;
 

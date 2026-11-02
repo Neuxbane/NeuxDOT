@@ -7,11 +7,8 @@ use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-mod middleware;
-mod routes;
-mod state;
-
-use state::AppState;
+use neuxdot_server::routes;
+use neuxdot_server::state::AppState;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

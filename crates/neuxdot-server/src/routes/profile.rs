@@ -15,6 +15,8 @@ pub struct UpdateProfileRequest {
     pub display_name: Option<String>,
     pub avatar_color: Option<String>,
     pub avatar_shape: Option<String>,
+    /// Custom profile picture (data URL or external URL). An empty string clears it.
+    pub avatar_url: Option<String>,
 }
 
 pub async fn get_profile_handler(
@@ -42,6 +44,7 @@ pub async fn update_profile_handler(
             payload.display_name.as_deref(),
             payload.avatar_color.as_deref(),
             payload.avatar_shape.as_deref(),
+            payload.avatar_url.as_deref(),
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
