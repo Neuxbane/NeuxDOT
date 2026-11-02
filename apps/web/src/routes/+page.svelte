@@ -251,7 +251,9 @@ async function loadAgentData(id: string) {
 
 	// Accepted size of the *source* file the user picks. It is cropped and
 // compressed before storage, so the source can be larger than the result.
-const MAX_AGENT_AVATAR_SOURCE_BYTES = 8 * 1024 * 1024;
+// Only guards against absurd files: the image is downscaled and re-encoded
+// to <=64 KB, so a large original is fine.
+const MAX_AGENT_AVATAR_SOURCE_BYTES = 40 * 1024 * 1024;
 // Encoded size ceiling for the stored avatar data URL.
 const AGENT_AVATAR_OUTPUT_BYTES = 64 * 1024;
 
@@ -269,7 +271,7 @@ return;
 }
 // Generous source limit: the crop step downscales and compresses it.
 if (file.size > MAX_AGENT_AVATAR_SOURCE_BYTES) {
-agentAvatarError = `Image is too large (${Math.round(file.size / 1024)} KB). Max ${MAX_AGENT_AVATAR_SOURCE_BYTES / 1024} KB.`;
+agentAvatarError = `Image is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Max ${MAX_AGENT_AVATAR_SOURCE_BYTES / (1024 * 1024)} MB.`;
 return;
 }
 

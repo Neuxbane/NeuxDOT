@@ -38,15 +38,55 @@ export function loadImageFromFile(file: File): Promise<HTMLImageElement> {
 return new Promise((resolve, reject) => {
 const url = URL.createObjectURL(file);
 const img = new Image();
-img.onload = () => {
+img.onload = async () => {
 URL.revokeObjectURL(url);
+try {
+resolve(await downscaleIfHuge(img));
+} catch {
+// Never fail the upload just because pre-scaling failed; the crop step
+// will handle the original.
 resolve(img);
+}
 };
 img.onerror = () => {
 URL.revokeObjectURL(url);
 reject(new Error('Could not decode that image.'));
 };
 img.src = url;
+});
+}
+
+/**
+ * Largest edge we are willing to keep in memory while cropping. Modern phone
+ * photos are frequently 8-12k px on the long edge (~100+ MB decoded); scaling
+ * them down first keeps the canvas operations fast and avoids browser memory
+ * failures. The final avatar is 256 px, so this costs no visible quality.
+ */
+export const MAX_IMAGE_EDGE = 2048;
+
+/** Downscales an oversized image, returning the original when within bounds. */
+async function downscaleIfHuge(img: HTMLImageElement): Promise<HTMLImageElement> {
+const w = img.naturalWidth || img.width;
+const h = img.naturalHeight || img.height;
+const longest = Math.max(w, h);
+if (longest <= MAX_IMAGE_EDGE) return img;
+
+const ratio = MAX_IMAGE_EDGE / longest;
+const canvas = document.createElement('canvas');
+canvas.width = Math.max(1, Math.round(w * ratio));
+canvas.height = Math.max(1, Math.round(h * ratio));
+const ctx = canvas.getContext('2d');
+if (!ctx) return img;
+ctx.imageSmoothingEnabled = true;
+ctx.imageSmoothingQuality = 'high';
+ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+const dataUrl = canvas.toDataURL('image/png');
+return await new Promise<HTMLImageElement>((resolve, reject) => {
+const scaled = new Image();
+scaled.onload = () => resolve(scaled);
+scaled.onerror = () => reject(new Error('Could not prepare the image.'));
+scaled.src = dataUrl;
 });
 }
 

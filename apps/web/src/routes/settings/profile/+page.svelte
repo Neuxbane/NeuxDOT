@@ -25,7 +25,10 @@ const AVATAR_SHAPES = [
 ] as const;
 
 // Source file ceiling; the cropper downscales + compresses well below this.
-const MAX_AVATAR_SOURCE_BYTES = 8 * 1024 * 1024;
+// Generous *source* ceiling: the picture is downscaled to at most
+// MAX_IMAGE_EDGE and re-encoded to <=64 KB, so a large original is harmless.
+// This only guards against absurd files that would stall the browser.
+const MAX_AVATAR_SOURCE_BYTES = 40 * 1024 * 1024;
 // Encoded size ceiling for the stored avatar.
 const AVATAR_OUTPUT_BYTES = 64 * 1024;
 
@@ -68,7 +71,7 @@ target.value = '';
 return;
 }
 if (file.size > MAX_AVATAR_SOURCE_BYTES) {
-errorMessage = `Image is too large (${Math.round(file.size / 1024)} KB). Maximum is ${MAX_AVATAR_SOURCE_BYTES / 1024} KB.`;
+errorMessage = `Image is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Maximum is ${MAX_AVATAR_SOURCE_BYTES / (1024 * 1024)} MB.`;
 target.value = '';
 return;
 }
