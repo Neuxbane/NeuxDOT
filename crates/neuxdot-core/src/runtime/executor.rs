@@ -14,6 +14,7 @@ use crate::db::repos::Database;
 use crate::db::schema::{ActiveModelTarget, Agent, AgentPushedMessage, McpServer};
 use crate::events::{AgentEvent, EventEnvelope};
 use crate::mcp::client::{McpClientSession, McpNotification, McpTool};
+use crate::mcp::custom_tools::CustomToolsTransport;
 use crate::mcp::http::HttpTransport;
 use crate::mcp::stdio::StdioTransport;
 use crate::mcp::wasm_stdio::WasmStdioTransport;
@@ -777,6 +778,9 @@ impl AgentExecutor {
         let mut tool_registry = HashMap::new();
 
         for server in &self.mcp_servers {
+            if !server.is_active {
+                continue;
+            }
             let (notif_tx, notif_rx) = mpsc::unbounded_channel::<McpNotification>();
 
             let transport: Option<Arc<dyn crate::mcp::client::McpTransport>> =
@@ -805,7 +809,8 @@ impl AgentExecutor {
                     match self.db.get_extension(ext_id).await {
                         Ok(Some(ext)) => {
                             let manifest_val: Value = serde_json::from_str(&ext.manifest_json).unwrap_or(Value::Null);
-                            let data_dir = std::path::PathBuf::from("data");
+                            let data_dir = std::path::PathBuf::from("data/extensions");
+                            let _ = std::fs::create_dir_all(&data_dir);
                             Some(Arc::new(WasmStdioTransport::new(
                                 Arc::clone(&self.db),
                                 ext.id.clone(),
@@ -817,6 +822,24 @@ impl AgentExecutor {
                         }
                         _ => {
                             warn!("WASM extension not found for MCP server: {}", server.name);
+                            None
+                        }
+                    }
+                } else if server.transport == "custom_tools" || server.transport == "curl" {
+                    match CustomToolsTransport::new(
+                        &server.id,
+                        &server.url_or_command,
+                        notif_tx,
+                    ) {
+                        Ok(t) => Some(Arc::new(t)),
+                        Err(e) => {
+                            self.emit(AgentEvent::AgentError {
+                                agent_id: self.agent.id.clone(),
+                                message: format!(
+                                    "Failed to load custom tools for '{}': {}",
+                                    server.name, e
+                                ),
+                            });
                             None
                         }
                     }
@@ -866,6 +889,9 @@ impl AgentExecutor {
                     Ok(tools) => {
                         let server_alias = server.get_alias();
                         for tool in tools {
+                            if tool.is_app_only() {
+                                continue;
+                            }
                             if disabled_tools.contains(&tool.name) {
                                 info!(
                                     "Tool '{}' from MCP server '{}' is disabled for agent '{}' - hidden from discovery",
@@ -2084,6 +2110,7 @@ mod tests {
                     name: "chat_send".into(),
                     description: Some("Send telegram message".into()),
                     input_schema: None,
+                    meta: None,
                 },
             },
         );
@@ -2118,6 +2145,7 @@ mod tests {
                     name: "chat_send".into(),
                     description: Some("Telegram".into()),
                     input_schema: None,
+                    meta: None,
                 },
             },
         );
@@ -2131,6 +2159,7 @@ mod tests {
                     name: "chat_send".into(),
                     description: Some("Discord".into()),
                     input_schema: None,
+                    meta: None,
                 },
             },
         );
@@ -2276,6 +2305,7 @@ mod tests {
             content: content.into(),
             tool_calls_json: tool_calls.map(|s| s.to_string()),
             tool_call_id: tool_call_id.map(|s| s.to_string()),
+            source_template: None,
             created_at: None,
         }
     }
