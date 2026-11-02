@@ -247,6 +247,22 @@ pub struct AgentHistoryItem {
     pub created_at: Option<DateTime<Utc>>,
 }
 
+/// One immutable row of an agent's full lifetime transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentTranscriptItem {
+    pub id: String,
+    pub agent_id: String,
+    pub seq: i64,
+    pub role: String,
+    pub content: String,
+    pub tool_calls_json: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub origin: String,
+    pub turn: i64,
+    pub metadata_json: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Extension {
     pub id: String,

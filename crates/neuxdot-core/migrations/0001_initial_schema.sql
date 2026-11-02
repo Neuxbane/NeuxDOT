@@ -111,6 +111,28 @@ CREATE TABLE IF NOT EXISTS agent_history (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Append-only, immutable record of everything an agent ever did or saw.
+-- Never pruned and never compacted: this is the source of truth for long-horizon
+-- training / distillation exports. `agent_history` is only the *working context*.
+CREATE TABLE IF NOT EXISTS agent_transcript (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    tool_calls_json TEXT,
+    tool_call_id TEXT,
+    -- provenance: "turn" | "push" | "compaction" | "tool" | "repair"
+    origin TEXT NOT NULL DEFAULT 'turn',
+    -- turn number the row belongs to (monotonic per agent), for distillation
+    turn INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_transcript_agent_seq
+    ON agent_transcript(agent_id, seq);
+
 CREATE TABLE IF NOT EXISTS extensions (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,

@@ -114,7 +114,7 @@ pub fn get_meta_tools_definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "call_tool",
-                "description": "Execute an external MCP tool with specified arguments",
+                "description": "Execute an external MCP tool with specified arguments. Large results are truncated to a head/body/tail view in your context; the full output is always kept in history and can be read back with history_inspect. Optionally override how many characters of the head, body and tail are kept for this call.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -125,6 +125,18 @@ pub fn get_meta_tools_definitions() -> Value {
                         "arguments": {
                             "type": "object",
                             "description": "JSON arguments matching the tool's input schema"
+                        },
+                        "head": {
+                            "type": "integer",
+                            "description": "Characters to keep from the start of the result (default 1000, 0 disables the head segment)."
+                        },
+                        "body": {
+                            "type": "integer",
+                            "description": "Characters to keep from the middle of the result (default 1000, 0 disables the body segment)."
+                        },
+                        "tail": {
+                            "type": "integer",
+                            "description": "Characters to keep from the end of the result (default 1000, 0 disables the tail segment)."
                         }
                     },
                     "required": ["name", "arguments"]
@@ -233,8 +245,189 @@ pub fn get_meta_tools_definitions() -> Value {
                     }
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "history_search",
+                "description": "Search your full lifetime history (including text omitted from the running context by truncation or compaction) with a regular expression. Returns matching entries ordered by time, with an `offset` you can pass to history_inspect to read the omitted text. Use this to recover content you can no longer see.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "regex": {
+                            "type": "string",
+                            "description": "Regular expression (case-insensitive) matched against historical messages, tool calls and tool results."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of matches to return (default 20, max 100)."
+                        }
+                    },
+                    "required": ["regex"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "history_inspect",
+                "description": "Read an exact character range from one historical entry identified by history_search or by a truncation marker. Returns the requested text plus the total length so you can page through it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "The `id` of the history entry (from history_search, a truncation marker or a tool result)."
+                        },
+                        "from": {
+                            "type": "integer",
+                            "description": "Start character offset (inclusive). Use the offset reported by history_search or the truncation marker."
+                        },
+                        "to": {
+                            "type": "integer",
+                            "description": "End character offset (exclusive). Defaults to from + 2000."
+                        }
+                    },
+                    "required": ["id", "from"]
+                }
+            }
         }
     ])
+}
+
+/// Default number of characters kept for each truncation segment.
+pub const DEFAULT_TRUNCATION_CHARS: usize = 1000;
+
+/// Marker prefix embedded in a truncated payload. The number following it is
+/// the absolute character offset in the *original* content, so the agent can
+/// page the missing region with `history_inspect(id, from, to)`.
+pub const TRUNCATION_MARKER_PREFIX: &str = "<<truncated:";
+pub const TRUNCATION_MARKER_SUFFIX: &str = ">>";
+
+/// Per-agent truncation configuration for large tool results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TruncationConfig {
+    pub head: usize,
+    pub body: usize,
+    pub tail: usize,
+}
+
+impl Default for TruncationConfig {
+    fn default() -> Self {
+        Self {
+            head: DEFAULT_TRUNCATION_CHARS,
+            body: DEFAULT_TRUNCATION_CHARS,
+            tail: DEFAULT_TRUNCATION_CHARS,
+        }
+    }
+}
+
+impl TruncationConfig {
+    /// A config with every segment at zero disables truncation entirely.
+    pub fn is_disabled(&self) -> bool {
+        self.head == 0 && self.body == 0 && self.tail == 0
+    }
+
+    /// Total number of characters the kept segments may occupy.
+    pub fn budget(&self) -> usize {
+        self.head + self.body + self.tail
+    }
+}
+
+/// True when `text` already contains a truncation marker produced by
+/// [`truncate_middle`]; such text must never be truncated a second time.
+pub fn is_already_truncated(text: &str) -> bool {
+    text.contains(TRUNCATION_MARKER_PREFIX)
+}
+
+/// Truncates `text` keeping `head` characters from the start, `tail`
+/// characters from the end, and `body` characters centred in the middle.
+///
+/// The elided regions are replaced by markers of the form
+/// `<<truncated:FROM-TO>>`, where `FROM`/`TO` are absolute character offsets in
+/// the original text (so `history_inspect(id, FROM, TO)` recovers exactly the
+/// missing region). This is UTF-8 safe because it operates on `char` indices,
+/// never on byte offsets.
+///
+/// Truncation is skipped when the text already fits, when the config is
+/// disabled, or when the text was already truncated (idempotent).
+pub fn truncate_middle(text: &str, cfg: TruncationConfig) -> String {
+    if cfg.is_disabled() || is_already_truncated(text) {
+        return text.to_string();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let total = chars.len();
+    if total <= cfg.budget() {
+        return text.to_string();
+    }
+
+    let head = cfg.head.min(total);
+    let tail = cfg.tail.min(total.saturating_sub(head));
+
+    // The body window is centred in whatever remains between head and tail.
+    let middle_start = head;
+    let middle_end = total - tail;
+    let middle_len = middle_end.saturating_sub(middle_start);
+
+    let body_len = cfg.body.min(middle_len);
+    let body_start = middle_start + (middle_len - body_len) / 2;
+    let body_end = body_start + body_len;
+
+    let take = |from: usize, to: usize| -> String { chars[from..to].iter().collect() };
+    let marker = |from: usize, to: usize| -> String {
+        format!("{}{}-{}{}", TRUNCATION_MARKER_PREFIX, from, to, TRUNCATION_MARKER_SUFFIX)
+    };
+
+    let mut out = String::with_capacity(cfg.budget() + 64);
+
+    // head [0, head)
+    out.push_str(&take(0, head));
+    if body_len == 0 {
+        // No body window: the elided region is a single contiguous gap between
+        // head and tail, so one marker describes it exactly.
+        if middle_end > head {
+            out.push_str(&marker(head, middle_end));
+        }
+    } else {
+        if body_start > head {
+            out.push_str(&marker(head, body_start));
+        }
+        out.push_str(&take(body_start, body_end));
+        if middle_end > body_end {
+            out.push_str(&marker(body_end, middle_end));
+        }
+    }
+    // tail
+    if tail > 0 {
+        out.push_str(&take(total - tail, total));
+    }
+
+    out
+}
+
+/// Builds the per-response context header, e.g.
+/// `2026-11-02T07:49:33.124Z ctx:30%`.
+///
+/// `current` / `max` are history character counts; the percentage is clamped to
+/// `0..=100` and integer-floored so it never reads `101%`ish noise.
+pub fn context_header(current: usize, max: usize) -> String {
+    let pct = if max == 0 {
+        0
+    } else {
+        ((current.saturating_mul(100)) / max).min(100)
+    };
+    format!("{} ctx:{}%", utc_now_millis(), pct)
+}
+
+/// Current UTC time formatted as `2026-11-02T07:49:33.124Z`.
+pub fn utc_now_millis() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
+/// Prepends the context header to `body` on its own line.
+pub fn with_context_header(body: &str, current: usize, max: usize) -> String {
+    format!("{}\n{}", context_header(current, max), body)
 }
 
 /// System prompts support Handlebars syntax with structured presets:
@@ -364,8 +557,141 @@ mod tests {
     fn test_meta_tools_schema_count() {
         let tools = get_meta_tools_definitions();
         let arr = tools.as_array().expect("array");
-        assert_eq!(arr.len(), 9);
+        assert_eq!(arr.len(), 11);
         assert_eq!(arr[8]["function"]["name"], "sleep");
+        assert_eq!(arr[9]["function"]["name"], "history_search");
+        assert_eq!(arr[10]["function"]["name"], "history_inspect");
+    }
+
+    #[test]
+    fn test_truncate_middle_keeps_head_body_tail() {
+        let cfg = TruncationConfig { head: 10, body: 10, tail: 10 };
+        let text: String = (0..1000).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let out = truncate_middle(&text, cfg);
+
+        // Short text is untouched.
+        assert_eq!(truncate_middle("short", cfg), "short");
+
+        // Head and tail survive verbatim.
+        let head: String = text.chars().take(10).collect();
+        let tail: String = text.chars().skip(990).collect();
+        assert!(out.starts_with(&head));
+        assert!(out.ends_with(&tail));
+
+        // Markers report absolute offsets that reconstruct the original.
+        assert!(out.contains(TRUNCATION_MARKER_PREFIX));
+        let rebuilt = rebuild_from_markers(&text, &out);
+        assert!(!rebuilt.is_empty());
+        // The visible (non-marker) characters are all preserved in order.
+        let stripped: String = out
+            .chars()
+            .collect::<String>()
+            .split(TRUNCATION_MARKER_PREFIX)
+            .map(|seg| match seg.find(TRUNCATION_MARKER_SUFFIX) {
+                Some(idx) => seg[idx + TRUNCATION_MARKER_SUFFIX.len()..].to_string(),
+                None => seg.to_string(),
+            })
+            .collect();
+        let mut it = text.chars();
+        for c in stripped.chars() {
+            assert!(
+                it.any(|orig| orig == c),
+                "truncated output contains a char out of order"
+            );
+        }
+        // Output is bounded (segments + two markers).
+        assert!(out.chars().count() <= cfg.budget() + 64);
+    }
+
+    #[test]
+    fn test_truncate_default_marker_shape() {
+        let cfg = TruncationConfig::default();
+        assert_eq!(cfg.budget(), 3000);
+        let text = "z".repeat(10_000);
+        let out = truncate_middle(&text, cfg);
+        // head + body + tail + two markers
+        assert_eq!(out.matches(TRUNCATION_MARKER_PREFIX).count(), 2);
+        assert_eq!(
+            out.replace(TRUNCATION_MARKER_PREFIX, "")
+                .chars()
+                .filter(|c| *c == 'z')
+                .count(),
+            3000
+        );
+        println!("{}", out.chars().skip(985).take(60).collect::<String>());
+    }
+
+    #[test]
+    fn test_truncate_middle_is_idempotent() {
+        let cfg = TruncationConfig { head: 5, body: 5, tail: 5 };
+        let text = "x".repeat(500);
+        let once = truncate_middle(&text, cfg);
+        let twice = truncate_middle(&once, cfg);
+        assert_eq!(once, twice, "truncating twice must not truncate again");
+    }
+
+    #[test]
+    fn test_truncate_middle_utf8_safe() {
+        let cfg = TruncationConfig { head: 3, body: 3, tail: 3 };
+        // Multibyte characters must never be split.
+        let text = "日本語テスト🎉".repeat(100);
+        let out = truncate_middle(&text, cfg);
+        assert!(out.chars().count() < text.chars().count());
+        assert!(out.contains(TRUNCATION_MARKER_PREFIX));
+    }
+
+    #[test]
+    fn test_truncate_middle_disabled() {
+        let cfg = TruncationConfig { head: 0, body: 0, tail: 0 };
+        let text = "y".repeat(500);
+        assert_eq!(truncate_middle(&text, cfg), text);
+    }
+
+    /// Extracts the region the markers say was elided, verifying the offsets
+    /// are consistent (from < to, within bounds).
+    fn rebuild_from_markers(original: &str, out: &str) -> String {
+        let chars: Vec<char> = original.chars().collect();
+        let mut recovered = String::new();
+        let mut rest = out;
+        while let Some(start) = rest.find(TRUNCATION_MARKER_PREFIX) {
+            let after = &rest[start + TRUNCATION_MARKER_PREFIX.len()..];
+            let end = after.find(TRUNCATION_MARKER_SUFFIX).expect("closing marker");
+            let range = &after[..end];
+            let (from, to) = range.split_once('-').expect("from-to");
+            let from: usize = from.parse().unwrap();
+            let to: usize = to.parse().unwrap();
+            assert!(from < to, "marker range must be non-empty");
+            assert!(to <= chars.len(), "marker out of bounds");
+            recovered.extend(chars[from..to].iter());
+            rest = &after[end + TRUNCATION_MARKER_SUFFIX.len()..];
+        }
+        recovered
+    }
+
+    #[test]
+    fn test_context_header_format() {
+        let header = context_header(30_000, 300_000);
+        // e.g. "2026-11-02T07:49:33.124Z ctx:10%"
+        let (ts, ctx) = header.split_once(" ctx:").expect("space separated ctx");
+        assert!(ts.ends_with('Z'), "UTC-Z suffix: {}", ts);
+        assert_eq!(ts.len(), "2026-11-02T07:49:33.124Z".len());
+        assert!(ts.contains('T') && ts.contains('.'));
+        assert_eq!(ctx, "10%");
+
+        // Rounding, clamping and zero-capacity safety.
+        assert_eq!(context_header(0, 100), format!("{} ctx:0%", ts_free()));
+        assert!(context_header(1, 3).ends_with("ctx:33%"));
+        assert!(context_header(200, 100).ends_with("ctx:100%"));
+        assert!(context_header(5, 0).ends_with("ctx:0%"));
+
+        let body = with_context_header("payload", 1, 2);
+        assert!(body.ends_with("\npayload"));
+        assert!(body.starts_with("20"));
+    }
+
+    fn ts_free() -> String {
+        // A fresh timestamp prefix (same format as context_header's).
+        utc_now_millis()
     }
 
     #[test]

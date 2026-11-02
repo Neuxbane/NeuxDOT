@@ -125,10 +125,17 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(executor.models.len(), 1);
 
-    // Verify Meta-Tools (strictly 9 invariant meta-tools: search, schema, call, servers, setMemory, editMemory, readMemory, compact, sleep)
+    // Verify Meta-Tools (11: search, schema, call, servers, setMemory, editMemory,
+    // readMemory, compact, sleep, history_search, history_inspect)
     let meta_tools = get_meta_tools_definitions();
     let tools_arr = meta_tools.as_array().unwrap();
-    assert_eq!(tools_arr.len(), 9);
+    assert_eq!(tools_arr.len(), 11);
+    assert!(tools_arr
+        .iter()
+        .any(|t| t["function"]["name"] == "history_search"));
+    assert!(tools_arr
+        .iter()
+        .any(|t| t["function"]["name"] == "history_inspect"));
     let names: Vec<&str> = tools_arr
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap())
@@ -144,7 +151,9 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
             "editMemory",
             "readMemory",
             "compact",
-            "sleep"
+            "sleep",
+            "history_search",
+            "history_inspect"
         ]
     );
 
@@ -254,18 +263,149 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     let _sys_item = db.append_agent_history(&agent.id, "system", "You are Ares.", None, None).await?;
     let _user_item = db.append_agent_history(&agent.id, "user", "Hello Ares!", None, None).await?;
     let _asst_item = db.append_agent_history(&agent.id, "assistant", "Hello! How can I assist?", None, None).await?;
+    // Mirror what the executor does: every turn is also archived to the
+    // append-only transcript.
+    db.append_transcript(&agent.id, "system", "You are Ares.", None, None, "system", 1, None).await?;
+    db.append_transcript(&agent.id, "user", "Hello Ares!", None, None, "turn", 1, None).await?;
+    db.append_transcript(&agent.id, "assistant", "Hello! How can I assist?", None, None, "turn", 1, None).await?;
     assert_eq!(db.get_agent_history(&agent.id).await?.len(), 3);
 
-    let compacted_sys = format!("You are Ares.\n\n### Agent Memory (Hash: {}):\n{}", final_mem.hash, final_mem.content);
-    let tool_reply = json!({ "success": true, "compacted": true, "current_hash": final_mem.hash }).to_string();
-    db.compact_agent_history(&agent.id, &compacted_sys, Some("call_compact_1"), Some(&tool_reply)).await?;
+    let summary = format!("Memory (Hash: {}):\n{}", final_mem.hash, final_mem.content);
+    let compact_assistant = json!({
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{
+            "id": "call_compact_1",
+            "type": "function",
+            "function": { "name": "compact", "arguments": "{}" }
+        }]
+    });
+    let replies = vec![(
+        "call_compact_1".to_string(),
+        json!({ "success": true }).to_string(),
+    )];
+    db.compact_agent_history(&agent.id, &summary, Some(&compact_assistant), &replies)
+        .await?;
 
     let post_compact_history = db.get_agent_history(&agent.id).await?;
-    assert_eq!(post_compact_history.len(), 2);
+    // Exact persisted order: [base system] [assistant] [tool] [summary].
+    // The compact tool reply MUST be adjacent to its assistant message,
+    // otherwise history repair mints a bogus "interrupted" response.
+    assert_eq!(post_compact_history.len(), 4);
     assert_eq!(post_compact_history[0].role, "system");
-    assert!(post_compact_history[0].content.contains(&final_mem.hash));
-    assert_eq!(post_compact_history[1].role, "tool");
-    assert_eq!(post_compact_history[1].tool_call_id.as_deref(), Some("call_compact_1"));
+    assert_eq!(post_compact_history[0].content, "You are Ares.");
+    assert_eq!(post_compact_history[1].role, "assistant");
+    assert!(post_compact_history[1]
+        .tool_calls_json
+        .as_deref()
+        .unwrap()
+        .contains("call_compact_1"));
+    assert_eq!(post_compact_history[2].role, "tool");
+    assert_eq!(post_compact_history[2].tool_call_id.as_deref(), Some("call_compact_1"));
+    assert_eq!(post_compact_history[3].role, "system");
+    assert!(post_compact_history[3].content.contains("Compaction Summary"));
+    assert!(post_compact_history[3].content.contains(&final_mem.hash));
+    // The base prompt must appear exactly once.
+    assert_eq!(
+        post_compact_history
+            .iter()
+            .filter(|h| h.content == "You are Ares.")
+            .count(),
+        1
+    );
+
+    // The append-only transcript must retain what compaction removed.
+    let transcript = db.get_agent_transcript(&agent.id).await?;
+    assert!(
+        transcript.iter().any(|t| t.role == "user" && t.content == "Hello Ares!"),
+        "compaction must not delete transcript history"
+    );
+    assert!(
+        transcript.iter().any(|t| t.content == "Hello! How can I assist?"),
+        "transcript must retain pre-compaction assistant turns"
+    );
+    for (i, item) in transcript.iter().enumerate() {
+        assert_eq!(item.seq, (i + 1) as i64);
+    }
+    let exported = db.export_agent_transcript(&agent.id).await?;
+    assert_eq!(exported.len(), transcript.len());
+    assert_eq!(exported[0]["role"], "system");
+
+    // Pruning must delete whole assistant-tool-call groups, never leaving a
+    // tool row without its assistant parent (or vice versa).
+    let tool_calls = json!([
+        { "id": "call_p1", "type": "function", "function": { "name": "sleep", "arguments": "{}" } },
+        { "id": "call_p2", "type": "function", "function": { "name": "computer.list", "arguments": "{}" } }
+    ])
+    .to_string();
+    db.append_agent_history(&agent.id, "user", "next turn", None, None).await?;
+    db.append_agent_history(&agent.id, "assistant", "", Some(&tool_calls), None).await?;
+    db.append_agent_history(&agent.id, "tool", "slept", None, Some("call_p1")).await?;
+    db.append_agent_history(&agent.id, "tool", "listed", None, Some("call_p2")).await?;
+    db.append_agent_history(&agent.id, "user", "after tools", None, None).await?;
+
+    // Budget only large enough for the system prompt + the trailing user turns.
+    let pruned = db
+        .prune_agent_history_to_limit(&agent.id, post_compact_history[0].content.chars().count() + 30)
+        .await?;
+    assert!(pruned > 0);
+    let remaining = db.get_agent_history(&agent.id).await?;
+    assert_eq!(remaining[0].role, "system");
+    assert!(
+        remaining.iter().all(|h| h.tool_call_id.is_none()),
+        "pruning left orphaned tool rows: {:?}",
+        remaining.iter().map(|h| (&h.role, &h.tool_call_id)).collect::<Vec<_>>()
+    );
+
+    // --- History search / inspect round-trip over the append-only transcript ---
+    let big_result = format!("HEAD-{}--MIDDLE--{}-TAIL", "x".repeat(5000), "y".repeat(5000));
+    let row = db
+        .append_transcript(
+            &agent.id,
+            "tool",
+            &big_result,
+            None,
+            Some("call_big"),
+            "tool",
+            2,
+            None,
+        )
+        .await?;
+
+    // The transcript keeps FULL fidelity (distillation source).
+    assert_eq!(row.content.chars().count(), big_result.chars().count());
+    assert_eq!(row.content, big_result);
+
+    // history_search finds it and reports an offset.
+    let hits = db.search_transcript(&agent.id, "MIDDLE", 100).await?;
+    assert!(!hits.is_empty());
+    let hit = hits.iter().find(|h| h["id"] == row.id.as_str()).expect("hit for row");
+    let offset = hit["offset"].as_u64().unwrap() as usize;
+    assert_eq!(hit["role"], "tool");
+    assert!(hit["time"].as_i64().unwrap() > 0);
+    assert!(hit["preview"].as_str().unwrap().starts_with("MIDDLE"));
+
+    // history_inspect reconstructs exactly the omitted region.
+    let (total, slice) = db
+        .inspect_transcript(&agent.id, &row.id, offset, offset + 6)
+        .await?
+        .expect("inspect");
+    assert_eq!(total, big_result.chars().count());
+    assert_eq!(slice, "MIDDLE");
+
+    // Out-of-range requests clamp instead of panicking.
+    let (total2, empty) = db
+        .inspect_transcript(&agent.id, &row.id, total + 100, total + 200)
+        .await?
+        .expect("inspect clamped");
+    assert_eq!(total2, total);
+    assert!(empty.is_empty());
+
+    // Unknown ids are reported, not fabricated.
+    assert!(db
+        .inspect_transcript(&agent.id, "does-not-exist", 0, 10)
+        .await?
+        .is_none());
 
     // Test Safe Handlebars Prompt Interpolation with {{agent.name}} and {{tools.preset}}
     let handlebars_template = "You are {{agent.name}}. Tools: {{tools.preset}}. Request schema on-demand.";

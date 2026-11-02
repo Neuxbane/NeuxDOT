@@ -25,3 +25,4 @@ sha2 = "0.10"
 hex = "0.4"
 wasmi = "2.0.0"
 handlebars = "6.4.4"
+regex = { workspace = true }

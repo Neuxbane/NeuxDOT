@@ -1,4 +1,5 @@
 use sqlx::SqlitePool;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use super::schema::*;
@@ -913,7 +914,11 @@ impl Database {
         agent_id: &str,
     ) -> Result<Vec<AgentHistoryItem>, sqlx::Error> {
         sqlx::query_as::<_, AgentHistoryItem>(
-            "SELECT * FROM agent_history WHERE agent_id = ? ORDER BY created_at ASC",
+            // created_at has one-second granularity, so many rows of a single
+            // turn share it; `rowid` (insertion order) is the real tie-breaker.
+            // Without it a tool-call group can come back shuffled, which turns
+            // a valid transcript into orphaned tool messages.
+            "SELECT * FROM agent_history WHERE agent_id = ? ORDER BY created_at ASC, rowid ASC",
         )
         .bind(agent_id)
         .fetch_all(&self.pool)
@@ -950,42 +955,158 @@ impl Database {
             .await
     }
 
+    /// Parses `tool_calls_json` of an assistant history item and returns the
+    /// set of tool call ids that still need a `tool` response. Returns `None`
+    /// when the item is not an assistant message or carries no tool calls.
+    fn pending_tool_call_ids(item: &AgentHistoryItem) -> Option<HashSet<String>> {
+        if item.role != "assistant" {
+            return None;
+        }
+        let raw = item.tool_calls_json.as_deref()?;
+        let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+        let calls = parsed.as_array()?;
+        if calls.is_empty() {
+            return None;
+        }
+        let ids: HashSet<String> = calls
+            .iter()
+            .filter_map(|c| c.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
+            .collect();
+        if ids.is_empty() {
+            None
+        } else {
+            Some(ids)
+        }
+    }
+
+    /// Compacts the *working context* without destroying history.
+    ///
+    /// Semantics (long-horizon friendly):
+    ///   * the original base system prompt (row 0) is kept verbatim and is
+    ///     never re-interpolated — it appears exactly once, at the very start;
+    ///   * a `compact` tool call is answered **immediately after its assistant
+    ///     message** (assistant + tool reply stay an adjacent, valid group),
+    ///     so the provider never sees a dangling tool call;
+    ///   * only then is the compaction summary appended as a `system` row;
+    ///   * the full sequence remains in `agent_transcript` (append-only).
+    ///
+    /// Row order written by this call:
+    ///   `[base system] [assistant(compact...)] [tool replies...] [summary]`
     pub async fn compact_agent_history(
         &self,
         agent_id: &str,
-        compacted_system_prompt: &str,
-        tool_call_id: Option<&str>,
-        tool_content: Option<&str>,
+        summary: &str,
+        assistant_msg: Option<&serde_json::Value>,
+        tool_replies: &[(String, String)],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
-        // 1. Delete all previous history
+        // 1. Preserve the original system prompt (first row), if present.
+        let base_prompt: Option<String> = sqlx::query_scalar(
+            "SELECT content FROM agent_history WHERE agent_id = ? AND role = 'system' ORDER BY created_at ASC, rowid ASC LIMIT 1",
+        )
+        .bind(agent_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        // 2. Drop only the *working context* rows; the transcript is untouched.
         sqlx::query("DELETE FROM agent_history WHERE agent_id = ?")
             .bind(agent_id)
             .execute(&mut *tx)
             .await?;
 
-        // 2. Insert new compacted system prompt
-        let sys_id = Uuid::new_v4().to_string();
+        if let Some(base) = base_prompt {
+            sqlx::query(
+                "INSERT INTO agent_history (id, agent_id, role, content) VALUES (?, ?, 'system', ?)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(agent_id)
+            .bind(base)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // 3. The compact tool-call group, BEFORE the summary, so the reply is
+        //    adjacent to its assistant message.
+        if let Some(assistant) = assistant_msg {
+            let tool_calls_json = assistant.get("tool_calls").map(|tc| tc.to_string());
+            let content = assistant
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("");
+            sqlx::query(
+                "INSERT INTO agent_history (id, agent_id, role, content, tool_calls_json) VALUES (?, ?, 'assistant', ?, ?)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(agent_id)
+            .bind(content)
+            .bind(tool_calls_json)
+            .execute(&mut *tx)
+            .await?;
+
+            for (call_id, content) in tool_replies {
+                sqlx::query(
+                    "INSERT INTO agent_history (id, agent_id, role, content, tool_call_id) VALUES (?, ?, 'tool', ?, ?)",
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(agent_id)
+                .bind(content)
+                .bind(call_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        // 4. Append the summary as its own system row (never merged into the
+        //    base prompt, so the original instructions appear exactly once).
+        let summary_row = format!("### [Compaction Summary]\n{}", summary);
         sqlx::query(
             "INSERT INTO agent_history (id, agent_id, role, content) VALUES (?, ?, 'system', ?)",
         )
-        .bind(&sys_id)
+        .bind(Uuid::new_v4().to_string())
         .bind(agent_id)
-        .bind(compacted_system_prompt)
+        .bind(&summary_row)
         .execute(&mut *tx)
         .await?;
 
-        // 3. Optional tool response message acknowledgment
-        if let (Some(t_id), Some(t_content)) = (tool_call_id, tool_content) {
-            let tool_msg_id = Uuid::new_v4().to_string();
-            sqlx::query(
-                "INSERT INTO agent_history (id, agent_id, role, content, tool_call_id) VALUES (?, ?, 'tool', ?, ?)",
-            )
-            .bind(&tool_msg_id)
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Rewrites the whole running history for an agent in a single
+    /// transaction, in the exact order given (used to normalise/repair
+    /// tool-call groups). Insertion order is preserved so `rowid` ordering in
+    /// `get_agent_history` stays deterministic.
+    pub async fn replace_agent_history(
+        &self,
+        agent_id: &str,
+        messages: &[serde_json::Value],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("DELETE FROM agent_history WHERE agent_id = ?")
             .bind(agent_id)
-            .bind(t_content)
-            .bind(t_id)
+            .execute(&mut *tx)
+            .await?;
+
+        for msg in messages {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("system");
+            let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            let tool_calls_json = msg.get("tool_calls").map(|tc| tc.to_string());
+            let tool_call_id = msg.get("tool_call_id").and_then(|t| t.as_str());
+
+            sqlx::query(
+                r#"
+                INSERT INTO agent_history (id, agent_id, role, content, tool_calls_json, tool_call_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(agent_id)
+            .bind(role)
+            .bind(content)
+            .bind(tool_calls_json)
+            .bind(tool_call_id)
             .execute(&mut *tx)
             .await?;
         }
@@ -1037,19 +1158,65 @@ impl Database {
         let mut deleted_count = 0;
         let mut ids_to_delete = Vec::new();
 
-        for item in history.iter().skip(start_idx) {
-            if total_chars <= max_chars {
-                break;
-            }
+        // Prune in whole *atomic groups* so that the result is always a valid
+        // chat transcript for OpenAI/Gemini:
+        //   * an `assistant` message carrying `tool_calls` and every `tool`
+        //     message answering those ids form one indivisible group;
+        //   * a standalone `tool` message (its assistant was already gone) is
+        //     an orphan and is removed independently.
+        // Deleting only the assistant row (or only part of a group) leaves
+        // orphaned tool messages behind, which the provider rejects.
+        let mut idx = start_idx;
+        while idx < history.len() && total_chars > max_chars {
+            let item = &history[idx];
             let item_chars = item.content.chars().count()
                 + item
                     .tool_calls_json
                     .as_ref()
                     .map(|s| s.chars().count())
                     .unwrap_or(0);
-            total_chars = total_chars.saturating_sub(item_chars);
-            ids_to_delete.push(item.id.clone());
-            deleted_count += 1;
+
+            // Collect the ids of an assistant tool-call group (assistant row +
+            // every following tool row answering one of its tool_calls).
+            let mut group_ids: Vec<&str> = Vec::new();
+            let mut group_chars = item_chars;
+
+            if item.role == "assistant" {
+                if let Some(mut pending) = Self::pending_tool_call_ids(item) {
+                    group_ids.push(item.id.as_str());
+                    let mut j = idx + 1;
+                    while j < history.len() && !pending.is_empty() {
+                        let follower = &history[j];
+                        if follower.role != "tool" {
+                            break;
+                        }
+                        if let Some(fid) = follower.tool_call_id.as_deref() {
+                            if pending.remove(fid) {
+                                group_ids.push(follower.id.as_str());
+                                group_chars += follower.content.chars().count()
+                                    + follower
+                                        .tool_calls_json
+                                        .as_ref()
+                                        .map(|s| s.chars().count())
+                                        .unwrap_or(0);
+                            }
+                        }
+                        j += 1;
+                    }
+                }
+            }
+
+            if group_ids.is_empty() {
+                group_ids.push(item.id.as_str());
+            }
+
+            let group_len = group_ids.len();
+            for id in group_ids {
+                ids_to_delete.push(id.to_string());
+                deleted_count += 1;
+            }
+            total_chars = total_chars.saturating_sub(group_chars);
+            idx += group_len;
         }
 
         for id in ids_to_delete {
@@ -1060,6 +1227,292 @@ impl Database {
         }
 
         Ok(deleted_count)
+    }
+
+    // --- Append-only Agent Transcript (distillation source of truth) ---
+
+    /// Appends one immutable row to the agent's lifetime transcript.
+    /// `seq` is allocated inside the transaction so concurrent appenders
+    /// cannot collide or reorder.
+    pub async fn append_transcript(
+        &self,
+        agent_id: &str,
+        role: &str,
+        content: &str,
+        tool_calls_json: Option<&str>,
+        tool_call_id: Option<&str>,
+        origin: &str,
+        turn: i64,
+        metadata_json: Option<&str>,
+    ) -> Result<AgentTranscriptItem, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+
+        let next_seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_transcript WHERE agent_id = ?",
+        )
+        .bind(agent_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO agent_transcript
+                (id, agent_id, seq, role, content, tool_calls_json, tool_call_id, origin, turn, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&id)
+        .bind(agent_id)
+        .bind(next_seq)
+        .bind(role)
+        .bind(content)
+        .bind(tool_calls_json)
+        .bind(tool_call_id)
+        .bind(origin)
+        .bind(turn)
+        .bind(metadata_json)
+        .execute(&mut *tx)
+        .await?;
+
+        let item = sqlx::query_as::<_, AgentTranscriptItem>(
+            "SELECT * FROM agent_transcript WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(item)
+    }
+
+    /// Full ordered transcript, oldest first. Never mutated by pruning.
+    pub async fn get_agent_transcript(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<AgentTranscriptItem>, sqlx::Error> {
+        sqlx::query_as::<_, AgentTranscriptItem>(
+            "SELECT * FROM agent_transcript WHERE agent_id = ? ORDER BY seq ASC",
+        )
+        .bind(agent_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Export helper: the transcript as OpenAI-style chat messages, suitable
+    /// for distillation / fine-tuning datasets. System prompts appear exactly
+    /// once each, in their original position.
+    pub async fn export_agent_transcript(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+        let rows = self.get_agent_transcript(agent_id).await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let mut obj = serde_json::json!({
+                    "role": r.role,
+                    "content": r.content,
+                });
+                if let Some(tc) = r.tool_calls_json.as_deref() {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(tc) {
+                        obj["tool_calls"] = v;
+                    }
+                }
+                if let Some(tid) = r.tool_call_id.as_deref() {
+                    obj["tool_call_id"] = serde_json::Value::String(tid.to_string());
+                }
+                obj
+            })
+            .collect())
+    }
+
+    /// Case-insensitive regex search over an agent's append-only transcript.
+    /// Returns lightweight hits (no full content) ordered by time.
+    pub async fn search_transcript(
+        &self,
+        agent_id: &str,
+        pattern: &str,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+        let rows = self.get_agent_transcript(agent_id).await?;
+        let re = match regex::RegexBuilder::new(pattern)
+            .case_insensitive(true)
+            .size_limit(1 << 20)
+            .build()
+        {
+            Ok(re) => re,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let limit = limit.clamp(1, 100);
+        let mut hits = Vec::new();
+        for row in rows {
+            // Match against the visible text plus tool call payloads so that
+            // searching for a tool name or an argument finds it too.
+            let haystack = match row.tool_calls_json.as_deref() {
+                Some(tc) => format!("{}\n{}", row.content, tc),
+                None => row.content.clone(),
+            };
+            let Some(m) = re.find(&haystack) else {
+                continue;
+            };
+
+            let char_offset = haystack[..m.start()].chars().count();
+            let preview: String = row.content.chars().skip(char_offset).take(200).collect();
+            let preview = if row.tool_calls_json.is_some() && preview.is_empty() {
+                haystack.chars().skip(char_offset).take(200).collect()
+            } else {
+                preview
+            };
+
+            let time = row
+                .created_at
+                .map(|t| t.timestamp())
+                .unwrap_or_default();
+
+            hits.push(serde_json::json!({
+                "id": row.id,
+                "time": time,
+                "role": row.role,
+                "origin": row.origin,
+                "turn": row.turn,
+                "preview": preview,
+                "offset": char_offset,
+                "length": row.content.chars().count(),
+            }));
+
+            if hits.len() >= limit {
+                break;
+            }
+        }
+        Ok(hits)
+    }
+
+    /// Returns `(total_chars, slice)` for a transcript row by id, where
+    /// `slice` is `content[from..to]` (character offsets, clamped).
+    pub async fn inspect_transcript(
+        &self,
+        agent_id: &str,
+        id: &str,
+        from: usize,
+        to: usize,
+    ) -> Result<Option<(usize, String)>, sqlx::Error> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT content FROM agent_transcript WHERE agent_id = ? AND id = ?",
+        )
+        .bind(agent_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|(content,)| {
+            let total = content.chars().count();
+            let from = from.min(total);
+            let to = to.max(from).min(total);
+            let slice: String = content.chars().skip(from).take(to - from).collect();
+            (total, slice)
+        }))
+    }
+
+    /// Current turn counter for an agent (max turn recorded in transcript).
+    pub async fn get_agent_turn_counter(&self, agent_id: &str) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT COALESCE(MAX(turn), 0) FROM agent_transcript WHERE agent_id = ?",
+        )
+        .bind(agent_id)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Atomically folds unconsumed pushed messages into running history.
+    ///
+    /// The history insert, the transcript record and the `is_consumed` flags
+    /// are committed in a single transaction, so a crash can never leave a
+    /// push both "consumed" and absent from the context (or vice versa).
+    /// Returns `None` when there was nothing to inject.
+    pub async fn consume_pushed_into_history(
+        &self,
+        agent_id: &str,
+        format_fn: impl Fn(&AgentPushedMessage) -> String,
+        turn: i64,
+    ) -> Result<Option<AgentHistoryItem>, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+
+        let pending = sqlx::query_as::<_, AgentPushedMessage>(
+            "SELECT * FROM agent_pushed_messages WHERE agent_id = ? AND is_consumed = 0 ORDER BY created_at ASC, rowid ASC",
+        )
+        .bind(agent_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        if pending.is_empty() {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        let mut context = String::from("### [Push MCP Updates / Subscriptions]:\n");
+        for msg in &pending {
+            context.push_str(&format_fn(msg));
+        }
+
+        // 1. Working context row
+        let item_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO agent_history (id, agent_id, role, content) VALUES (?, ?, 'system', ?)",
+        )
+        .bind(&item_id)
+        .bind(agent_id)
+        .bind(&context)
+        .execute(&mut *tx)
+        .await?;
+
+        // 2. Immutable transcript row (distillation keeps the raw batch)
+        let next_seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_transcript WHERE agent_id = ?",
+        )
+        .bind(agent_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let event_ids: Vec<String> = pending.iter().map(|m| m.id.clone()).collect();
+        let metadata = serde_json::json!({ "pushed_event_ids": event_ids }).to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO agent_transcript
+                (id, agent_id, seq, role, content, origin, turn, metadata_json)
+            VALUES (?, ?, ?, 'system', ?, 'push', ?, ?)
+            "#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(agent_id)
+        .bind(next_seq)
+        .bind(&context)
+        .bind(turn)
+        .bind(&metadata)
+        .execute(&mut *tx)
+        .await?;
+
+        // 3. Mark consumed — same transaction
+        for msg in &pending {
+            sqlx::query(
+                "UPDATE agent_pushed_messages SET is_consumed = 1 WHERE id = ? AND agent_id = ?",
+            )
+            .bind(&msg.id)
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let item =
+            sqlx::query_as::<_, AgentHistoryItem>("SELECT * FROM agent_history WHERE id = ?")
+                .bind(&item_id)
+                .fetch_one(&mut *tx)
+                .await?;
+
+        tx.commit().await?;
+        Ok(Some(item))
     }
 
     // --- Extensions & Isolated Host-Managed Storage ---

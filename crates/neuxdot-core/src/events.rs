@@ -41,6 +41,13 @@ pub enum AgentEvent {
         tool_name: String,
         result: serde_json::Value,
         success: bool,
+        /// Transcript row id holding the full (untruncated) result, so the UI
+        /// can fetch more via history_inspect.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_id: Option<String>,
+        /// True when `result` was head/body/tail truncated for the event stream.
+        #[serde(default)]
+        truncated: bool,
     },
 
     #[serde(rename = "mcp_pushed_notification")]
@@ -129,6 +136,10 @@ pub struct EventEnvelope {
     pub timestamp: DateTime<Utc>,
     pub agent_id: String,
     pub event: AgentEvent,
+    /// Human-readable header shared with tool responses:
+    /// `2026-11-02T07:49:33.124Z ctx:30%`.
+    #[serde(default)]
+    pub context: String,
 }
 
 impl EventEnvelope {
@@ -138,6 +149,52 @@ impl EventEnvelope {
             timestamp: Utc::now(),
             agent_id: agent_id.into(),
             event,
+            context: String::new(),
         }
+    }
+
+    /// Attaches the `timestamp ctx:N%` header used by tool responses.
+    pub fn with_context(mut self, current_chars: usize, max_chars: usize) -> Self {
+        self.context = crate::runtime::meta_tools::context_header(current_chars, max_chars);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn envelope_carries_real_context_pressure() {
+        // Mirrors what a spawned MCP notification task reads from the shared
+        // gauge: a real percentage, not the old hard-coded 0%.
+        let live = std::sync::atomic::AtomicUsize::new(90_000);
+        let current = live.load(std::sync::atomic::Ordering::Relaxed);
+
+        let envelope = EventEnvelope::new(
+            "agent-1",
+            AgentEvent::McpPushedNotification {
+                agent_id: "agent-1".into(),
+                mcp_id: "mcp-1".into(),
+                mcp_name: "Computer".into(),
+                method: "notifications/resources/updated".into(),
+                payload: serde_json::json!({ "uri": "terminal://completed" }),
+            },
+        )
+        .with_context(current, 300_000);
+
+        assert!(envelope.context.contains("ctx:30%"), "got {}", envelope.context);
+        assert!(envelope.context.ends_with("Z ctx:30%"));
+        // The gauge updates are visible to the task on its next read.
+        live.store(150_000, std::sync::atomic::Ordering::Relaxed);
+        let next = EventEnvelope::new("agent-1", AgentEvent::McpPushedNotification {
+            agent_id: "agent-1".into(),
+            mcp_id: "mcp-1".into(),
+            mcp_name: "Computer".into(),
+            method: "m".into(),
+            payload: serde_json::Value::Null,
+        })
+        .with_context(live.load(std::sync::atomic::Ordering::Relaxed), 300_000);
+        assert!(next.context.ends_with("ctx:50%"), "got {}", next.context);
     }
 }
