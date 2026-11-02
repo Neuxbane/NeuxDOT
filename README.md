@@ -4,10 +4,6 @@
 
 <br/>
 
-```text
-✧･ﾟ: *✧･ﾟ:* 🌸 *:･ﾟ✧*:･ﾟ✧ ─── ･ ｡ﾟ☆: *.☽ .* :☆ﾟ. ─── ✧･ﾟ: *✧･ﾟ:* 🌸 *:･ﾟ✧*:･ﾟ✧
-```
-
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-F97316.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-24C8DB.svg?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Svelte](https://img.shields.io/badge/SvelteKit-5%20(Runes)-FF3E00.svg?style=for-the-badge&logo=svelte&logoColor=white)](https://svelte.dev/)
@@ -38,23 +34,6 @@
 </div>
 
 ---
-
-## 🎬 Apple-Style UI Animation & Kinetic Promo
-
-Experience NeuxDOT's cache-invariance, 3D isometric runtime architecture, and sandboxed WASM extensions in an Apple-style kinetic product reveal:
-
-<div align="center">
-
-[![NeuxDOT Apple-Style Kinetic UI Promo](assets/banner.svg)](video.html)
-
-<br/>
-
-[🚀 **Open Apple-Style UI Animation (`video.html`)**](video.html) &nbsp;&nbsp;|&nbsp;&nbsp; 
-[🎥 **Assets Mirror (`assets/video.html`)**](assets/video.html)
-
-<br/>
-
-</div>
 
 ## ⚡ The NeuxDOT Paradigm
 
