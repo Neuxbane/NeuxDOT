@@ -494,6 +494,141 @@ pub async fn get_agent_tools_handler(
                     }
                 }
             }
+        } else if s.transport == "stdio" {
+            let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<neuxdot_core::mcp::client::McpNotification>();
+            if let Ok(transport) = neuxdot_core::mcp::stdio::StdioTransport::spawn(
+                &s.url_or_command,
+                s.headers_or_env.as_deref(),
+                notif_tx,
+            )
+            .await
+            {
+                let session = neuxdot_core::mcp::client::McpClientSession {
+                    server_id: s.id.clone(),
+                    server_name: s.name.clone(),
+                    transport,
+                    notification_rx: tokio::sync::Mutex::new(notif_rx),
+                };
+
+                let fetch_fut = async {
+                    let _ = session.initialize().await;
+                    session.list_tools().await
+                };
+
+                if let Ok(Ok(tools)) = tokio::time::timeout(std::time::Duration::from_millis(3000), fetch_fut).await {
+                    let server_alias = s.get_alias();
+                    for tool in tools {
+                        let is_enabled = permissions
+                            .iter()
+                            .find(|p| p.mcp_id == s.id && p.tool_name == tool.name)
+                            .map(|p| p.is_enabled)
+                            .unwrap_or(true);
+                        let unique_name = format!("{}.{}", server_alias, tool.name);
+
+                        tools_res.push(AgentToolItem {
+                            mcp_id: s.id.clone(),
+                            server_name: s.name.clone(),
+                            server_alias: server_alias.clone(),
+                            unique_name,
+                            name: tool.name,
+                            description: tool.description,
+                            input_schema: tool.input_schema,
+                            is_enabled,
+                        });
+                    }
+                }
+
+                let fetch_res_fut = async {
+                    session.transport.send_request("resources/list", None).await
+                };
+                if let Ok(Ok(res_val)) = tokio::time::timeout(std::time::Duration::from_millis(1500), fetch_res_fut).await {
+                    if let Some(res_list) = res_val.get("resources").and_then(|r| r.as_array()) {
+                        for r in res_list {
+                            let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let name = r.get("name").and_then(|v| v.as_str()).unwrap_or(&uri).to_string();
+                            let desc = r.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let mime = r.get("mimeType").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let is_sub = sub_set.contains(&uri);
+
+                            resources_res.push(AgentResourceItem {
+                                mcp_id: s.id.clone(),
+                                server_name: s.name.clone(),
+                                uri,
+                                name,
+                                description: desc,
+                                mime_type: mime,
+                                is_subscribed: is_sub,
+                            });
+                        }
+                    }
+                }
+            }
+        } else {
+            let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<neuxdot_core::mcp::client::McpNotification>();
+            let transport = neuxdot_core::mcp::http::HttpTransport::new(
+                &s.url_or_command,
+                s.headers_or_env.as_deref(),
+                notif_tx,
+            );
+            let session = neuxdot_core::mcp::client::McpClientSession {
+                server_id: s.id.clone(),
+                server_name: s.name.clone(),
+                transport,
+                notification_rx: tokio::sync::Mutex::new(notif_rx),
+            };
+
+            let fetch_fut = async {
+                let _ = session.initialize().await;
+                session.list_tools().await
+            };
+
+            if let Ok(Ok(tools)) = tokio::time::timeout(std::time::Duration::from_millis(3500), fetch_fut).await {
+                let server_alias = s.get_alias();
+                for tool in tools {
+                    let is_enabled = permissions
+                        .iter()
+                        .find(|p| p.mcp_id == s.id && p.tool_name == tool.name)
+                        .map(|p| p.is_enabled)
+                        .unwrap_or(true);
+                    let unique_name = format!("{}.{}", server_alias, tool.name);
+
+                    tools_res.push(AgentToolItem {
+                        mcp_id: s.id.clone(),
+                        server_name: s.name.clone(),
+                        server_alias: server_alias.clone(),
+                        unique_name,
+                        name: tool.name,
+                        description: tool.description,
+                        input_schema: tool.input_schema,
+                        is_enabled,
+                    });
+                }
+            }
+
+            let fetch_res_fut = async {
+                session.transport.send_request("resources/list", None).await
+            };
+            if let Ok(Ok(res_val)) = tokio::time::timeout(std::time::Duration::from_millis(1500), fetch_res_fut).await {
+                if let Some(res_list) = res_val.get("resources").and_then(|r| r.as_array()) {
+                    for r in res_list {
+                        let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let name = r.get("name").and_then(|v| v.as_str()).unwrap_or(&uri).to_string();
+                        let desc = r.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let mime = r.get("mimeType").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let is_sub = sub_set.contains(&uri);
+
+                        resources_res.push(AgentResourceItem {
+                            mcp_id: s.id.clone(),
+                            server_name: s.name.clone(),
+                            uri,
+                            name,
+                            description: desc,
+                            mime_type: mime,
+                            is_subscribed: is_sub,
+                        });
+                    }
+                }
+            }
         }
     }
 

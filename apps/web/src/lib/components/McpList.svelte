@@ -18,7 +18,8 @@
 		ChevronUp,
 		Cpu,
 		EyeOff,
-		ShieldCheck
+		ShieldCheck,
+		RefreshCw
 	} from 'lucide-svelte';
 
 	interface Props {
@@ -67,7 +68,7 @@
 		}
 		onchange?.(selectedIds);
 		if (agentId) {
-			setTimeout(loadToolsAndResources, 150);
+			setTimeout(loadToolsAndResources, 650);
 		}
 	}
 
@@ -147,20 +148,27 @@
 							</div>
 						</label>
 
-						{#if isSelected && (serverTools.length > 0 || serverResources.length > 0)}
-							<button
-								type="button"
-								class="flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-800 px-2.5 py-1 text-[11px] font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors"
-								onclick={() => (expandedServerId = isExpanded ? null : srv.id)}
-							>
-								<Sliders class="h-3 w-3" />
-								<span>{isExpanded ? 'Hide Tools' : `Tools & Push (${serverTools.length})`}</span>
-								{#if isExpanded}
-									<ChevronUp class="h-3 w-3" />
-								{:else}
-									<ChevronDown class="h-3 w-3" />
-								{/if}
-							</button>
+						{#if isSelected}
+							{#if isLoadingTools}
+								<div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
+									<RefreshCw class="h-3 w-3 animate-spin text-zinc-400" />
+									<span>Loading...</span>
+								</div>
+							{:else}
+								<button
+									type="button"
+									class="flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-800 px-2.5 py-1 text-[11px] font-medium {serverTools.length > 0 ? 'text-zinc-600 dark:text-zinc-300' : 'text-amber-600 dark:text-amber-400'} hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors"
+									onclick={() => (expandedServerId = isExpanded ? null : srv.id)}
+								>
+									<Sliders class="h-3 w-3" />
+									<span>{isExpanded ? 'Hide Tools' : `Tools & Push (${serverTools.length})`}</span>
+									{#if isExpanded}
+										<ChevronUp class="h-3 w-3" />
+									{:else}
+										<ChevronDown class="h-3 w-3" />
+									{/if}
+								</button>
+							{/if}
 						{/if}
 					</div>
 
@@ -174,14 +182,28 @@
 										<ShieldCheck class="h-3.5 w-3.5 text-indigo-500" />
 										<span>Granular Tool Permissions (Zero-Trust Discovery)</span>
 									</div>
-									<span class="text-[10px] text-zinc-400">
-										Disabled tools are completely hidden from agent
-									</span>
+									<div class="flex items-center gap-2">
+										<button
+											type="button"
+											onclick={loadToolsAndResources}
+											class="flex items-center gap-1 text-[10px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
+											title="Refresh discovered tools from MCP server"
+										>
+											<RefreshCw class="h-2.5 w-2.5" />
+											<span>Refresh</span>
+										</button>
+										<span class="text-[10px] text-zinc-400">
+											Disabled tools are completely hidden from agent
+										</span>
+									</div>
 								</div>
 
 								{#if serverTools.length === 0}
-									<div class="text-[11px] text-zinc-400 dark:text-zinc-500 italic py-1">
-										No tools discovered for this server.
+									<div class="rounded-xl border border-dashed border-amber-500/30 bg-amber-500/5 p-3 text-[11px] text-amber-600 dark:text-amber-400 space-y-1">
+										<p class="font-medium">No tools discovered for this server.</p>
+										<p class="text-[10px] text-zinc-500 dark:text-zinc-400">
+											Ensure the MCP server is actively running at <span class="font-mono">{srv.url_or_command}</span> and authentication headers (e.g. <span class="font-mono">Authorization: Bearer &lt;key&gt;</span>) are configured in <a href="/mcp" class="underline font-medium text-zinc-700 dark:text-zinc-200">MCP Settings</a>.
+										</p>
 									</div>
 								{:else}
 									<div class="grid grid-cols-1 gap-2">

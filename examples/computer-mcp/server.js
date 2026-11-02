@@ -15,9 +15,51 @@ const ONE_TIME_API_KEY =
 
 // Connected SSE clients for server push notifications
 const sseClients = new Set();
+const subscribedUris = new Set();
 
 // Managed background and active terminal processes
 const managedTerminals = new Map();
+
+/**
+ * Resources exposed for real-time Push MCP subscriptions
+ */
+const RESOURCES = [
+  {
+    uri: 'terminal://completed',
+    name: 'Terminal Process Finished Events',
+    description:
+      'Real-time push notifications when a background or detached terminal command finishes execution',
+    mimeType: 'application/json',
+  },
+  {
+    uri: 'terminal://events',
+    name: 'Terminal Process Lifecycle Stream',
+    description:
+      'Stream of all terminal lifecycle events including spawn, background detach, completion, and exit errors',
+    mimeType: 'application/json',
+  },
+];
+
+/**
+ * Broadcasts a Push MCP notification over Server-Sent Events (SSE) to all connected clients
+ */
+function broadcastPushNotification(method, params) {
+  const payload = JSON.stringify({
+    jsonrpc: '2.0',
+    method,
+    params,
+  });
+
+  const eventMessage = `data: ${payload}\n\n`;
+
+  for (const client of sseClients) {
+    try {
+      client.write(eventMessage);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
 
 /**
  * Parses duration strings like "120s", "5m", "500ms" into milliseconds.
@@ -95,10 +137,6 @@ const TOOLS = [
         pid: {
           type: 'integer',
           description: 'The process ID of the terminal to inspect',
-        },
-        tailLines: {
-          type: 'integer',
-          description: 'Optional number of trailing lines of output to return',
         },
       },
       required: ['pid'],
@@ -253,6 +291,28 @@ async function callTool(name, args = {}) {
         entry.endTime = Date.now();
         entry.exitCode = code ?? 0;
         entry.status = code === 0 ? 'completed' : 'failed';
+
+        const durationSeconds = Math.round(
+          ((entry.endTime || Date.now()) - entry.startTime) / 1000
+        );
+        const notificationPayload = {
+          uri: 'terminal://completed',
+          pid: entry.pid,
+          command: entry.command,
+          status: entry.status,
+          exit_code: entry.exitCode,
+          duration_seconds: durationSeconds,
+          output: entry.output,
+          message: `Terminal PID ${entry.pid} ('${entry.command}') ${entry.status} with exit code ${entry.exitCode} in ${durationSeconds}s.`,
+        };
+
+        // 1. Standard MCP Resource update event
+        broadcastPushNotification('notifications/resources/updated', {
+          uri: 'terminal://completed',
+        });
+
+        // 2. Direct message push notification for agent wake-up & context ingestion
+        broadcastPushNotification('notifications/message', notificationPayload);
       });
 
       child.on('error', (err) => {
@@ -260,6 +320,16 @@ async function callTool(name, args = {}) {
         entry.exitCode = 1;
         entry.status = 'failed';
         entry.output += `\n[Process Error]: ${err.message}\n`;
+
+        broadcastPushNotification('notifications/message', {
+          uri: 'terminal://completed',
+          pid: entry.pid,
+          command: entry.command,
+          status: 'failed',
+          exit_code: 1,
+          output: entry.output,
+          message: `Terminal PID ${entry.pid} ('${entry.command}') failed: ${err.message}`,
+        });
       });
 
       if (runInBackground) {
@@ -362,19 +432,13 @@ async function callTool(name, args = {}) {
       const now = Date.now();
       const durationMs = (entry.endTime ?? now) - entry.startTime;
 
-      let output = entry.output;
-      if (args.tailLines && args.tailLines > 0) {
-        const lines = output.split('\n');
-        output = lines.slice(-args.tailLines).join('\n');
-      }
-
       return {
         pid: entry.pid,
         command: entry.command,
         status: entry.status,
         exit_code: entry.exitCode,
         duration_seconds: Math.round(durationMs / 1000),
-        output: output || '(no output produced yet)',
+        output: entry.output || '(no output produced yet)',
         total_output_chars: entry.output.length,
         start_time: new Date(entry.startTime).toISOString(),
         end_time: entry.endTime ? new Date(entry.endTime).toISOString() : null,
@@ -559,9 +623,43 @@ async function handleJsonRpc(reqBody) {
           },
           capabilities: {
             tools: { listChanged: false },
-            resources: { subscribe: false, listChanged: false },
+            resources: { subscribe: true, listChanged: true },
           },
         },
+      };
+    }
+
+    case 'resources/list': {
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          resources: RESOURCES,
+        },
+      };
+    }
+
+    case 'resources/subscribe': {
+      const uri = params?.uri;
+      if (uri) {
+        subscribedUris.add(uri);
+      }
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {},
+      };
+    }
+
+    case 'resources/unsubscribe': {
+      const uri = params?.uri;
+      if (uri) {
+        subscribedUris.delete(uri);
+      }
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {},
       };
     }
 
@@ -751,12 +849,16 @@ server.listen(PORT, HOST, () => {
 ║ Tools available:                                                           ║
 ║   - terminal(bash, runInBackground=false, timeout="120s")                  ║
 ║   - list_terminal(activeOnly=false)                                        ║
-║   - check_terminal(pid, tailLines?)                                        ║
+║   - check_terminal(pid)                                                    ║
 ║   - kill_terminal(pid, signal="SIGTERM")                                   ║
 ║   - list(path=".")                                                         ║
 ║   - read(path, from?, to?)                                                 ║
 ║   - set(path, content)                                                     ║
 ║   - replace(path, search, content)                                         ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║ Push MCP Subscriptions:                                                    ║
+║   - terminal://completed (auto push when background command finishes)      ║
+║   - terminal://events    (full process lifecycle events stream)            ║
 ╚════════════════════════════════════════════════════════════════════════════╝
 `);
 });

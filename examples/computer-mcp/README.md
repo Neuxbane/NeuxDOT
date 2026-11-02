@@ -22,12 +22,27 @@ Designed to connect with **NeuxDOT** and any standard MCP client.
 |---|---|---|
 | **`terminal`** | `bash: string`<br>`runInBackground?: boolean` *(default: false)*<br>`timeout?: string` *(default: "120s")* | Executes a bash command in the terminal. If execution runs longer than `timeout`, it automatically detaches into the background and returns its PID. |
 | **`list_terminal`** | `activeOnly?: boolean` *(default: false)* | Lists all managed terminal processes (running, detached, completed, or failed) with duration and status. |
-| **`check_terminal`** | `pid: number`<br>`tailLines?: number` | Checks process status and inspects output for a specific PID (supports line tailing). |
+| **`check_terminal`** | `pid: number` | Checks process status and inspects the output for a specific PID. |
 | **`kill_terminal`** | `pid: number`<br>`signal?: string` *(default: "SIGTERM")* | Sends a signal to terminate a running or detached terminal process. |
 | **`list`** | `path?: string` *(default: ".")* | Lists files and directories with entry type, byte size, and last modified timestamps. |
 | **`read`** | `path: string`<br>`from?: number`<br>`to?: number` | Reads a file with optional 1-based line slicing (`from` to `to`) and line numbering. |
 | **`set`** | `path: string`<br>`content: string` | Creates or overwrites a file with content (automatically creates parent directories). |
 | **`replace`** | `path: string`<br>`search: string`<br>`content: string` | Replaces exact string occurrences in an existing file. |
+
+---
+
+## Push MCP Subscriptions (Real-Time Events)
+
+The Computer MCP server supports real-time unsolicited push notifications over Server-Sent Events (SSE). Agents can subscribe to these resources in NeuxDOT to be automatically awakened and notified when processes finish:
+
+| Resource URI | Type | Description |
+|---|---|---|
+| **`terminal://completed`** | Push Notification | Emitted automatically whenever any detached or background terminal process finishes execution. Contains the PID, exit code, command, duration, and full output. |
+| **`terminal://events`** | Push Notification | Lifecycle stream of all terminal process events (spawn, background detach, completion, errors). |
+
+When a background process finishes, the server pushes both:
+1. Standard MCP resource update notification: `notifications/resources/updated` with `uri: "terminal://completed"`.
+2. Direct agent message: `notifications/message` with `{ uri, pid, command, status, exit_code, duration_seconds, output }` which automatically wakes up sleeping agents in NeuxDOT!
 
 ---
 
