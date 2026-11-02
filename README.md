@@ -64,48 +64,105 @@ NeuxDOT eliminates this flaw at the runtime kernel layer:
 ## 🏛️ System Architecture
 
 ```mermaid
-graph TD
-    classDef client fill:#1E1B4B,stroke:#6366F1,stroke-width:2px,color:#E0E7FF;
-    classDef server fill:#09090B,stroke:#A855F7,stroke-width:2px,color:#F3E8FF;
-    classDef core fill:#18181B,stroke:#EC4899,stroke-width:2px,color:#FDF2F8;
-    classDef plugin fill:#022C22,stroke:#10B981,stroke-width:2px,color:#D1FAE5;
-    classDef storage fill:#172554,stroke:#38BDF8,stroke-width:2px,color:#E0F2FE;
-    classDef auth fill:#3B0764,stroke:#C084FC,stroke-width:2px,color:#F3E8FF;
+erDiagram
+    %% ── NeuxDOT system map: layers as entities, behaviour as operations ──
 
-    User(["🌸 User / Web UI / Tauri App"]):::client -->|WebSocket / REST API| Server["🌐 NeuxDOT Server (Axum)"]:::server
-    Server --> Auth["🛡️ Auth &amp; Roles<br/>root / member"]:::auth
-    Server --> Core["⚡ NeuxDOT Core Runtime Engine"]:::core
+    WEB_UI ||--o{ API : "REST + WebSocket"
+    API ||--|| AUTH : "verifies JWT, resolves role from DB"
+    API ||--o{ EXECUTOR : "POST /api/agents/:id/run"
+    AUTH }o--|| SQLITE : "accounts, profiles"
 
-    subgraph CoreEngine ["🐾 Core Runtime Kernel"]
-        Core --> Router["🔀 Provider Router<br/>(Fallback / Round-Robin / Random)"]:::core
-        Core --> TM["⏳ Single-Timer Manager<br/>(Interruptible Sleep)"]:::core
-        Core --> Meta["🛡️ 11 Invariant Meta-Tools"]:::core
-        Core --> Hooks["🪝 Response Hooks Engine"]:::core
-        Core --> Presets["🧠 Instruction Presets<br/>(per-account)"]:::core
-        Core --> Trunc["✂️ Head/Body/Tail Truncation<br/>+ ctx header"]:::core
-    end
+    EXECUTOR ||--|| ROUTER : "delegates completion"
+    EXECUTOR ||--|| META_TOOLS : "exposes 11 tools"
+    EXECUTOR ||--|| TIMER : "single active sleep"
+    EXECUTOR ||--|| HOOKS : "appends telemetry"
+    EXECUTOR ||--|| TRUNCATION : "head/body/tail"
+    ROUTER }o--|| LLM : "fallback / round-robin / random"
 
-    Router --> LLM["🤖 LLM Providers<br/>(OpenAI / Ollama / Anthropic)"]:::client
+    EXECUTOR ||--o{ HISTORY : "working context"
+    EXECUTOR ||--o{ TRANSCRIPT : "append-only"
+    TRANSCRIPT ||--|| HISTORY : "inspect recovers pruned text"
+    EXECUTOR ||--o{ PLUGIN : "tool discovery + calls"
+    PLUGIN ||--o{ WASM_ABI : "env imports"
 
-    subgraph UnifiedPlugins ["🌸 Unified Plugin System (MCP + WASM + HTTP)"]
-        Core --> P_Wasm["🧩 WASM / Wasmtime Sandbox"]:::plugin
-        Core --> P_Stdio["🔌 MCP Stdio Transport"]:::plugin
-        Core --> P_Http["🌐 MCP SSE / HTTP Transport"]:::plugin
-        Core --> P_Custom["🪄 Custom HTTP Tools<br/>(curl-style + captures)"]:::plugin
-        P_Wasm --> MCPApps["🖼️ MCP Apps<br/>(sandboxed iframe UI)"]:::plugin
-    end
+    PLUGIN }o--|| SQLITE : "persist"
+    HISTORY }o--|| SQLITE : "persist"
+    TRANSCRIPT }o--|| SQLITE : "persist"
 
-    subgraph Memory ["🧠 Agent Memory & History"]
-        Core --> H_Work[("📜 agent_history<br/>working context — prunable")]:::storage
-        Core --> H_Arch[("🗄️ agent_transcript<br/>append-only — distillation")]:::storage
-        H_Arch -.->|history_search / history_inspect| Core
-    end
-
-    P_Wasm -->|Isolated KV| SQLite[("🗄️ SQLite (WAL)")]:::storage
-    P_Wasm -->|Isolated FS| DiskStorage["📁 data/hash/"]:::storage
-    Auth --> SQLite
-    Core -->|Live Event Envelopes| WS["📡 WebSocket Event Broadcaster"]:::server
+    WEB_UI {
+        string engine "SvelteKit 5 runes + Tauri"
+    }
+    API {
+        string role "Axum router"
+        string routes "auth, accounts, agents, mcp, plugins, extensions, profile, instruction-presets, ws"
+    }
+    AUTH {
+        string role "root | member"
+        string guards "require_root, resolve_identity"
+        string token "JWT 30d, DB-authoritative"
+    }
+    EXECUTOR {
+        string role "core runtime kernel"
+        string run_turn "one agent turn, max 8 iterations"
+        string setup_mcp_sessions "spawns transports + push listeners"
+        string sanitize_chat_messages "group repair + dedupe"
+        string normalize_history_transcript "one-time history repair"
+        string truncate_for_context "budgeted head body tail"
+    }
+    ROUTER {
+        string strategy "fallback | round-robin | random"
+    }
+    META_TOOLS {
+        string search "search_tools, get_tool_schema, call_tool, list_servers"
+        string memory "setMemory, editMemory, readMemory"
+        string context "compact, sleep"
+        string archive "history_search, history_inspect"
+    }
+    TIMER {
+        string sleep "interruptible by MCP push"
+    }
+    HOOKS {
+        string variables "agent.name, agent.memory, tools.preset, time, context_remaining"
+    }
+    TRUNCATION {
+        string marker "truncated_from_to"
+        string header "UTC timestamp + ctx percent"
+        string overrides "call_tool head body tail"
+    }
+    LLM {
+        string providers "OpenAI, Ollama, Anthropic, proxies"
+    }
+    HISTORY {
+        string role "working context - mutated"
+        string agent_history "role, content, tool_calls_json, tool_call_id"
+        string ops "prune groups, compact"
+    }
+    TRANSCRIPT {
+        string role "append-only archive - never deleted"
+        string agent_transcript "seq, role, origin, turn, full content"
+        string ops "append_transcript, search_transcript, inspect_transcript"
+    }
+    PLUGIN {
+        string wasm "WasmStdioTransport + Wasmtime sandbox"
+        string stdio "StdioTransport - MCP over stdio"
+        string http "HttpTransport - MCP SSE/HTTP"
+        string custom "CustomToolsTransport - declarative HTTP + captures"
+        string ui "MCP Apps: sandboxed iframe"
+        string permissions "ui, storage, process, network, agent_control, identity"
+    }
+    WASM_ABI {
+        string kv "host_kv_get, host_kv_set, host_kv_delete"
+        string fs "host_fs_read, host_fs_write"
+        string agents "host_agent_run, host_agent_run_background"
+        string misc "host_log, host_get_time_str"
+    }
+    SQLITE {
+        string mode "WAL"
+        string tables "17 tables, see ERD"
+    }
 ```
+
+
 
 ### 💡 Data Plane: Working Context vs. Append-Only Transcript
 
