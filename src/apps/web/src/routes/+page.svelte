@@ -9,7 +9,9 @@
 		type AgentResourceItem,
 		type PluginPermissions,
 		type ResponseHook,
-		type InstructionPreset
+		type InstructionPreset,
+		type AgentShare,
+		type AccountSearchResult
 	} from '$lib/api';
 	import { authState } from '$lib/stores/auth.svelte';
 	import { denyAll, resolvedPermissions } from '$lib/utils/permissions';
@@ -43,7 +45,9 @@ import AvatarCropModal from '$lib/components/AvatarCropModal.svelte';
 		FileCode,
 		Upload,
 		ArrowLeft,
-		Menu
+		Menu,
+		LogOut,
+		Users
 	} from 'lucide-svelte';
 
 	let agentId = $derived(page.url.searchParams.get('agent_id'));
@@ -100,6 +104,8 @@ let agentMemory = $state<{ content: string; current_hash: string; character_coun
 		description?: string;
 		permissions: PluginPermissions;
 		isConnectedToAgent: boolean;
+		/** Version of the served plugin; changes force the iframe to reload. */
+		wasmHash?: string;
 	}
 
 	let activePanel = $state<'config' | string>('config');
@@ -107,6 +113,122 @@ let agentMemory = $state<{ content: string; current_hash: string; character_coun
 	// Mobile drill-down, level 2: choosing an agent lands on its section list.
 	// Picking a section hides this to reveal the content (level 3).
 	let agentNavOpen = $state(true);
+
+	// Server-resolved rights over the current agent (owner or a sharee).
+	const isOwner = $derived(agent?.is_owner ?? true);
+	const canEdit = $derived(agent?.can_edit ?? true);
+	const canManageShares = $derived(agent?.can_manage_shares ?? false);
+	// A sharee without edit rights sees only what is needed to use the bot.
+	const showConfiguration = $derived(canEdit);
+
+// Sharing panel state
+let agentShares = $state<AgentShare[]>([]);
+let shareQuery = $state('');
+let shareResults = $state<AccountSearchResult[]>([]);
+let shareSearchOpen = $state(false);
+let shareHighlight = $state(0);
+let shareSearchTimer: number | null = null;
+let newShareCanEdit = $state(false);
+let newShareCanManage = $state(false);
+let isSavingShare = $state(false);
+let selectedShareAccount = $state<AccountSearchResult | null>(null);
+let shareError = $state<string | null>(null);
+
+async function loadShares() {
+if (!agent) return;
+try {
+agentShares = await api.agentShares.list(agent.id);
+} catch (e) {
+// Non-owners without manage rights simply get no list.
+agentShares = [];
+}
+}
+
+/** Debounced account search backing the share picker. */
+function searchShareCandidates(query: string) {
+shareQuery = query;
+shareHighlight = 0;
+if (shareSearchTimer) clearTimeout(shareSearchTimer);
+if (!query.trim()) {
+shareResults = [];
+return;
+}
+shareSearchTimer = window.setTimeout(async () => {
+try {
+shareResults = await api.searchAccounts(query.trim());
+shareSearchOpen = true;
+} catch (e) {
+shareResults = [];
+}
+}, 250);
+}
+
+function pickShareCandidate(account: AccountSearchResult) {
+selectedShareAccount = account;
+shareQuery = account.display_name
+? `${account.display_name} (@${account.username})`
+: `@${account.username}`;
+shareSearchOpen = false;
+shareResults = [];
+}
+
+function onShareQueryKeydown(e: KeyboardEvent) {
+if (!shareSearchOpen || shareResults.length === 0) return;
+if (e.key === 'ArrowDown') {
+e.preventDefault();
+shareHighlight = (shareHighlight + 1) % shareResults.length;
+} else if (e.key === 'ArrowUp') {
+e.preventDefault();
+shareHighlight = (shareHighlight - 1 + shareResults.length) % shareResults.length;
+} else if (e.key === 'Enter') {
+e.preventDefault();
+pickShareCandidate(shareResults[shareHighlight]);
+} else if (e.key === 'Escape') {
+shareSearchOpen = false;
+}
+}
+
+async function addShare() {
+if (!agent || !selectedShareAccount) return;
+isSavingShare = true;
+shareError = null;
+try {
+await api.agentShares.create(agent.id, {
+username: selectedShareAccount.username,
+can_edit: newShareCanEdit,
+can_manage_shares: newShareCanManage
+});
+selectedShareAccount = null;
+shareQuery = '';
+newShareCanEdit = false;
+newShareCanManage = false;
+await loadShares();
+} catch (e: any) {
+shareError = e?.message || 'Failed to share.';
+} finally {
+isSavingShare = false;
+}
+}
+
+async function updateShare(accountId: string, patch: { can_edit?: boolean; can_manage_shares?: boolean }) {
+if (!agent) return;
+try {
+await api.agentShares.update(agent.id, accountId, patch);
+await loadShares();
+} catch (e: any) {
+shareError = e?.message || 'Failed to update access.';
+}
+}
+
+async function removeShare(accountId: string) {
+if (!agent) return;
+try {
+await api.agentShares.remove(agent.id, accountId);
+await loadShares();
+} catch (e: any) {
+shareError = e?.message || 'Failed to remove access.';
+}
+}
 	let agentResources = $state<AgentResourceItem[]>([]);
 	let selectedMcpApp = $state<DiscoveredMcpApp | null>(null);
 
@@ -122,11 +244,14 @@ let agentMemory = $state<{ content: string; current_hash: string; character_coun
 	let sidebarMcpApps = $derived.by(() => {
 		const map = new Map<string, DiscoveredMcpApp>();
 
-		// 1. Discover from active plugins' manifests (e.g. WASM plugins with mcp.resources ui://...)
+		// 1. Discover from active plugins' manifests (e.g. plugins with mcp.resources ui://...)
 		for (const srv of allMcpServers) {
 			if (srv.is_active === false) continue;
 			const perms = parsePluginPermissions(srv);
-			if (!perms.ui.enabled) continue;
+			// An explicitly disabled UI hook hides the app; an empty/unreadable
+			// consent row must not, or the sidebar silently disagrees with the
+			// tool list that renders the same resource.
+			if (srv.permissions_json && !perms.ui.enabled) continue;
 			if (srv.manifest_json) {
 				try {
 					const manifest = JSON.parse(srv.manifest_json);
@@ -152,7 +277,7 @@ let agentMemory = $state<{ content: string; current_hash: string; character_coun
 			}
 		}
 
-		// 2. Discover from live MCP resources/list on connected plugins (stdio / http / wasm_stdio)
+		// 2. Discover from live MCP resources/list on connected plugins (binary / stdio / http)
 		for (const res of agentResources) {
 			const uri = res.uri || '';
 			const mime = res.mime_type || '';
@@ -162,7 +287,7 @@ let agentMemory = $state<{ content: string; current_hash: string; character_coun
 				// A discovered resource with no matching server row still gets a
 				// conservative grant set: UI only, no identity, no storage.
 				const perms = srv ? parsePluginPermissions(srv) : denyAll();
-				if (srv && !perms.ui.enabled) continue;
+				if (srv?.permissions_json && !perms.ui.enabled) continue;
 				const key = `${res.mcp_id}:${uri}`;
 				map.set(key, {
 					pluginId: res.mcp_id,
@@ -200,6 +325,34 @@ let agentMemory = $state<{ content: string; current_hash: string; character_coun
 				el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 			}
 		}, 20);
+	}
+
+	/**
+	 * Launch an MCP-App from the tool list. Resolves the same
+	 * `DiscoveredMcpApp` the sidebar builds, so both entry points open the
+	 * identical sandboxed viewer.
+	 */
+	function openMcpAppById(target: { mcpId: string; uri: string; name: string }) {
+		const found = sidebarMcpApps.find(
+			(a) => a.pluginId === target.mcpId && a.resourceUri === target.uri
+		);
+		if (found) {
+			selectMcpApp(found);
+			return;
+		}
+		// Not in the sidebar cache yet (just discovered): synthesise a minimal
+		// entry from the known server row rather than doing nothing.
+		const srv = allMcpServers.find((s) => s.id === target.mcpId);
+		if (!srv) return;
+		selectMcpApp({
+			pluginId: srv.id,
+			pluginName: srv.name,
+			transport: srv.transport,
+			resourceUri: target.uri,
+			title: target.name || srv.name,
+			permissions: parsePluginPermissions(srv),
+			isConnectedToAgent: selectedMcpIds.includes(srv.id)
+		});
 	}
 
 	async function selectMcpApp(app: DiscoveredMcpApp) {
@@ -286,7 +439,21 @@ async function loadAgentData(id: string) {
 				api.agents.getMemory(id).catch(() => null),
 				api.agents.getHistory(id).catch(() => [])
 			]);
-			agent = detail.agent;
+			// The access flags are returned alongside the agent, not inside it, so
+// fold them onto the object the UI reads from.
+agent = {
+...detail.agent,
+is_owner: detail.is_owner,
+can_edit: detail.can_edit,
+can_manage_shares: detail.can_manage_shares
+};
+
+// Sharing list is only readable with share-management rights.
+if (detail.can_manage_shares) {
+void loadShares();
+} else {
+agentShares = [];
+}
 			selectedProviderIds = detail.model_ids || detail.provider_ids || [];
 			selectedMcpIds = detail.mcp_ids;
 			allProviders = provs;
@@ -479,6 +646,18 @@ function triggerAutoSave() {
 		}
 	}
 
+/** Remove our own access to an agent shared with us. */
+async function leaveSharedAgent() {
+if (!agent) return;
+if (!confirm(`Leave "${agent.name}"? You will lose access to it.`)) return;
+try {
+await api.agentShares.remove(agent.id, authState.activeAccount?.id ?? '');
+window.location.href = '/';
+} catch (e: any) {
+alert('Failed to leave: ' + (e?.message || e));
+}
+}
+
 	async function deleteAgent() {
 		if (!agent) return;
 		const name = agent.name;
@@ -612,7 +791,15 @@ function triggerAutoSave() {
 					shape={agent.avatar_shape === 'circle' ? 'circle' : agent.avatar_shape === 'square' ? 'square' : 'rounded'}
 					size="sm"
 				/>
-				<h1 class="text-base font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight">{agent.name}</h1>
+				<h1 class="truncate text-base font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight">{agent.name}</h1>
+{#if !isOwner}
+<span
+class="shrink-0 rounded-full border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-mono text-amber-600 dark:text-amber-400"
+title="Shared with you by another account"
+>
+Shared
+</span>
+{/if}
 				<button
 					type="button"
 					onclick={() => {
@@ -638,15 +825,28 @@ function triggerAutoSave() {
 					</span>
 				{/if}
 
-				<button
-					type="button"
-					onclick={deleteAgent}
-					class="flex items-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 transition-all cursor-pointer shadow-2xs"
-					title="Delete this agent"
-				>
-					<Trash2 class="h-3.5 w-3.5" />
-					<span>Delete Agent</span>
-				</button>
+				{#if isOwner}
+					<button
+						type="button"
+						onclick={deleteAgent}
+						class="flex items-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 transition-all cursor-pointer shadow-2xs"
+						title="Delete this agent"
+					>
+						<Trash2 class="h-3.5 w-3.5" />
+						<span>Delete Agent</span>
+					</button>
+				{:else}
+					<!-- A sharee can always give up their own access. -->
+					<button
+						type="button"
+						onclick={leaveSharedAgent}
+						class="flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 transition-all cursor-pointer shadow-2xs"
+						title="Remove your access to this shared agent"
+					>
+						<LogOut class="h-3.5 w-3.5" />
+						<span>Leave</span>
+					</button>
+				{/if}
 			</div>
 		</header>
 
@@ -660,6 +860,7 @@ function triggerAutoSave() {
  class="h-full w-full shrink-0 flex-col justify-between overflow-y-auto border-r border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-zinc-800/80 dark:bg-zinc-950/40 lg:flex lg:w-56 {agentNavOpen ? 'flex' : 'hidden'}"
  >
 				<div class="space-y-4">
+					{#if showConfiguration}
 					<!-- Standard Anchors / Views -->
 					<div>
 						<div class="px-2 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
@@ -736,6 +937,17 @@ function triggerAutoSave() {
 								{/if}
 							</button>
 
+							{#if canManageShares}
+								<button
+									type="button"
+									class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all {activePanel === 'config' && activeAnchor === 'agent-sharing-section' ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs' : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800'}"
+									onclick={() => selectAnchor('agent-sharing-section')}
+								>
+									<Users class="h-3.5 w-3.5 shrink-0" />
+									<span>Sharing</span>
+								</button>
+							{/if}
+
 							<button
 								type="button"
 								class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all {activePanel === 'config' && activeAnchor === 'agent-terminal-section' ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs' : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800'}"
@@ -746,6 +958,7 @@ function triggerAutoSave() {
 							</button>
 						</nav>
 					</div>
+					{/if}
 
 					<!-- Apps (MCP-Apps served via ui:// resources) -->
 					<div>
@@ -781,7 +994,7 @@ function triggerAutoSave() {
 											<span class="truncate">{app.title}</span>
 										</div>
 										<span class="text-[9px] px-1.5 py-0.2 rounded-md font-mono uppercase {activePanel === panelKey ? 'bg-white/20 text-white dark:bg-black/20 dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700'}">
-											{app.transport === 'wasm_stdio' ? 'WASM' : app.transport}
+											{app.transport}
 										</span>
 									</button>
 								{/each}
@@ -801,7 +1014,7 @@ function triggerAutoSave() {
 
 			<!-- Main Content View -->
 			<main class="flex h-full flex-1 flex-col overflow-hidden">
-				{#if activePanel === 'config'}
+				{#if activePanel === 'config' || activePanel.startsWith('mcp-app:')}
 					<!-- Main Scrollable Configuration Area -->
 					<div id="agent-config-scroll" class="flex-1 overflow-y-auto px-4 py-5 space-y-5 sm:px-6 sm:py-6">
 			<!-- Settings Form -->
@@ -1216,7 +1429,7 @@ The base instruction row is refreshed in place, so your conversation history is 
 			<section id="agent-mcp-section" class="space-y-3">
 				<div class="flex items-center justify-between mb-2">
 					<span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-						Connected Plugins (MCP Servers & WASM)
+						Connected Plugins (MCP Servers & Binaries)
 					</span>
 					<a href="/mcp" class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-white underline transition-colors">Manage Plugins & Permissions</a>
 				</div>
@@ -1228,12 +1441,134 @@ The base instruction row is refreshed in place, so your conversation history is 
 						triggerAutoSave();
 						if (agent) setTimeout(() => loadAgentMcpResources(agent!.id), 600);
 					}}
+					onOpenApp={openMcpAppById}
 				/>
 			</section>
 			{/if}
 
 			<!-- 🪝 Response Hooks Section -->
-			{#if activeAnchor === 'agent-hooks-section'}
+{#if activeAnchor === 'agent-sharing-section'}
+<section id="agent-sharing-section" class="space-y-4">
+<div>
+<h2 class="text-sm font-semibold text-zinc-900 dark:text-white">Sharing</h2>
+<p class="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+Share this bot with other accounts. They can always use it; you choose whether
+they may edit its configuration or re-share it.
+</p>
+</div>
+
+<!-- Add sharee -->
+<!-- Add sharee: searchable dropdown -->
+<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+<div class="relative w-full flex-1">
+<input
+type="text"
+value={shareQuery}
+oninput={(e) => searchShareCandidates(e.currentTarget.value)}
+onkeydown={onShareQueryKeydown}
+onfocus={() => { if (shareResults.length > 0) shareSearchOpen = true; }}
+placeholder="Search accounts by name or @username"
+role="combobox"
+aria-expanded={shareSearchOpen}
+aria-controls="share-candidates"
+aria-autocomplete="list"
+class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none"
+/>
+{#if shareSearchOpen && shareResults.length > 0}
+<ul
+id="share-candidates"
+role="listbox"
+class="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+>
+{#each shareResults as candidate, i (candidate.account_id)}
+<li role="option" aria-selected={i === shareHighlight}>
+<button
+type="button"
+class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs {i === shareHighlight ? 'bg-zinc-100 dark:bg-zinc-800' : ''}"
+onclick={() => pickShareCandidate(candidate)}
+onmouseenter={() => (shareHighlight = i)}
+>
+<Avatar src={candidate.avatar_url} name={candidate.display_name || candidate.username} size="xs" />
+<span class="min-w-0 flex-1 truncate">
+{candidate.display_name || candidate.username}
+<span class="ml-1 font-mono text-[10px] text-zinc-400">@{candidate.username}</span>
+</span>
+</button>
+</li>
+{/each}
+</ul>
+{:else if shareSearchOpen && shareQuery.trim() && shareResults.length === 0}
+<p class="absolute z-20 mt-1 w-full rounded-xl border border-zinc-200 bg-white px-2.5 py-2 text-[11px] text-zinc-400 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">No matching accounts.</p>
+{/if}
+</div>
+<label class="flex items-center gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-400">
+<input type="checkbox" bind:checked={newShareCanEdit} class="rounded border-zinc-300" />
+Can edit
+</label>
+<label class="flex items-center gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-400">
+<input type="checkbox" bind:checked={newShareCanManage} class="rounded border-zinc-300" />
+Can share
+</label>
+<button
+type="button"
+onclick={addShare}
+disabled={!selectedShareAccount || isSavingShare}
+class="shrink-0 rounded-xl bg-zinc-900 px-3 py-2 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-100"
+>
+Share
+</button>
+</div>
+{#if shareError}
+<p class="text-[11px] text-rose-500">{shareError}</p>
+{/if}
+
+<!-- Current shares -->
+{#if agentShares.length === 0}
+<p class="text-[11px] text-zinc-400 dark:text-zinc-500">This bot is not shared with anyone yet.</p>
+{:else}
+<div class="divide-y divide-zinc-200/70 dark:divide-zinc-800/70">
+{#each agentShares as share (share.account_id)}
+<div class="flex flex-wrap items-center gap-2 py-2.5">
+<Avatar src={share.avatar_url} name={share.display_name || share.username} size="xs" />
+<span class="min-w-0 flex-1 truncate text-xs font-medium text-zinc-800 dark:text-zinc-100">
+{share.display_name || share.username}
+<span class="font-mono text-[10px] text-zinc-400">@{share.username}</span>
+</span>
+<label class="flex items-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400">
+<input
+type="checkbox"
+checked={share.can_edit}
+onchange={(e) => updateShare(share.account_id, { can_edit: e.currentTarget.checked })}
+class="rounded border-zinc-300"
+/>
+edit
+</label>
+<label class="flex items-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400">
+<input
+type="checkbox"
+checked={share.can_manage_shares}
+onchange={(e) => updateShare(share.account_id, { can_manage_shares: e.currentTarget.checked })}
+class="rounded border-zinc-300"
+/>
+share
+</label>
+<button
+type="button"
+onclick={() => removeShare(share.account_id)}
+class="rounded-lg p-1.5 text-zinc-400 hover:bg-rose-500/10 hover:text-rose-500"
+title="Remove access"
+aria-label="Remove access"
+>
+<Trash2 class="h-3.5 w-3.5" />
+</button>
+</div>
+{/each}
+</div>
+{/if}
+</section>
+{/if}
+
+{#if activeAnchor === 'agent-hooks-section'}
 			<section id="agent-hooks-section" class="space-y-3">
 				<div class="flex items-center justify-between">
 					<div class="flex items-center gap-2">
@@ -1436,6 +1771,7 @@ The base instruction row is refreshed in place, so your conversation history is 
 			<McpAppIframe
 				{agent}
 				pluginId={selectedMcpApp.pluginId}
+				wasmHash={selectedMcpApp.wasmHash}
 				pluginName={selectedMcpApp.pluginName}
 				transport={selectedMcpApp.transport}
 				resourceUri={selectedMcpApp.resourceUri}

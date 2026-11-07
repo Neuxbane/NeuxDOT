@@ -68,6 +68,12 @@ pub struct ProviderModel {
     pub model_id: String,
     pub name: Option<String>,
     pub config_json: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub params_json: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub context_window: Option<i64>,
     #[sqlx(default)]
     pub is_active: bool,
     pub created_at: Option<DateTime<Utc>>,
@@ -78,6 +84,10 @@ pub struct ModelConfigInput {
     pub model_id: String,
     pub name: Option<String>,
     pub config_json: Option<String>,
+    #[serde(default)]
+    pub params_json: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +107,12 @@ pub struct ActiveModelTarget {
     pub model_id: String,
     pub model_name: Option<String>,
     pub config_json: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub params_json: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub context_window: Option<i64>,
 }
 
 fn default_hook_id() -> String {
@@ -178,6 +194,58 @@ impl Agent {
     }
 }
 
+/// One account's access to an agent it does not own.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentShare {
+    pub id: String,
+    pub agent_id: String,
+    pub account_id: String,
+    #[sqlx(default)]
+    pub can_edit: bool,
+    #[sqlx(default)]
+    pub can_manage_shares: bool,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+/// Resolved rights of an account over a given agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentAccess {
+    Owner,
+    Shared {
+        can_edit: bool,
+        can_manage_shares: bool,
+    },
+    None,
+}
+
+impl AgentAccess {
+    pub fn can_view(self) -> bool {
+        !matches!(self, AgentAccess::None)
+    }
+
+    pub fn can_edit(self) -> bool {
+        match self {
+            AgentAccess::Owner => true,
+            AgentAccess::Shared { can_edit, .. } => can_edit,
+            AgentAccess::None => false,
+        }
+    }
+
+    pub fn can_manage_shares(self) -> bool {
+        match self {
+            AgentAccess::Owner => true,
+            AgentAccess::Shared {
+                can_manage_shares, ..
+            } => can_manage_shares,
+            AgentAccess::None => false,
+        }
+    }
+
+    pub fn is_owner(self) -> bool {
+        matches!(self, AgentAccess::Owner)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct AgentProvider {
     pub agent_id: String,
@@ -208,6 +276,11 @@ pub const CAP_IDENTITY_AGENT_NAME: &str = "identity.agent.name";
 pub const CAP_IDENTITY_AGENT_PICTURE: &str = "identity.agent.profile_picture";
 pub const CAP_IDENTITY_USER_NAME: &str = "identity.user.name";
 pub const CAP_IDENTITY_USER_PICTURE: &str = "identity.user.profile_picture";
+
+/// Resolve live display data for account ids an app already references.
+/// Granted whenever identity read is available, since it exposes the same
+/// non-sensitive fields (name/avatar) for authors of messages the app shows.
+pub const CAP_IDENTITY_RESOLVE: &str = "identity.resolve";
 
 /// How a sandboxed MCP-App UI may use the `ui://` resources of a plugin.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -363,6 +436,7 @@ impl PluginPermissions {
             CAP_IDENTITY_AGENT_PICTURE => self.identity.agent_profile_picture,
             CAP_IDENTITY_USER_NAME => self.identity.user_name,
             CAP_IDENTITY_USER_PICTURE => self.identity.user_profile_picture,
+            CAP_IDENTITY_RESOLVE => self.identity.user_name || self.identity.user_profile_picture,
             _ => false,
         }
     }
@@ -384,6 +458,7 @@ impl PluginPermissions {
             CAP_IDENTITY_AGENT_PICTURE,
             CAP_IDENTITY_USER_NAME,
             CAP_IDENTITY_USER_PICTURE,
+            CAP_IDENTITY_RESOLVE,
         ] {
             if self.allows(cap) {
                 out.push(cap.to_string());
@@ -570,12 +645,6 @@ impl McpServer {
         slugify_alias(&self.name)
     }
 
-    pub fn is_wasm(&self) -> bool {
-        self.transport == "wasm"
-            || self.transport == "wasm_stdio"
-            || self.url_or_command.starts_with("wasm://")
-    }
-
     /// Resolves the effective grants for this plugin.
     ///
     /// Resolution order:
@@ -600,8 +669,18 @@ impl McpServer {
             .filter(|v| !v.is_empty() && *v != "{}")
         {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(stored) {
-                if val.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
-                    return Self::permissions_from_manifest_block(&val);
+                // Only a grouped override is a real consent decision. A row
+                // saved in the removed flat format (`{ui:true, agent_control:true}`)
+                // has no grouped section: treating it as a decision would deny
+                // everything and hide the plugin's apps, so ignore it and fall
+                // back to what the plugin declared.
+                let is_grouped = ["ui", "storage", "agent", "identity"]
+                    .iter()
+                    .any(|k| val.get(*k).map(|v| v.is_object()).unwrap_or(false));
+                if is_grouped {
+                    if let Ok(perms) = serde_json::from_value::<PluginPermissions>(val) {
+                        return perms;
+                    }
                 }
             }
         }
@@ -612,60 +691,46 @@ impl McpServer {
     /// permission block, transport defaults). Account consent overrides live in
     /// [`McpServer::get_permissions`].
     pub fn declared_permissions(&self) -> PluginPermissions {
-        if self.is_wasm() {
-            if let Some(manifest_str) = &self.manifest_json {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(manifest_str) {
-                    if let Some(p) = val.get("permissions") {
-                        return Self::permissions_from_manifest_block(p);
-                    }
-                    let has_ui = Self::manifest_has_ui_resources(&val);
-                    let has_network = val
-                        .get("network")
-                        .and_then(|n| n.get("hosts"))
-                        .and_then(|h| h.as_array())
-                        .map(|a| !a.is_empty())
-                        .unwrap_or(false);
-                    // Structure only implies UI and network. Storage, agent
-                    // control and identity must be asked for explicitly, so the
-                    // base is `deny_all` rather than the permissive defaults.
-                    let has_tools = val
-                        .get("mcp")
-                        .and_then(|m| m.get("tools"))
-                        .and_then(|t| t.as_array())
-                        .map(|a| !a.is_empty())
-                        .unwrap_or(false);
-                    return PluginPermissions {
-                        ui: UiPermissions {
-                            enabled: has_ui,
-                            resources: if has_ui {
-                                Self::manifest_ui_resources(&val)
-                            } else {
-                                Vec::new()
-                            },
-                        },
-                        storage: StoragePermissions::default(),
-                        agent: AgentPermissions {
-                            trigger: false,
-                            tools: has_tools,
-                        },
-                        // Identity is never implied by the manifest silence.
-                        identity: IdentityPermissions::default(),
-                        process: false,
-                        network: has_network,
-                    };
+        if let Some(manifest_str) = &self.manifest_json {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(manifest_str) {
+                if let Some(p) = val.get("permissions") {
+                    return Self::permissions_from_manifest_block(p);
                 }
+                let has_ui = Self::manifest_has_ui_resources(&val);
+                let has_network = val
+                    .get("network")
+                    .and_then(|n| n.get("hosts"))
+                    .and_then(|h| h.as_array())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false);
+                let has_tools = val
+                    .get("mcp")
+                    .and_then(|m| m.get("tools"))
+                    .and_then(|t| t.as_array())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false);
+                return PluginPermissions {
+                    ui: UiPermissions {
+                        enabled: has_ui,
+                        resources: if has_ui {
+                            Self::manifest_ui_resources(&val)
+                        } else {
+                            Vec::new()
+                        },
+                    },
+                    storage: StoragePermissions::default(),
+                    agent: AgentPermissions {
+                        trigger: false,
+                        tools: has_tools,
+                    },
+                    identity: IdentityPermissions::default(),
+                    process: self.transport == "stdio" || self.transport == "binary",
+                    network: has_network,
+                };
             }
-            return PluginPermissions {
-                ui: UiPermissions::default(),
-                storage: StoragePermissions::default(),
-                agent: AgentPermissions::default(),
-                identity: IdentityPermissions::default(),
-                process: false,
-                network: false,
-            };
         }
 
-        if self.transport == "stdio" {
+        if self.transport == "stdio" || self.transport == "binary" {
             return PluginPermissions {
                 process: true,
                 storage: StoragePermissions {
@@ -836,39 +901,6 @@ pub struct AgentTranscriptItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Extension {
-    pub id: String,
-    pub account_id: String,
-    pub name: String,
-    pub version: String,
-    pub description: Option<String>,
-    pub wasm_hash: String,
-    pub wasm_binary: Vec<u8>,
-    pub manifest_json: String,
-    #[sqlx(default)]
-    pub is_active: bool,
-    #[sqlx(default)]
-    pub storage_bytes: i64,
-    pub created_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct ExtensionSummary {
-    pub id: String,
-    pub account_id: String,
-    pub name: String,
-    pub version: String,
-    pub description: Option<String>,
-    pub wasm_hash: String,
-    pub manifest_json: String,
-    #[sqlx(default)]
-    pub is_active: bool,
-    #[sqlx(default)]
-    pub storage_bytes: i64,
-    pub created_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ExtensionKvItem {
     pub extension_id: String,
     pub key: String,
@@ -936,12 +968,12 @@ mod tests {
 
     fn manifest_server(manifest: serde_json::Value) -> McpServer {
         McpServer {
-            id: "wasm:test".into(),
+            id: "test".into(),
             account_id: "acc".into(),
             name: "Test".into(),
             alias: None,
-            transport: "wasm".into(),
-            url_or_command: "wasm://test".into(),
+            transport: "binary".into(),
+            url_or_command: "./test".into(),
             headers_or_env: None,
             version: "1.0.0".into(),
             description: None,
@@ -1031,7 +1063,15 @@ mod tests {
         assert!(!perms.agent.trigger);
         assert!(perms.identity.user_name);
         assert!(!perms.identity.agent_name);
-        assert_eq!(perms.capabilities(), vec!["identity.user.name".to_string()]);
+        // Requesting any identity read also permits resolving display data for
+        // message authors, so the app can render sender names.
+        assert_eq!(
+            perms.capabilities(),
+            vec![
+                "identity.user.name".to_string(),
+                "identity.resolve".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -1165,8 +1205,32 @@ mod tests {
                 "agent.trigger",
                 "identity.agent.name",
                 "identity.user.name",
+                "identity.resolve"
             ]
         );
+    }
+
+    #[test]
+    fn flat_style_override_is_ignored_not_denied() {
+        // A `permissions_json` row written before the grouped shape must not be
+        // read as "deny everything": that silently hid every plugin app. It is
+        // ignored and the plugin's declared grants apply instead.
+        let mut server = manifest_server(serde_json::json!({
+            "permissions": {
+                "ui": { "enabled": true, "resources": ["ui://chat-console"] }
+            }
+        }));
+        server.permissions_json =
+            Some(serde_json::json!({"ui": true, "storage": true, "agent_control": true}).to_string());
+
+        let perms = server.get_permissions();
+        assert!(perms.ui.enabled, "declared UI grant must survive an unusable override");
+        assert!(perms.allows_ui_resource("ui://chat-console"));
+
+        // A real grouped override is still authoritative.
+        server.permissions_json =
+            Some(serde_json::json!({"ui": {"enabled": false, "resources": []}}).to_string());
+        assert!(!server.get_permissions().ui.enabled);
     }
 
     #[test]
@@ -1247,5 +1311,15 @@ mod tests {
         let p = bad.get_permissions();
         assert!(!p.ui.enabled);
         assert_eq!(p.capabilities(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_binary_transport_permissions() {
+        let mut server = manifest_server(serde_json::json!({}));
+        server.transport = "binary".to_string();
+        server.url_or_command = "./release/plugins/computer".to_string();
+        assert_eq!(server.transport, "binary");
+        let perms = server.get_permissions();
+        assert!(perms.process, "Binary transport must have process permission enabled");
     }
 }

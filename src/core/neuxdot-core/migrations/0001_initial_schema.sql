@@ -29,9 +29,27 @@ CREATE TABLE IF NOT EXISTS provider_models (
     model_id TEXT NOT NULL,
     name TEXT,
     config_json TEXT,
+    params_json TEXT,
+    context_window INTEGER,
     is_active BOOLEAN DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Shares an agent with another account. Ownership is recorded by
+-- agents.account_id and never changes. A sharee can use the bot and may
+-- optionally edit it or re-share it, but can never delete it or remove the
+-- owner.
+CREATE TABLE IF NOT EXISTS agent_shares (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    can_edit BOOLEAN NOT NULL DEFAULT 0,
+    can_manage_shares BOOLEAN NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (agent_id, account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_shares_account ON agent_shares(account_id);
 
 -- Per-account reusable system instructions ("Agent Instructions" presets).
 -- Strictly owner-scoped: every query filters by account_id.

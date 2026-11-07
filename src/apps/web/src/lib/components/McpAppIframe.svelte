@@ -8,19 +8,23 @@ type HostBridgeBootstrap,
 type PluginPermissions
 } from '$lib/api';
 import { authState } from '$lib/stores/auth.svelte';
+import { eventStore } from '$lib/stores/events.svelte';
 import { RefreshCw } from 'lucide-svelte';
 
 let {
 agent,
 pluginId,
+wasmHash = '',
 pluginName = '',
-transport = 'wasm_stdio',
+transport = 'binary',
 resourceUri,
 title = 'MCP-App',
 permissions
 }: {
 agent: Agent;
 pluginId: string;
+/** Plugin build version; a change remounts the app so new HTML is served. */
+wasmHash?: string;
 pluginName?: string;
 transport?: string;
 resourceUri: string;
@@ -42,7 +46,9 @@ let rpcCallCount = $state(0);
 let bootstrap = $state<HostBridgeBootstrap | null>(null);
 
 $effect(() => {
-const key = `${pluginId}:${resourceUri}`;
+// Include the plugin version so re-uploading a wasm invalidates the UI, even
+// though the plugin id and resource URI are unchanged.
+const key = `${pluginId}:${resourceUri}:${wasmHash ?? ''}`;
 if (key !== lastKey) {
 lastKey = key;
 loadMcpAppResource();
@@ -135,6 +141,20 @@ console.error('[McpAppIframe] failed to postMessage to app', e);
 }
 }
 
+/**
+ * Push a `ui/history` notification whenever the server reports that persisted
+ * history changed (a turn completed, a tool ran, another user posted). The app
+ * refetches instead of waiting for its next poll — that is what makes a message
+ * from another account appear immediately.
+ */
+let lastPushedRevision = -1;
+$effect(() => {
+const revision = eventStore.historyRevision;
+if (!htmlContent || revision === lastPushedRevision) return;
+lastPushedRevision = revision;
+postToApp({ jsonrpc: '2.0', method: 'ui/history', params: { revision } });
+});
+
 function pushContext() {
 if (!bootstrap) return;
 postToApp({ jsonrpc: '2.0', method: 'ui/context', params: $state.snapshot(bootstrap) });
@@ -184,23 +204,31 @@ const res = await api.agents.run(agent.id, text);
 return { ok: true, value: res ?? null };
 }
 case 'storage.get': {
-const res = await api.host.storage.get(pluginId, String(args?.key ?? ''));
+const res = await api.host.storage.get(pluginId, agent.id, String(args?.key ?? ''));
 return { ok: true, value: res?.value ?? null };
 }
 case 'storage.set': {
 const res = await api.host.storage.set(
 pluginId,
+agent.id,
 String(args?.key ?? ''),
 typeof args?.value === 'string' ? args.value : JSON.stringify(args?.value ?? null)
 );
 return { ok: true, value: res ?? null };
 }
 case 'storage.delete': {
-const res = await api.host.storage.delete(pluginId, String(args?.key ?? ''));
+const res = await api.host.storage.delete(pluginId, agent.id, String(args?.key ?? ''));
 return { ok: true, value: res ?? null };
 }
+case 'identity.resolve': {
+// Live display data for account ids referenced by the app (chat authors).
+// Only ids the app already stores are resolved; there is no enumeration.
+const ids = Array.isArray(args?.ids) ? args.ids.filter((v: unknown): v is string => typeof v === 'string') : [];
+const res = await api.host.identities(ids);
+return { ok: true, value: res ?? {} };
+}
 case 'storage.keys': {
-const res = await api.host.storage.list(pluginId, args?.prefix ?? undefined);
+const res = await api.host.storage.list(pluginId, agent.id, args?.prefix ?? undefined);
 return { ok: true, value: res?.keys ?? [] };
 }
 default:

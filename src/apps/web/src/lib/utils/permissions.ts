@@ -103,11 +103,10 @@ const uiResources = manifestUiResources(manifest);
 const hasUi = uiResources.length > 0 || Boolean(manifest?.ui_hooks?.length);
 const hasTools = Array.isArray(manifest?.mcp?.tools) && manifest.mcp.tools.length > 0;
 const hasNetwork = Boolean(manifest?.network?.hosts?.length);
-const storage = transport === 'wasm' || transport === 'wasm_stdio';
 
 return {
 ui: { enabled: hasUi, resources: uiResources },
-storage: { get: storage, set: storage, delete: storage, keys: storage ? null : [] },
+storage: { get: false, set: false, delete: false, keys: [] },
 agent: { trigger: hasTools, tools: hasTools },
 // Never inferred: the plugin must ask explicitly.
 identity: {
@@ -116,7 +115,7 @@ identity: {
 'user.name': false,
 'user.profile_picture': false
 },
-process: transport === 'stdio',
+process: transport === 'stdio' || transport === 'binary',
 network: hasNetwork || transport === 'http'
 };
 }
@@ -144,6 +143,15 @@ if (!server.permissions_json) return declared;
 try {
 const stored = JSON.parse(server.permissions_json);
 if (!isRecord(stored) || Object.keys(stored).length === 0) return declared;
+
+// The canonical shape always has at least one *grouped section*. An override
+// saved in the removed flat format (`{ui: true, agent_control: true, ...}`) has
+// no grouped sections; normalising it would silently deny every capability and
+// hide the plugin's apps. Treat such a row as "no override" and fall back to
+// the plugin's declared grants instead.
+const isGrouped = ['ui', 'storage', 'agent', 'identity'].some((k) => isRecord((stored as any)[k]));
+if (!isGrouped) return declared;
+
 return normalizePermissions(stored);
 } catch {
 return declared;

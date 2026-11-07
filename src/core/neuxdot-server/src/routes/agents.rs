@@ -4,6 +4,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use neuxdot_core::db::schema::{Agent, AgentAccess};
 use neuxdot_core::runtime::executor::AgentExecutor;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -11,6 +12,68 @@ use std::sync::Arc;
 
 use crate::middleware::AuthUser;
 use crate::state::AppState;
+
+type ApiError = (StatusCode, Json<serde_json::Value>);
+
+fn internal_error(e: impl std::fmt::Display) -> ApiError {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": e.to_string() })),
+    )
+}
+
+/// Loads an agent and resolves the caller's rights over it.
+///
+/// `404` when the agent does not exist, `403` when the caller has no access at
+/// all. Handlers then gate on the returned permission flags.
+async fn load_agent_with_access(
+    state: &AppState,
+    agent_id: &str,
+    account_id: &str,
+) -> Result<(Agent, AgentAccess), ApiError> {
+    let agent = state
+        .db
+        .get_agent(agent_id)
+        .await
+        .map_err(internal_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
+
+    let access = state
+        .db
+        .resolve_agent_access(&agent, account_id)
+        .await
+        .map_err(internal_error)?;
+
+    if !access.can_view() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        ));
+    }
+    Ok((agent, access))
+}
+
+fn require_edit(access: AgentAccess) -> Result<(), ApiError> {
+    if access.can_edit() {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "You do not have permission to edit this agent" })),
+        ))
+    }
+}
+
+fn require_manage_shares(access: AgentAccess) -> Result<(), ApiError> {
+    if access.can_manage_shares() {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "You do not have permission to manage sharing for this agent" })),
+        ))
+    }
+}
 
 #[derive(Serialize)]
 pub struct AgentToolItem {
@@ -99,11 +162,22 @@ pub async fn list_agents_handler(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agents = state
+    let rows = state
         .db
-        .list_agents(&auth.account_id)
+        .list_agents_for_account(&auth.account_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(internal_error)?;
+
+    let agents: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(agent, is_owner, can_edit, can_manage_shares)| {
+            let mut value = serde_json::to_value(&agent).unwrap_or_else(|_| json!({}));
+            value["is_owner"] = json!(is_owner);
+            value["can_edit"] = json!(can_edit);
+            value["can_manage_shares"] = json!(can_manage_shares);
+            value
+        })
+        .collect();
 
     Ok(Json(agents))
 }
@@ -113,16 +187,7 @@ pub async fn get_agent_handler(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+	let (agent, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
     let bound_models = state
         .db
@@ -143,6 +208,10 @@ pub async fn get_agent_handler(
         "provider_ids": model_ids,
         "models": bound_models,
         "mcp_ids": bound_mcp.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        // Caller's rights over this agent, so the UI can hide what it may not do.
+        "is_owner": access.is_owner(),
+        "can_edit": access.can_edit(),
+        "can_manage_shares": access.can_manage_shares(),
     })))
 }
 
@@ -194,16 +263,8 @@ pub async fn patch_agent_handler(
     State(state): State<AppState>,
     Json(payload): Json<PatchAgentRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let existing = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if existing.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+    let (_, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    require_edit(access)?;
 
     let hooks_json = if let Some(ref hooks) = payload.response_hooks {
         Some(serde_json::to_string(hooks).unwrap_or_else(|_| "[]".to_string()))
@@ -255,8 +316,12 @@ pub async fn delete_agent_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
 
+    // Deleting is owner-only: a sharee can leave, but never destroy the bot.
     if existing.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Only the owner can delete this agent" })),
+        ));
     }
 
     let deleted = state
@@ -274,16 +339,7 @@ pub async fn run_agent_handler(
     State(state): State<AppState>,
     Json(payload): Json<RunAgentRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+	let (agent, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
     let models = state
         .db
@@ -316,16 +372,7 @@ pub async fn list_agent_pushed_messages_handler(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+    let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
     let messages = state
         .db
@@ -341,16 +388,7 @@ pub async fn get_agent_memory_handler(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+    let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
     let mem = state
         .db
@@ -372,16 +410,7 @@ pub async fn get_agent_history_handler(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+    let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
     let history = state
         .db
@@ -397,16 +426,8 @@ pub async fn clear_agent_history_handler(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+    let (_, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    require_edit(access)?;
 
     let cleared = state
         .db
@@ -422,16 +443,7 @@ pub async fn get_agent_tools_handler(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+    let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
     let servers = state
         .db
@@ -460,63 +472,7 @@ pub async fn get_agent_tools_handler(
         if !s.is_active {
             continue;
         }
-        if s.transport == "wasm_stdio" || s.url_or_command.starts_with("wasm://") {
-            let ext_id = s.id.strip_prefix("wasm:").unwrap_or(&s.id);
-            if let Ok(Some(ext)) = state.db.get_extension(ext_id).await {
-                if let Ok(manifest_val) = serde_json::from_str::<serde_json::Value>(&ext.manifest_json) {
-                    if let Some(mcp) = manifest_val.get("mcp") {
-                        if let Some(tool_list) = mcp.get("tools").and_then(|t| t.as_array()) {
-                            for t in tool_list {
-                                if let Some(vis) = t.get("_meta").and_then(|m| m.get("ui")).and_then(|u| u.get("visibility")).and_then(|v| v.as_array()) {
-                                    if !vis.is_empty() && !vis.iter().any(|x| x.as_str() == Some("model")) {
-                                        continue;
-                                    }
-                                }
-                                let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let desc = t.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                let schema = t.get("inputSchema").cloned();
-                                let meta = t.get("_meta").cloned();
-                                let is_enabled = permissions.iter().find(|p| p.mcp_id == s.id && p.tool_name == name).map(|p| p.is_enabled).unwrap_or(true);
-                                let server_alias = s.get_alias();
-                                let unique_name = format!("{}.{}", server_alias, name);
-
-                                tools_res.push(AgentToolItem {
-                                    mcp_id: s.id.clone(),
-                                    server_name: s.name.clone(),
-                                    server_alias,
-                                    unique_name,
-                                    name,
-                                    description: desc,
-                                    input_schema: schema,
-                                    meta,
-                                    is_enabled,
-                                });
-                            }
-                        }
-
-                        if let Some(res_list) = mcp.get("resources").and_then(|r| r.as_array()) {
-                            for r in res_list {
-                                let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let name = r.get("name").and_then(|v| v.as_str()).unwrap_or(&uri).to_string();
-                                let desc = r.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                let mime = r.get("mimeType").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                let is_sub = sub_set.contains(&uri);
-
-                                resources_res.push(AgentResourceItem {
-                                    mcp_id: s.id.clone(),
-                                    server_name: s.name.clone(),
-                                    uri,
-                                    name,
-                                    description: desc,
-                                    mime_type: mime,
-                                    is_subscribed: is_sub,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        } else if s.transport == "stdio" {
+        if s.transport == "stdio" || s.transport == "binary" {
             let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<neuxdot_core::mcp::client::McpNotification>();
             if let Ok(transport) = neuxdot_core::mcp::stdio::StdioTransport::spawn(
                 &s.url_or_command,
@@ -675,16 +631,8 @@ pub async fn update_agent_tool_permission_handler(
     State(state): State<AppState>,
     Json(payload): Json<UpdateToolPermissionRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+    let (_, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    require_edit(access)?;
 
     state
         .db
@@ -700,16 +648,7 @@ pub async fn get_agent_subscriptions_handler(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+    let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
     let subscriptions = state
         .db
@@ -726,16 +665,8 @@ pub async fn update_agent_subscriptions_handler(
     State(state): State<AppState>,
     Json(payload): Json<UpdateSubscriptionsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let agent = state
-        .db
-        .get_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
-
-    if agent.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
-    }
+    let (_, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    require_edit(access)?;
 
     state
         .db
@@ -744,4 +675,153 @@ pub async fn update_agent_subscriptions_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
 
     Ok(Json(json!({ "success": true, "subscriptions": payload.subscriptions })))
+}
+
+// --- Agent sharing ---
+
+#[derive(Deserialize)]
+pub struct CreateAgentShareRequest {
+    pub username: String,
+    #[serde(default)]
+    pub can_edit: bool,
+    #[serde(default)]
+    pub can_manage_shares: bool,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateAgentShareRequest {
+    pub can_edit: Option<bool>,
+    pub can_manage_shares: Option<bool>,
+}
+
+/// `GET /api/agents/:id/shares`
+pub async fn list_agent_shares_handler(
+    auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (_, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    require_manage_shares(access)?;
+
+    let shares = state.db.list_agent_shares(&id).await.map_err(internal_error)?;
+    Ok(Json(shares))
+}
+
+/// `POST /api/agents/:id/shares`
+pub async fn create_agent_share_handler(
+    auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(payload): Json<CreateAgentShareRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (agent, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    require_manage_shares(access)?;
+
+    let username = payload.username.trim();
+    if username.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "username must not be empty" })),
+        ));
+    }
+
+    let Some(account) = state
+        .db
+        .get_account_by_username(username)
+        .await
+        .map_err(internal_error)?
+    else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("No account named '{}'", username) })),
+        ));
+    };
+
+    if account.id == agent.account_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "The owner already has full access" })),
+        ));
+    }
+
+    if state
+        .db
+        .get_agent_share(&id, &account.id)
+        .await
+        .map_err(internal_error)?
+        .is_some()
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "This agent is already shared with that account" })),
+        ));
+    }
+
+    let share = state
+        .db
+        .upsert_agent_share(&id, &account.id, payload.can_edit, payload.can_manage_shares)
+        .await
+        .map_err(internal_error)?;
+
+    Ok((StatusCode::CREATED, Json(json!(share))))
+}
+
+/// `PATCH /api/agents/:id/shares/:account_id`
+pub async fn update_agent_share_handler(
+    auth: AuthUser,
+    Path((id, account_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Json(payload): Json<UpdateAgentShareRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (_, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    require_manage_shares(access)?;
+
+    let updated = state
+        .db
+        .update_agent_share(&id, &account_id, payload.can_edit, payload.can_manage_shares)
+        .await
+        .map_err(internal_error)?;
+
+    updated
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Share not found" }))))
+}
+
+/// `DELETE /api/agents/:id/shares/:account_id`
+///
+/// Requires share-management rights, **except** that any account may always
+/// remove its own access (leave the bot).
+pub async fn delete_agent_share_handler(
+    auth: AuthUser,
+    Path((id, account_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (agent, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+
+    // The owner is never a "share", so removing them is meaningless.
+    if account_id == agent.account_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "The owner always retains access" })),
+        ));
+    }
+
+    let is_self = account_id == auth.account_id;
+    if !is_self {
+        require_manage_shares(access)?;
+    }
+
+    let removed = state
+        .db
+        .delete_agent_share(&id, &account_id)
+        .await
+        .map_err(internal_error)?;
+
+    if !removed {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Share not found" })),
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }

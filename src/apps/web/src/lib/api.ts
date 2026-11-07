@@ -67,6 +67,8 @@ export interface ModelConfigPayload {
 	model_id: string;
 	name?: string;
 	config_json?: string;
+	params_json?: string;
+	context_window?: number;
 }
 
 export interface ProviderModel {
@@ -75,6 +77,8 @@ export interface ProviderModel {
 	model_id: string;
 	name?: string;
 	config_json?: string;
+	params_json?: string;
+	context_window?: number;
 	is_active: boolean;
 	created_at?: string;
 }
@@ -98,6 +102,8 @@ export interface ActiveModelTarget {
 	model_id: string;
 	model_name?: string;
 	config_json?: string;
+	params_json?: string;
+	context_window?: number;
 }
 
 export interface ResponseHook {
@@ -124,6 +130,31 @@ description?: string;
 content: string;
 }
 
+/** One account's access to an agent it does not own. */
+export interface AgentShare {
+account_id: string;
+username: string;
+display_name?: string | null;
+avatar_url?: string | null;
+can_edit: boolean;
+can_manage_shares: boolean;
+created_at?: string;
+}
+
+/** Minimal account info returned by the share picker search. */
+export interface AccountSearchResult {
+account_id: string;
+username: string;
+display_name?: string | null;
+avatar_url?: string | null;
+}
+
+export interface CreateAgentSharePayload {
+username: string;
+can_edit?: boolean;
+can_manage_shares?: boolean;
+}
+
 export interface Agent {
 	id: string;
 	account_id: string;
@@ -140,6 +171,10 @@ export interface Agent {
 /** Selected Agent Instructions preset; null/undefined = Custom. */
 instruction_preset_id?: string | null;
 	response_hooks_json?: string;
+	/** Rights over this agent, resolved server-side. */
+	is_owner?: boolean;
+	can_edit?: boolean;
+	can_manage_shares?: boolean;
 }
 
 export interface AgentDetail {
@@ -148,6 +183,9 @@ export interface AgentDetail {
 	model_ids: string[];
 	models?: ActiveModelTarget[];
 	mcp_ids: string[];
+	is_owner?: boolean;
+	can_edit?: boolean;
+	can_manage_shares?: boolean;
 }
 
 /**
@@ -164,7 +202,9 @@ export type Capability =
 | 'identity.agent.name'
 | 'identity.agent.profile_picture'
 | 'identity.user.name'
-| 'identity.user.profile_picture';
+| 'identity.user.profile_picture'
+/** Resolve live display data (username/avatar) for referenced account ids. */
+| 'identity.resolve';
 
 /**
  * Canonical permission object (docs/HOST_BRIDGE.md §2/§6).
@@ -348,33 +388,6 @@ export interface ExtensionManifest {
 	network?: { hosts?: string[] };
 }
 
-export interface ExtensionItem {
-	id: string;
-	name: string;
-	version: string;
-	description?: string;
-	wasm_hash: string;
-	manifest: ExtensionManifest;
-	is_active: boolean;
-	storage_bytes: number;
-	created_at?: string;
-}
-
-export interface ExtensionKvEntry {
-	extension_id: string;
-	key: string;
-	value: string;
-	updated_at?: string;
-}
-
-export interface ExtensionStorageInfo {
-	extension_id: string;
-	wasm_hash: string;
-	total_storage_bytes: number;
-	files: { name: string; size_bytes: number }[];
-	kv_count: number;
-}
-
 class ApiClient {
 	private serverUrl = 'http://localhost:8000';
 	private token = '';
@@ -417,10 +430,27 @@ class ApiClient {
 			headers.set('Authorization', `Bearer ${this.token}`);
 		}
 
-		const res = await fetch(url, {
-			...options,
-			headers
-		});
+		let res: Response;
+		try {
+			res = await fetch(url, {
+				...options,
+				headers
+			});
+		} catch (e: any) {
+			// `fetch` only rejects for transport-level failures: the host is
+			// unreachable, DNS failed, or CORS blocked the request. The raw
+			// TypeError ("Could not connect to localhost") reads like an app bug,
+			// so translate it into something actionable. The desktop build is a
+			// *client*: it needs a NeuxDOT server running somewhere.
+			const reason =
+				e?.name === 'AbortError'
+					? 'the request timed out'
+					: e?.message || 'network request failed';
+			throw new Error(
+				`Cannot reach the NeuxDOT server at ${this.serverUrl} (${reason}). ` +
+				'Is the server running, and is the URL correct?'
+			);
+		}
 
 		if (!res.ok) {
 			const errorData = await res.json().catch(() => ({ error: res.statusText }));
@@ -584,47 +614,75 @@ class ApiClient {
 			this.request<{ success: boolean; subscriptions: string[] }>(`/api/agents/${id}/subscriptions`, {
 				method: 'PUT',
 				body: JSON.stringify({ subscriptions })
-			})
+			}),
 	};
 
-	// Providers
-	providers = {
-		list: () => this.request<Provider[]>('/api/providers'),
+	/** Non-privileged account search, used by the share picker. */
+	searchAccounts = (q: string) =>
+		this.request<AccountSearchResult[]>(`/api/accounts/search?q=${encodeURIComponent(q)}`);
 
-		create: (data: {
-			name: string;
-			base_url: string;
-			api_key?: string;
-			models?: (string | ModelConfigPayload)[];
-		}) =>
-			this.request<Provider>('/api/providers', {
-				method: 'POST',
-				body: JSON.stringify(data)
-			}),
-
-		update: (
-			id: string,
-			data: {
+	/** Sharing of an agent with other accounts. */
+	agentShares = {
+	list: (agentId: string) =>
+	this.request<AgentShare[]>(`/api/agents/${agentId}/shares`),
+	
+	create: (agentId: string, data: CreateAgentSharePayload) =>
+	this.request<AgentShare>(`/api/agents/${agentId}/shares`, {
+	method: 'POST',
+	body: JSON.stringify(data)
+	}),
+	
+	update: (agentId: string, accountId: string, data: { can_edit?: boolean; can_manage_shares?: boolean }) =>
+	this.request<AgentShare>(`/api/agents/${agentId}/shares/${accountId}`, {
+	method: 'PATCH',
+	body: JSON.stringify(data)
+	}),
+	
+	/** Remove someone's access (or leave, when accountId is your own). */
+	remove: (agentId: string, accountId: string) =>
+	this.request<void>(`/api/agents/${agentId}/shares/${accountId}`, { method: 'DELETE' })
+	};
+	
+		// Providers
+		providers = {
+			list: () => this.request<Provider[]>('/api/providers'),
+	
+			create: (data: {
 				name: string;
 				base_url: string;
 				api_key?: string;
 				models?: (string | ModelConfigPayload)[];
-			}
-		) =>
-			this.request<Provider>(`/api/providers/${id}`, {
-				method: 'PUT',
-				body: JSON.stringify(data)
-			}),
+			}) =>
+				this.request<Provider>('/api/providers', {
+					method: 'POST',
+					body: JSON.stringify(data)
+				}),
+	
+			update: (
+				id: string,
+				data: {
+					name: string;
+					base_url: string;
+					api_key?: string;
+					models?: (string | ModelConfigPayload)[];
+				}
+			) =>
+				this.request<Provider>(`/api/providers/${id}`, {
+					method: 'PUT',
+					body: JSON.stringify(data)
+				}),
+	
+			delete: (id: string) =>
+				this.request<{ deleted: boolean }>(`/api/providers/${id}`, { method: 'DELETE' }),
+	
+			fetchModels: (baseUrl: string, apiKey?: string) =>
+				this.request<{ models: string[] }>('/api/providers/fetch-models', {
+					method: 'POST',
+					body: JSON.stringify({ base_url: baseUrl, api_key: apiKey || undefined })
+				})
+		};
 
-		delete: (id: string) =>
-			this.request<{ deleted: boolean }>(`/api/providers/${id}`, { method: 'DELETE' }),
 
-		fetchModels: (baseUrl: string, apiKey?: string) =>
-			this.request<{ models: string[] }>('/api/providers/fetch-models', {
-				method: 'POST',
-				body: JSON.stringify({ base_url: baseUrl, api_key: apiKey || undefined })
-			})
-	};
 
 	// Plugins & MCP Servers
 	mcp = {
@@ -707,31 +765,39 @@ this.request<HostBridgeBootstrap>(
 `&resource_uri=${encodeURIComponent(resourceUri)}`
 ),
 
-/** Per-(account, plugin) isolated key/value storage, gated by `storage.*` grants. */
+/** Resolves live display data for account ids referenced by an app. */
+identities: (ids: string[]) =>
+this.request<Record<string, { id: string; username: string; name: string; avatar?: { url?: string | null; color?: string | null; shape?: string | null } }>>(
+`/api/host/identities?ids=${encodeURIComponent(ids.join(','))}`
+),
+
+/** Per-extension isolated key/value storage, gated by `storage.*` grants.
+ * `agentId` is only used for authorization when the plugin is not yours. */
 storage: {
-get: (pluginId: string, key: string) =>
+get: (pluginId: string, agentId: string, key: string) =>
 this.request<HostStorageValue>('/api/host/storage/get', {
 method: 'POST',
-body: JSON.stringify({ plugin_id: pluginId, key })
+body: JSON.stringify({ plugin_id: pluginId, agent_id: agentId, key })
 }),
 
-set: (pluginId: string, key: string, value: string) =>
+set: (pluginId: string, agentId: string, key: string, value: string) =>
 this.request<HostStorageMutation>('/api/host/storage/set', {
 method: 'POST',
-body: JSON.stringify({ plugin_id: pluginId, key, value })
+body: JSON.stringify({ plugin_id: pluginId, agent_id: agentId, key, value })
 }),
 
-delete: (pluginId: string, key: string) =>
+delete: (pluginId: string, agentId: string, key: string) =>
 this.request<HostStorageMutation>('/api/host/storage/delete', {
 method: 'POST',
-body: JSON.stringify({ plugin_id: pluginId, key })
+body: JSON.stringify({ plugin_id: pluginId, agent_id: agentId, key })
 }),
 
-list: (pluginId: string, prefix?: string) =>
+list: (pluginId: string, agentId: string, prefix?: string) =>
 this.request<HostStorageKeyList>('/api/host/storage/list', {
 method: 'POST',
-body: JSON.stringify({ plugin_id: pluginId, prefix })
+body: JSON.stringify({ plugin_id: pluginId, agent_id: agentId, prefix })
 })
+
 }
 };
 
@@ -766,77 +832,7 @@ delete: (id: string) =>
 this.request<void>(`/api/instruction-presets/${id}`, { method: 'DELETE' })
 };
 
-	// Extensions & WASM Modules
-	extensions = {
-		list: () => this.request<ExtensionItem[]>('/api/extensions'),
-
-		inspect: async (file: File) => {
-			const formData = new FormData();
-			formData.append('file', file);
-			const url = `${this.serverUrl}/api/extensions/inspect`;
-			const res = await fetch(url, {
-				method: 'POST',
-				headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
-				body: formData
-			});
-			if (!res.ok) {
-				const err = await res.text();
-				throw new Error(err || 'Failed to inspect extension WASM');
-			}
-			return (await res.json()) as {
-				id: string;
-				name: string;
-				version: string;
-				description?: string;
-				wasm_hash: string;
-				manifest: any;
-				existing: ExtensionItem | null;
-			};
-		},
-
-		upload: async (file: File) => {
-			const formData = new FormData();
-			formData.append('file', file);
-			const url = `${this.serverUrl}/api/extensions/upload`;
-			const res = await fetch(url, {
-				method: 'POST',
-				headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
-				body: formData
-			});
-			if (!res.ok) {
-				const err = await res.text();
-				throw new Error(err || 'Failed to upload extension WASM');
-			}
-			return (await res.json()) as ExtensionItem;
-		},
-
-		installUrl: (url: string) =>
-			this.request<ExtensionItem>('/api/extensions/url', {
-				method: 'POST',
-				body: JSON.stringify({ url })
-			}),
-
-		patch: (id: string, is_active: boolean) =>
-			this.request<{ success: boolean }>(`/api/extensions/${id}`, {
-				method: 'PATCH',
-				body: JSON.stringify({ is_active })
-			}),
-
-		delete: (id: string) =>
-			this.request<{ success: boolean }>(`/api/extensions/${id}`, { method: 'DELETE' }),
-
-		getKv: (id: string) => this.request<ExtensionKvEntry[]>(`/api/extensions/${id}/kv`),
-
-		deleteKvKey: (id: string, key: string) =>
-			this.request<{ success: boolean }>(`/api/extensions/${id}/kv/${encodeURIComponent(key)}`, {
-				method: 'DELETE'
-			}),
-
-		getStorage: (id: string) =>
-			this.request<ExtensionStorageInfo>(`/api/extensions/${encodeURIComponent(id)}/storage`)
-	};
-
-	// Unified Plugins alias combining MCP + WASM
+	// Unified Plugins (MCP Servers & Native Executables)
 	plugins = {
 		list: () => this.mcp.list(),
 		create: (data: Parameters<typeof this.mcp.create>[0]) => this.mcp.create(data),
@@ -851,12 +847,35 @@ this.request<void>(`/api/instruction-presets/${id}`, { method: 'DELETE' })
 			arguments?: any;
 			session_variables?: Record<string, string>;
 		}) => this.mcp.testCustomTool(payload),
-		inspectWasm: (file: File) => this.extensions.inspect(file),
-		uploadWasm: (file: File) => this.extensions.upload(file),
-		installWasmUrl: (url: string) => this.extensions.installUrl(url),
-		getKv: (id: string) => this.extensions.getKv(id),
-		deleteKvKey: (id: string, key: string) => this.extensions.deleteKvKey(id, key),
-		getStorage: (id: string) => this.extensions.getStorage(id)
+		uploadBinary: async (file: File) => {
+			const formData = new FormData();
+			formData.append('file', file);
+			const url = `${this.serverUrl}/api/plugins/upload-binary`;
+			let res: Response;
+			try {
+				res = await fetch(url, {
+					method: 'POST',
+					headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+					body: formData
+				});
+			} catch (e: any) {
+				const reason = e?.message || String(e);
+				throw new Error(
+					`Cannot reach server at ${this.serverUrl} for binary upload (${reason}). Check if server is running.`
+				);
+			}
+			if (!res.ok) {
+				const err = await res.text();
+				throw new Error(err || `Failed to upload binary (HTTP ${res.status})`);
+			}
+			return (await res.json()) as {
+				path: string;
+				filename: string;
+				size: number;
+				suggested_name: string;
+				suggested_alias: string;
+			};
+		}
 	};
 }
 
@@ -868,6 +887,7 @@ export function isRoot(account?: { role?: AccountRole | null } | AccountRole | n
 	if (!account) return false;
 	if (typeof account === 'string') return account === ROLE_ROOT;
 	return account.role === ROLE_ROOT;
+
 }
 
 export const api = new ApiClient();

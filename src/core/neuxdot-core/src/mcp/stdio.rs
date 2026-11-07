@@ -11,6 +11,46 @@ use tracing::{debug, info, warn};
 
 use super::client::{JsonRpcRequest, JsonRpcResponse, McpError, McpNotification, McpTransport};
 
+pub fn parse_cli_args(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    if trimmed.starts_with('[') {
+        if let Ok(list) = serde_json::from_str::<Vec<String>>(trimmed) {
+            return list;
+        }
+    }
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut quote_char = ' ';
+
+    for c in trimmed.chars() {
+        match c {
+            '"' | '\'' if !in_quotes => {
+                in_quotes = true;
+                quote_char = c;
+            }
+            c if in_quotes && c == quote_char => {
+                in_quotes = false;
+            }
+            ' ' | '\t' | '\r' | '\n' if !in_quotes => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
 pub fn parse_env_vars(raw: &str) -> HashMap<String, String> {
     let mut envs = HashMap::new();
     let trimmed = raw.trim();
@@ -79,9 +119,21 @@ impl StdioTransport {
         command.args(args);
 
         if let Some(raw) = env_raw {
-            let envs = parse_env_vars(raw);
-            for (k, v) in envs {
-                command.env(k, v);
+            let trimmed = raw.trim();
+            if trimmed.starts_with('[') || trimmed.starts_with('-') {
+                command.args(parse_cli_args(trimmed));
+            } else if trimmed.starts_with('{') {
+                let envs = parse_env_vars(trimmed);
+                for (k, v) in envs {
+                    command.env(k, v);
+                }
+            } else if trimmed.lines().any(|l| l.contains('=') || l.contains(':')) {
+                let envs = parse_env_vars(trimmed);
+                for (k, v) in envs {
+                    command.env(k, v);
+                }
+            } else {
+                command.args(parse_cli_args(trimmed));
             }
         }
 
@@ -158,7 +210,13 @@ impl StdioTransport {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                warn!("MCP stdio stderr: {}", line);
+                let trimmed = line.trim();
+                let lower = trimmed.to_ascii_lowercase();
+                if lower.contains("error") || lower.contains("fatal") || lower.contains("panic") {
+                    warn!("MCP stdio stderr: {}", trimmed);
+                } else {
+                    debug!("MCP stdio stderr: {}", trimmed);
+                }
             }
         });
 
@@ -227,5 +285,16 @@ mod tests {
         let envs = parse_env_vars(raw);
         assert_eq!(envs.get("API_KEY").unwrap(), "my_secret_key");
         assert_eq!(envs.get("PORT").unwrap(), "8080");
+    }
+
+    #[test]
+    fn test_parse_cli_args() {
+        let raw = "--token my-token --port 8080 --name 'My Service'";
+        let args = parse_cli_args(raw);
+        assert_eq!(args, vec!["--token", "my-token", "--port", "8080", "--name", "My Service"]);
+
+        let json_raw = r#"["--token", "glpat-123", "--read-only"]"#;
+        let args2 = parse_cli_args(json_raw);
+        assert_eq!(args2, vec!["--token", "glpat-123", "--read-only"]);
     }
 }

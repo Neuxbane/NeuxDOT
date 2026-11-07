@@ -53,6 +53,10 @@ pub struct AgentIdentity {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct UserIdentity {
+    /// Stable account id of the viewer, so an app can tell which messages are
+    /// theirs. Not personally identifying beyond the session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +129,7 @@ pub fn build_user_identity(
     profile: Option<&neuxdot_core::db::schema::Profile>,
     fallback_username: &str,
     perms: &PluginPermissions,
+    account_id: &str,
 ) -> Option<UserIdentity> {
     let name = if perms.identity.user_name {
         Some(
@@ -136,6 +141,7 @@ pub fn build_user_identity(
     } else {
         None
     };
+    let account_id = Some(account_id.to_string());
     let avatar = if perms.identity.user_profile_picture {
         Some(AvatarRef {
             url: profile.and_then(|p| p.avatar_url.clone()),
@@ -148,7 +154,7 @@ pub fn build_user_identity(
     if name.is_none() && avatar.is_none() {
         return None;
     }
-    Some(UserIdentity { name, avatar })
+    Some(UserIdentity { id: account_id, name, avatar })
 }
 
 /// Assemble the whole bootstrap from already-loaded rows.
@@ -157,6 +163,7 @@ pub fn build_bootstrap(
     agent: &Agent,
     profile: Option<&neuxdot_core::db::schema::Profile>,
     username: &str,
+    account_id: &str,
     resource_uri: &str,
     theme: &str,
 ) -> HostBridgeBootstrap {
@@ -176,7 +183,7 @@ pub fn build_bootstrap(
             title,
         },
         agent: build_agent_identity(agent, &perms),
-        user: build_user_identity(profile, username, &perms),
+        user: build_user_identity(profile, username, &perms, account_id),
         capabilities: perms.capabilities(),
         permissions: perms,
         context: BridgeContext {
@@ -190,13 +197,20 @@ pub fn build_bootstrap(
 // Storage key scoping
 // ---------------------------------------------------------------------------
 
-/// Storage namespace for a plugin, isolated per account **and** plugin, so one
-/// plugin can never read another plugin's (or another account's) keys.
+/// Storage namespace for a plugin: isolated per **extension**, nothing more.
 ///
-/// Reuses the existing `extension_kv` table instead of adding a parallel store.
-pub fn storage_namespace(account_id: &str, plugin_id: &str) -> String {
-    let plugin = plugin_id.strip_prefix("wasm:").unwrap_or(plugin_id);
-    format!("host:{}:{}", account_id, plugin)
+/// The host deliberately does not impose a tenancy model. A plugin that needs
+/// per-agent or per-account partitioning composes it into its own keys (it knows
+/// the agent id and can read the caller identity from the bridge), exactly like
+/// the chat extension does with `chat.history.<agent_id>`.
+/// The namespace is the plugin's *extension id* itself, because `extension_kv`
+/// has a foreign key onto `extensions(id)`. MCP server ids carry a `wasm:`
+/// prefix that the extension row does not, so it is stripped here.
+///
+/// Partitioning by agent or account is still the plugin's own concern,
+/// expressed in the keys it chooses.
+pub fn storage_namespace(server_id: &str) -> String {
+    server_id.strip_prefix("wasm:").unwrap_or(server_id).to_string()
 }
 
 /// Validate a storage operation against the resolved grants.
@@ -245,7 +259,11 @@ fn api_err(status: StatusCode, msg: impl Into<String>) -> ApiError {
 }
 
 /// Load a plugin, enforcing that it belongs to the caller.
-async fn load_owned_server(state: &AppState, account_id: &str, id: &str) -> Result<McpServer, ApiError> {
+/// Resolves a plugin by id without an ownership check.
+///
+/// Authorization is done separately: either the caller owns the plugin, or they
+/// have access to an agent that uses it (shared bots).
+async fn load_server(state: &AppState, id: &str) -> Result<McpServer, ApiError> {
     let server = state
         .db
         .get_mcp_server(id)
@@ -262,10 +280,27 @@ async fn load_owned_server(state: &AppState, account_id: &str, id: &str) -> Resu
             .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "Plugin not found"))?,
     };
-    if server.account_id != account_id {
-        return Err(api_err(StatusCode::FORBIDDEN, "Access denied"));
-    }
     Ok(server)
+}
+
+/// True when `account_id` may use `server` through an agent it can access.
+async fn agent_grants_plugin(state: &AppState, account_id: &str, agent_id: &str, server_id: &str) -> bool {
+    let Ok(Some(agent)) = state.db.get_agent(agent_id).await else {
+        return false;
+    };
+    let Ok(access) = state.db.resolve_agent_access(&agent, account_id).await else {
+        return false;
+    };
+    if !access.can_view() {
+        return false;
+    }
+    // The plugin must actually be attached to that agent.
+    let bound = state.db.get_agent_mcp_servers(agent_id).await.unwrap_or_default();
+    let bare = server_id.strip_prefix("wasm:").unwrap_or(server_id);
+    bound.iter().any(|s| {
+        let sid = s.id.strip_prefix("wasm:").unwrap_or(&s.id);
+        sid == bare
+    })
 }
 
 /// `GET /api/host/session` — server-resolved bridge bootstrap.
@@ -274,7 +309,7 @@ pub async fn host_session_handler(
     State(state): State<AppState>,
     Query(q): Query<SessionQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let server = load_owned_server(&state, &auth.account_id, &q.plugin_id).await?;
+    let server = load_server(&state, &q.plugin_id).await?;
 
     let agent = state
         .db
@@ -282,7 +317,12 @@ pub async fn host_session_handler(
         .await
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "Agent not found"))?;
-    if agent.account_id != auth.account_id {
+
+    // Allowed when the caller owns the plugin, or can use an agent the plugin
+    // is attached to (a bot shared with them).
+    if server.account_id != auth.account_id
+        && !agent_grants_plugin(&state, &auth.account_id, &q.agent_id, &server.id).await
+    {
         return Err(api_err(StatusCode::FORBIDDEN, "Access denied"));
     }
 
@@ -302,6 +342,7 @@ pub async fn host_session_handler(
         &agent,
         profile.as_ref(),
         &auth.username,
+        &auth.account_id,
         &q.resource_uri,
         theme,
     );
@@ -393,8 +434,15 @@ pub async fn host_avatar_handler(
                 .await
                 .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
                 .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "Agent not found"))?;
-            if agent.account_id != auth.account_id {
-                return Err(api_err(StatusCode::FORBIDDEN, "Access denied"));
+            // Agents can be shared: anyone who may view it may see its avatar.
+            // 404 (not 403) so a foreign id is indistinguishable from a missing one.
+            let access = state
+                .db
+                .resolve_agent_access(&agent, &auth.account_id)
+                .await
+                .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            if !access.can_view() {
+                return Err(api_err(StatusCode::NOT_FOUND, "Agent not found"));
             }
             agent.avatar_url
         }
@@ -435,6 +483,9 @@ pub async fn host_avatar_handler(
 #[derive(Debug, Deserialize)]
 pub struct StorageRequest {
     pub plugin_id: String,
+    /// Agent that owns this plugin instance. Required: storage is per-agent.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     #[serde(default)]
     pub key: Option<String>,
     #[serde(default)]
@@ -444,16 +495,31 @@ pub struct StorageRequest {
 }
 
 /// Resolve a plugin, its namespace and its grants in one place.
+///
+/// Authorization is unchanged for owners. A sharee may also reach a plugin when
+/// they can use an agent it is attached to — the plugin still owns its data; it
+/// just becomes reachable to everyone who can use that bot.
 async fn storage_target(
     state: &AppState,
     auth: &AuthUser,
     plugin_id: &str,
+    agent_id: Option<&str>,
 ) -> Result<(String, PluginPermissions), ApiError> {
-    let server = load_owned_server(state, &auth.account_id, plugin_id).await?;
-    Ok((
-        storage_namespace(&auth.account_id, &server.id),
-        server.get_permissions(),
-    ))
+    let server = load_server(state, plugin_id).await?;
+
+    if server.account_id != auth.account_id {
+        let permitted = match agent_id.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(agent) => {
+                agent_grants_plugin(state, &auth.account_id, agent, &server.id).await
+            }
+            None => false,
+        };
+        if !permitted {
+            return Err(api_err(StatusCode::FORBIDDEN, "Access denied"));
+        }
+    }
+
+    Ok((storage_namespace(&server.id), server.get_permissions()))
 }
 
 /// `POST /api/host/storage/get`
@@ -463,7 +529,7 @@ pub async fn storage_get_handler(
     Json(payload): Json<StorageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let key = payload.key.unwrap_or_default();
-    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id).await?;
+    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id, payload.agent_id.as_deref()).await?;
     check_storage_access(&perms, "get", &key).map_err(|(c, m)| api_err(c, m))?;
 
     let value = state
@@ -482,7 +548,7 @@ pub async fn storage_set_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let key = payload.key.unwrap_or_default();
     let value = payload.value.unwrap_or_default();
-    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id).await?;
+    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id, payload.agent_id.as_deref()).await?;
     check_storage_access(&perms, "set", &key).map_err(|(c, m)| api_err(c, m))?;
 
     state
@@ -500,7 +566,7 @@ pub async fn storage_delete_handler(
     Json(payload): Json<StorageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let key = payload.key.unwrap_or_default();
-    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id).await?;
+    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id, payload.agent_id.as_deref()).await?;
     check_storage_access(&perms, "delete", &key).map_err(|(c, m)| api_err(c, m))?;
 
     let removed = state
@@ -517,7 +583,7 @@ pub async fn storage_list_handler(
     State(state): State<AppState>,
     Json(payload): Json<StorageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id).await?;
+    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id, payload.agent_id.as_deref()).await?;
     if !perms.allows(neuxdot_core::db::schema::CAP_STORAGE_KEYS) {
         return Err(api_err(
             StatusCode::FORBIDDEN,
@@ -598,7 +664,7 @@ mod tests {
         // Profile picture is NOT granted -> no avatar object at all.
         assert!(a.avatar.is_none());
 
-        let user = build_user_identity(None, "ada", &p).expect("user block present");
+        let user = build_user_identity(None, "ada", &p, "acc-1").expect("user block present");
         assert_eq!(user.name.as_deref(), Some("ada"));
         assert!(user.avatar.is_none());
 
@@ -611,7 +677,7 @@ mod tests {
         let mut p = perms();
         p.identity = IdentityPermissions::default();
         assert!(build_agent_identity(&agent(), &p).is_none());
-        assert!(build_user_identity(None, "ada", &p).is_none());
+        assert!(build_user_identity(None, "ada", &p, "acc-1").is_none());
 
         let boot = HostBridgeBootstrap {
             protocol_version: HOST_BRIDGE_PROTOCOL_VERSION.into(),
@@ -660,13 +726,16 @@ mod tests {
     }
 
     #[test]
-    fn storage_namespace_is_isolated_per_account_and_plugin() {
-        let a = storage_namespace("acc1", "wasm:plugin");
-        let b = storage_namespace("acc2", "wasm:plugin");
-        let c = storage_namespace("acc1", "wasm:other");
-        assert_ne!(a, b);
-        assert_ne!(a, c);
-        assert_eq!(a, "host:acc1:plugin");
+    fn storage_namespace_is_per_extension_only() {
+        // Storage is scoped to the extension row itself (extension_kv has a FK
+        // onto extensions.id). Partitioning by agent/account is the plugin's own
+        // concern, expressed in the keys it chooses.
+        let a = storage_namespace("wasm:plugin");
+        // The `wasm:` prefix is stripped: `extension_kv.extension_id` has a
+        // foreign key onto `extensions(id)`, whose ids are unprefixed.
+        assert_eq!(a, "plugin");
+        // Different plugins never share a namespace.
+        assert_ne!(a, storage_namespace("wasm:other"));
     }
 
     #[test]
@@ -684,4 +753,64 @@ mod tests {
         assert!(decode_data_url("file:///etc/passwd").is_none());
     }
 
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IdentitiesQuery {
+    /// Comma-separated account ids to resolve.
+    #[serde(default)]
+    pub ids: String,
+}
+
+/// `GET /api/host/identities?ids=a,b,c`
+///
+/// Resolves **live** display data for account ids referenced by an app (e.g. the
+/// authors of chat messages). Apps store only the stable account id; username,
+/// display name and avatar are looked up here on every render, so a rename or a
+/// new profile picture is reflected everywhere without rewriting history.
+///
+/// Only non-sensitive fields are exposed, and only for ids the caller already
+/// references — there is no enumeration of accounts.
+pub async fn host_identities_handler(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Query(q): Query<IdentitiesQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let ids: Vec<&str> = q
+        .ids
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .take(100)
+        .collect();
+
+    let mut out = serde_json::Map::new();
+    for id in ids {
+        let Ok(Some(account)) = state.db.get_account_by_id(id).await else {
+            continue;
+        };
+        let profile = state.db.get_profile(id).await.ok().flatten();
+
+        let display_name = profile
+            .as_ref()
+            .and_then(|p| p.display_name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| account.username.clone());
+
+        out.insert(
+            id.to_string(),
+            json!({
+                "id": account.id,
+                "username": account.username,
+                "name": display_name,
+                "avatar": {
+                    "url": profile.as_ref().and_then(|p| p.avatar_url.clone()),
+                    "color": profile.as_ref().and_then(|p| p.avatar_color.clone()),
+                    "shape": profile.as_ref().and_then(|p| p.avatar_shape.clone()),
+                },
+            }),
+        );
+    }
+
+    Ok(Json(serde_json::Value::Object(out)))
 }

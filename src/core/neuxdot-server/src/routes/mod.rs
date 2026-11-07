@@ -1,7 +1,6 @@
 pub mod accounts;
 pub mod agents;
 pub mod auth;
-pub mod extensions;
 pub mod mcp;
 pub mod host;
 pub mod instruction_presets;
@@ -10,6 +9,7 @@ pub mod providers;
 pub mod ws;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, patch, post, put},
     Router,
 };
@@ -26,6 +26,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/accounts",
             get(accounts::list_accounts_handler).post(accounts::create_account_handler),
         )
+        // Any signed-in user may search for someone to share a bot with.
+        .route("/api/accounts/search", get(accounts::search_accounts_handler))
         .route(
             "/api/accounts/:id",
             axum::routing::patch(accounts::update_account_handler)
@@ -44,6 +46,16 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(agents::delete_agent_handler),
         )
         .route("/api/agents/:id/run", post(agents::run_agent_handler))
+        // Agent sharing
+        .route(
+            "/api/agents/:id/shares",
+            get(agents::list_agent_shares_handler).post(agents::create_agent_share_handler),
+        )
+        .route(
+            "/api/agents/:id/shares/:account_id",
+            patch(agents::update_agent_share_handler)
+                .delete(agents::delete_agent_share_handler),
+        )
         .route(
             "/api/agents/:id/pushed",
             get(agents::list_agent_pushed_messages_handler),
@@ -82,7 +94,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/mcp/test-custom-tool", post(mcp::test_custom_tool_handler))
         .route(
             "/api/mcp/:id",
-            put(mcp::update_mcp_handler)
+            get(mcp::get_mcp_handler)
+                .put(mcp::update_mcp_handler)
                 .patch(mcp::update_mcp_handler)
                 .delete(mcp::delete_mcp_handler),
         )
@@ -91,37 +104,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/plugins", get(mcp::list_mcp_handler).post(mcp::create_mcp_handler))
         .route("/api/plugins/test-custom-tool", post(mcp::test_custom_tool_handler))
         .route(
-            "/api/plugins/upload",
-            post(extensions::upload_extension_handler),
-        )
-        .route(
-            "/api/plugins/inspect",
-            post(extensions::inspect_extension_handler),
-        )
-        .route(
-            "/api/plugins/url",
-            post(extensions::install_url_handler),
+            "/api/plugins/upload-binary",
+            post(mcp::upload_binary_handler).layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
         )
         .route(
             "/api/plugins/:id",
-            put(mcp::update_mcp_handler)
+            get(mcp::get_mcp_handler)
+                .put(mcp::update_mcp_handler)
                 .patch(mcp::update_mcp_handler)
                 .delete(mcp::delete_mcp_handler),
         )
         .route("/api/plugins/:id/push", post(mcp::push_mcp_information_handler))
         .route("/api/plugins/:id/rpc", post(mcp::plugin_rpc_handler))
-        .route(
-            "/api/plugins/:id/kv",
-            get(extensions::list_extension_kv_handler),
-        )
-        .route(
-            "/api/plugins/:id/kv/:key",
-            axum::routing::delete(extensions::delete_extension_kv_key_handler),
-        )
-        .route(
-            "/api/plugins/:id/storage",
-            get(extensions::get_extension_storage_handler),
-        )
         // Profile
         .route(
             "/api/profile",
@@ -138,46 +132,12 @@ pub fn build_router(state: AppState) -> Router {
             patch(instruction_presets::update_instruction_preset_handler)
                 .delete(instruction_presets::delete_instruction_preset_handler),
         )
-        // WASM storage & legacy extension alias routes
-        .route(
-            "/api/extensions",
-            get(extensions::list_extensions_handler),
-        )
-        .route(
-            "/api/extensions/upload",
-            post(extensions::upload_extension_handler),
-        )
-        .route(
-            "/api/extensions/inspect",
-            post(extensions::inspect_extension_handler),
-        )
-        .route(
-            "/api/extensions/url",
-            post(extensions::install_url_handler),
-        )
-        .route(
-            "/api/extensions/:id",
-            axum::routing::patch(extensions::patch_extension_handler)
-                .delete(extensions::delete_extension_handler),
-        )
-        .route(
-            "/api/extensions/:id/kv",
-            get(extensions::list_extension_kv_handler),
-        )
-        .route(
-            "/api/extensions/:id/kv/:key",
-            axum::routing::delete(extensions::delete_extension_kv_key_handler),
-        )
-        .route(
-            "/api/extensions/:id/storage",
-            get(extensions::get_extension_storage_handler),
-        )
-        .route("/api/extensions/:id/rpc", post(mcp::plugin_rpc_handler))
         // Host bridge for sandboxed MCP-Apps (docs/HOST_BRIDGE.md §5).
         // Identity/avatars/storage are resolved server-side so the opaque-origin
         // iframe never has to fetch anything itself.
         .route("/api/host/session", get(host::host_session_handler))
         .route("/api/host/avatar", get(host::host_avatar_handler))
+        .route("/api/host/identities", get(host::host_identities_handler))
         .route("/api/host/storage/get", post(host::storage_get_handler))
         .route("/api/host/storage/set", post(host::storage_set_handler))
         .route("/api/host/storage/delete", post(host::storage_delete_handler))

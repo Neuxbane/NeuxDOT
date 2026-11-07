@@ -27,9 +27,24 @@
 		allServers: McpServer[];
 		selectedIds: string[];
 		onchange?: (selected: string[]) => void;
+		/**
+		 * Launch an MCP-App view (`ui://` resource). The host page owns the
+		 * sandboxed iframe, so opening an app is delegated upward — linking to
+		 * /mcp would only navigate to the plugin settings page.
+		 */
+		onOpenApp?: (app: { mcpId: string; uri: string; name: string }) => void;
 	}
 
-	let { agentId = '', allServers = [], selectedIds = $bindable([]), onchange }: Props = $props();
+	let { agentId = '', allServers = [], selectedIds = $bindable([]), onchange, onOpenApp }: Props = $props();
+
+/**
+ * A `ui://` resource is an MCP-App *view* (HTML interface served to the
+ * sandboxed iframe), not model context. It must never be offered as a push
+ * subscription: that would stream the whole document into the prompt.
+ */
+function isUiResource(r: AgentResourceItem): boolean {
+return r.uri?.startsWith('ui://') || (r.mime_type || '').includes('mcp-app');
+}
 
 	let agentTools = $state<AgentToolItem[]>([]);
 	let agentResources = $state<AgentResourceItem[]>([]);
@@ -133,7 +148,14 @@
 				{@const isExpanded = expandedServerId === srv.id}
 				{@const serverTools = agentTools.filter((t) => t.mcp_id === srv.id)}
 				{@const serverResources = agentResources.filter((r) => r.mcp_id === srv.id)}
-				{@const isWasm = srv.transport === 'wasm_stdio' || srv.url_or_command.startsWith('wasm://')}
+<!--
+`ui://` resources are MCP-*App views* (a renderable interface); they are
+NOT push context. Subscribing to one would inject the whole HTML
+document into the model on every turn, so they are never offered here.
+Everything else is a genuine push subscription.
+-->
+{@const serverApps = serverResources.filter((r) => isUiResource(r))}
+{@const serverPushResources = serverResources.filter((r) => !isUiResource(r))}
 
 				<div class="rounded-2xl border transition-all {srv.is_active === false ? 'opacity-70 bg-zinc-50/50 dark:bg-zinc-900/30' : ''} {isSelected
 					? 'border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900/70 shadow-xs'
@@ -150,12 +172,12 @@
 							<div class="truncate">
 								<div class="flex items-center gap-2">
 									<span class="font-medium text-xs text-zinc-900 dark:text-zinc-100 truncate">{srv.name}</span>
-									<span class="rounded px-1.5 py-0.2 text-[9px] font-mono uppercase {isWasm
-										? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20'
+									<span class="rounded px-1.5 py-0.2 text-[9px] font-mono uppercase {srv.transport === 'binary'
+										? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'
 										: srv.transport === 'stdio'
 										? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
 										: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400'}">
-										{isWasm ? 'WASM stdio' : srv.transport}
+										{srv.transport}
 									</span>
 								</div>
 								<div class="text-[11px] text-zinc-400 dark:text-zinc-500 font-mono truncate max-w-[280px]" title={srv.url_or_command}>
@@ -297,8 +319,41 @@
 								{/if}
 							</div>
 
-							<!-- 2. Push MCP Subscriptions -->
-							{#if serverResources.length > 0}
+							<!-- 2. MCP-App views (ui://). These are interfaces, not model context. -->
+							{#if serverApps.length > 0}
+							<div class="pt-2 border-t border-zinc-200/60 dark:border-zinc-800/60">
+							<div class="flex items-center justify-between mb-2">
+							<div class="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+							<RadioTower class="h-3.5 w-3.5 text-emerald-500" />
+							<span>Apps (MCP-App UI)</span>
+							</div>
+							<span class="text-[10px] text-zinc-400">Rendered interfaces, never sent to the model</span>
+							</div>
+							<div class="space-y-2">
+							{#each serverApps as res}
+							<div class="flex items-center justify-between rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-2.5 shadow-2xs">
+							<div class="space-y-0.5 max-w-[70%]">
+							<div class="flex items-center gap-2">
+							<span class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">{res.name}</span>
+							<span class="rounded px-1.5 py-0.2 text-[9px] font-mono bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-bold">UI</span>
+							</div>
+							<div class="text-[10px] font-mono text-zinc-500 truncate" title={res.uri}>{res.uri}</div>
+							</div>
+							<button
+type="button"
+onclick={() => onOpenApp?.({ mcpId: srv.id, uri: res.uri, name: res.name })}
+disabled={!onOpenApp}
+class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+title="Launch this MCP-App in the sandboxed viewer"
+>Open</button>
+							</div>
+							{/each}
+							</div>
+							</div>
+							{/if}
+							
+							<!-- 3. Push MCP Subscriptions (model context only) -->
+							{#if serverPushResources.length > 0}
 								<div class="pt-2 border-t border-zinc-200/60 dark:border-zinc-800/60">
 									<div class="flex items-center justify-between mb-2">
 										<div class="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-cyan-600 dark:text-cyan-400">
@@ -311,7 +366,7 @@
 									</div>
 
 									<div class="space-y-2">
-										{#each serverResources as res}
+										{#each serverPushResources as res}
 											{@const isSub = subscriptions.includes(res.uri)}
 											<div class="flex items-center justify-between rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-2.5 shadow-2xs">
 												<div class="space-y-0.5 max-w-[70%]">

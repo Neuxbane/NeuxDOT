@@ -67,3 +67,28 @@ Thumbs.db
 *.swp
 *~
 *.bak
+
+# Build & Release Artifacts
+release/
+**/release/
+*.apk
+*.aab
+
+# Android & Gradle
+.gradle/
+**/.gradle/
+.cxx/
+**/.cxx/
+*.iml
+**/*.iml
+local.properties
+key.properties
+keystore.properties
+
+# Android release signing material & secrets (never commit)
+.secrets
+.secrets/
+**/.secrets
+**/.secrets/
+*.jks
+*.keystore

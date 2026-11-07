@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -62,16 +62,44 @@ pub async fn list_mcp_handler(
     Ok(Json(servers))
 }
 
+/// `GET /api/plugins/:id` (and `/api/mcp/:id`)
+///
+/// Returns one plugin. The edit modal needs this to load a single custom tool
+/// definition; without it the UI fell back to a 405 and the page rendered a 500.
+pub async fn get_mcp_handler(
+    auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let server = state
+        .db
+        .get_mcp_server(&id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
+        .ok_or_else(|| {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "Plugin not found" })))
+        })?;
+
+    if server.account_id != auth.account_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        ));
+    }
+
+    Ok(Json(server))
+}
+
 pub async fn create_mcp_handler(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(payload): Json<CreateMcpRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let transport = payload.transport.to_lowercase();
-    if transport != "stdio" && transport != "http" && transport != "custom_tools" && transport != "curl" {
+    if transport != "stdio" && transport != "binary" && transport != "http" && transport != "custom_tools" && transport != "curl" {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Transport must be 'stdio', 'http', or 'custom_tools'" })),
+            Json(json!({ "error": "Transport must be 'stdio', 'binary', 'http', or 'custom_tools'" })),
         ));
     }
 
@@ -167,7 +195,7 @@ pub async fn update_mcp_handler(
     Ok(Json(updated))
 }
 
-/// Execute a JSON-RPC 2.0 request against any Plugin (`wasm`, `stdio`, or `http`).
+/// Execute a JSON-RPC 2.0 request against any Plugin (`binary`, `stdio`, or `http`).
 /// Powers the standard MCP-Apps bidirectional bridge (`resources/read`, `tools/call`, etc.).
 pub async fn plugin_rpc_handler(
     auth: AuthUser,
@@ -175,29 +203,31 @@ pub async fn plugin_rpc_handler(
     State(state): State<AppState>,
     Json(payload): Json<PluginRpcRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let _ = state.db.sync_wasm_mcp_servers(&auth.account_id).await;
-
-    let server_opt = state
+    let server = state
         .db
         .get_mcp_server(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Plugin not found" }))))?;
 
-    let server = match server_opt {
-        Some(s) => s,
-        None => {
-            let wasm_prefixed = format!("wasm:{}", id);
-            state
-                .db
-                .get_mcp_server(&wasm_prefixed)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-                .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Plugin not found" }))))?
-        }
-    };
-
+    // A plugin belongs to the account that installed it, but it must also be
+    // usable by anyone the owning agent is shared with.
     if server.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
+        let allowed = match payload.agent_id.as_deref() {
+            Some(agent_id) => match state.db.get_agent(agent_id).await {
+                Ok(Some(agent)) => state
+                    .db
+                    .resolve_agent_access(&agent, &auth.account_id)
+                    .await
+                    .map(|a| a.can_view())
+                    .unwrap_or(false),
+                _ => false,
+            },
+            None => false,
+        };
+        if !allowed {
+            return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
+        }
     }
 
     if !server.is_active {
@@ -221,31 +251,10 @@ pub async fn plugin_rpc_handler(
         }
     }
 
-    let (notif_tx, _notif_rx) =
+    let (notif_tx, mut notif_rx) =
         tokio::sync::mpsc::unbounded_channel::<neuxdot_core::mcp::client::McpNotification>();
 
-    let transport: Arc<dyn McpTransport> = if server.is_wasm() {
-        let ext_id = server.id.strip_prefix("wasm:").unwrap_or(&server.id);
-        let ext = state
-            .db
-            .get_extension(ext_id)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-            .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "WASM plugin binary not found" }))))?;
-
-        let manifest_val: Value = serde_json::from_str(&ext.manifest_json).unwrap_or(Value::Null);
-        let data_dir = std::path::PathBuf::from("data/extensions");
-        let _ = std::fs::create_dir_all(&data_dir);
-
-        Arc::new(neuxdot_core::mcp::wasm_stdio::WasmStdioTransport::new(
-            Arc::clone(&state.db),
-            ext.id,
-            ext.wasm_hash,
-            manifest_val,
-            notif_tx,
-            data_dir,
-        ))
-    } else if server.transport == "custom_tools" || server.transport == "curl" {
+    let transport: Arc<dyn McpTransport> = if server.transport == "custom_tools" || server.transport == "curl" {
         Arc::new(
             neuxdot_core::mcp::custom_tools::CustomToolsTransport::new(
                 &server.id,
@@ -254,11 +263,11 @@ pub async fn plugin_rpc_handler(
             )
             .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))))?,
         )
-    } else if server.transport == "stdio" {
+    } else if server.transport == "stdio" || server.transport == "binary" {
         if !perms.process {
             return Err((
                 StatusCode::FORBIDDEN,
-                Json(json!({ "error": "Process spawn permission is disabled for this stdio plugin" })),
+                Json(json!({ "error": "Process spawn permission is disabled for this plugin" })),
             ));
         }
         neuxdot_core::mcp::stdio::StdioTransport::spawn(
@@ -282,60 +291,106 @@ pub async fn plugin_rpc_handler(
         )
     };
 
+    // Stamp the *trusted* caller identity onto tool arguments so a plugin can
+    // attribute messages to whoever actually sent them (the UI cannot spoof it).
+    // Underscore-prefixed keys are host metadata, never model-facing schema.
+    // Stamp trusted caller identity; see `mcp::stamp_sender`.
+    let forwarded_params = neuxdot_core::mcp::stamp_sender(
+        &payload.method,
+        payload.params.clone(),
+        &auth.account_id,
+        &auth.username,
+    );
+
     let result = transport
-        .send_request(&payload.method, payload.params.clone())
+        .send_request(&payload.method, forwarded_params)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, Json(json!({ "error": e.to_string() }))))?;
 
-    let _ = transport.close().await;
+    // Allow trailing push notifications emitted by the tool call to arrive
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
 
-    // Emit push notification when user sends a message via MCP-App chat_user_message
-    if payload.method == "tools/call" {
-        if let Some(params) = &payload.params {
-            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            if tool_name == "chat_user_message" {
-                let args = params.get("arguments");
-                let agent_id = args
-                    .and_then(|a| a.get("agent_id"))
-                    .and_then(|v| v.as_str())
-                    .or(payload.agent_id.as_deref());
-                let user_msg = args
-                    .and_then(|a| a.get("message"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+    // Drain any reactive push notifications emitted by the plugin (e.g. chat console user messages)
+    while let Ok(notif) = notif_rx.try_recv() {
+        let target_agent_id = notif
+            .params
+            .as_ref()
+            .and_then(|p| p.get("agent_id"))
+            .and_then(|a| a.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| payload.agent_id.clone())
+            .or_else(|| {
+                payload
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("arguments"))
+                    .and_then(|args| args.get("agent_id"))
+                    .and_then(|a| a.as_str())
+                    .map(|s| s.to_string())
+            });
 
-                if let Some(aid) = agent_id {
-                    let notif_params = json!({
-                        "uri": "extension://chat/messages",
-                        "role": "user",
-                        "text": user_msg
-                    });
-                    let notif_str = notif_params.to_string();
-                    let _ = state
-                        .db
-                        .save_pushed_message(
-                            aid,
-                            Some(&server.id),
-                            "notifications/resources/updated",
-                            Some(&notif_str),
-                        )
-                        .await;
+        let target_ids: Vec<String> = if let Some(target) = target_agent_id {
+            vec![target]
+        } else {
+            state
+                .db
+                .list_agents(&auth.account_id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|a| a.id)
+                .collect()
+        };
 
-                    let envelope = EventEnvelope::new(
-                        aid,
-                        AgentEvent::McpPushedNotification {
-                            agent_id: aid.to_string(),
-                            mcp_id: server.id.clone(),
-                            mcp_name: server.name.clone(),
-                            method: "notifications/resources/updated".to_string(),
-                            payload: notif_params,
-                        },
-                    );
-                    let _ = state.event_tx.send(envelope);
-                }
+        let params_val = notif.params.unwrap_or(serde_json::Value::Null);
+        let params_str = params_val.to_string();
+
+        for agent_id in &target_ids {
+            let _ = state
+                .db
+                .save_pushed_message(agent_id, Some(&server.id), &notif.method, Some(&params_str))
+                .await;
+
+            let envelope = EventEnvelope::new(
+                agent_id,
+                AgentEvent::McpPushedNotification {
+                    agent_id: agent_id.clone(),
+                    mcp_id: server.id.clone(),
+                    mcp_name: server.name.clone(),
+                    method: notif.method.clone(),
+                    payload: params_val.clone(),
+                },
+            );
+            let _ = state.event_tx.send(envelope);
+
+            // If this push notification is a user chat message from the chat console,
+            // trigger an agent turn automatically so the agent replies into the chat console
+            let is_user_chat_message = notif.method == "notifications/resources/updated"
+                && params_val.get("uri").and_then(|u| u.as_str()) == Some("extension://chat/messages")
+                && params_val.get("role").and_then(|r| r.as_str()) == Some("user");
+
+            if is_user_chat_message {
+                let agent_id_clone = agent_id.clone();
+                let state_clone = state.clone();
+                tokio::spawn(async move {
+                    if let Ok(Some(agent)) = state_clone.db.get_agent(&agent_id_clone).await {
+                        let models = state_clone.db.get_agent_models(&agent.id).await.unwrap_or_default();
+                        let mcp_servers = state_clone.db.get_agent_mcp_servers(&agent.id).await.unwrap_or_default();
+                        let executor = neuxdot_core::runtime::executor::AgentExecutor::new(
+                            Arc::clone(&state_clone.db),
+                            agent,
+                            models,
+                            mcp_servers,
+                            state_clone.event_tx.clone(),
+                        );
+                        let _ = executor.run_turn("").await;
+                    }
+                });
             }
         }
     }
+
+    let _ = transport.close().await;
 
     Ok(Json(result))
 }
@@ -458,4 +513,121 @@ pub async fn test_custom_tool_handler(
             Json(json!({ "error": e, "success": false })),
         )),
     }
+}
+
+pub async fn upload_binary_handler(
+    _auth: AuthUser,
+    State(_state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut raw_filename: Option<String> = None;
+
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                let name = field.name().unwrap_or_default().to_string();
+                if name == "file" || name == "binary" {
+                    if let Some(fname) = field.file_name() {
+                        raw_filename = Some(fname.to_string());
+                    }
+                    let data = field.bytes().await.map_err(|e| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "error": format!("Failed to read multipart stream: {}", e) })),
+                        )
+                    })?;
+                    file_bytes = Some(data.to_vec());
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("Multipart error: {}", e) })),
+                ));
+            }
+        }
+    }
+
+    let bytes = file_bytes.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "No binary file provided in multipart upload (expected field 'file')" })),
+        )
+    })?;
+
+    let default_name = "custom_mcp_binary";
+    let base_name = raw_filename
+        .as_deref()
+        .map(|f| {
+            std::path::Path::new(f)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(default_name)
+        })
+        .unwrap_or(default_name);
+
+    let sanitized: String = base_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect();
+    let sanitized = if sanitized.is_empty() {
+        default_name.to_string()
+    } else {
+        sanitized
+    };
+
+    let bin_dir = std::path::PathBuf::from("data/binaries");
+    let _ = std::fs::create_dir_all(&bin_dir);
+
+    let target_path = bin_dir.join(&sanitized);
+
+    std::fs::write(&target_path, &bytes).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to write binary file: {}", e) })),
+        )
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&target_path, std::fs::Permissions::from_mode(0o755));
+    }
+
+    let rel_path = format!("./data/binaries/{}", sanitized);
+    let stem = std::path::Path::new(&sanitized)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&sanitized);
+
+    let words: Vec<String> = stem
+        .replace(['-', '_'], " ")
+        .split_whitespace()
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect();
+
+    let suggested_name = if words.is_empty() {
+        "Custom Binary Plugin".to_string()
+    } else {
+        words.join(" ")
+    };
+
+    let suggested_alias = stem.to_lowercase().replace(['-', ' '], "_");
+
+    Ok(Json(json!({
+        "path": rel_path,
+        "filename": sanitized,
+        "size": bytes.len(),
+        "suggested_name": suggested_name,
+        "suggested_alias": suggested_alias,
+    })))
 }

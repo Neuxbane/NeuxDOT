@@ -19,6 +19,10 @@ pub enum ProviderModelPayload {
         model_id: String,
         name: Option<String>,
         config_json: Option<String>,
+        #[serde(default)]
+        params_json: Option<String>,
+        #[serde(default)]
+        context_window: Option<i64>,
     },
 }
 
@@ -29,15 +33,21 @@ impl ProviderModelPayload {
                 model_id: mid,
                 name: None,
                 config_json: None,
+                params_json: None,
+                context_window: None,
             },
             Self::Detailed {
                 model_id,
                 name,
                 config_json,
+                params_json,
+                context_window,
             } => ModelConfigInput {
                 model_id,
                 name,
                 config_json,
+                params_json,
+                context_window,
             },
         }
     }

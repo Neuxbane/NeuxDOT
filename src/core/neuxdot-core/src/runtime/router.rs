@@ -67,6 +67,46 @@ impl ProviderRouter {
         }
     }
 
+    pub fn build_payload(
+        target: &ActiveModelTarget,
+        messages: &[Value],
+        tools: Option<&Value>,
+    ) -> Value {
+        let mut payload = json!({
+            "model": target.model_id,
+            "messages": messages,
+        });
+
+        if let Some(t) = tools {
+            payload["tools"] = t.clone();
+        }
+
+        // Merge provider/model parameters:
+        // Prefer params_json verbatim (completion hyperparameters only, no name filtering).
+        // Fall back to config_json if params_json is not present (for backwards compatibility).
+        if let Some(ref params_str) = target.params_json {
+            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(params_str) {
+                if let Some(target_obj) = payload.as_object_mut() {
+                    for (k, v) in map {
+                        target_obj.insert(k, v);
+                    }
+                }
+            }
+        } else if let Some(ref cfg_str) = target.config_json {
+            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(cfg_str) {
+                if let Some(target_obj) = payload.as_object_mut() {
+                    for (k, v) in map {
+                        if k != "context_window" && k != "name" {
+                            target_obj.insert(k, v);
+                        }
+                    }
+                }
+            }
+        }
+
+        payload
+    }
+
     pub async fn execute_chat_completion(
         &self,
         messages: Vec<Value>,
@@ -83,29 +123,7 @@ impl ProviderRouter {
         for target in candidates {
             on_target_selected(target);
 
-            // Construct payload: base fields + optional config_json overrides
-            let mut payload = json!({
-                "model": target.model_id,
-                "messages": messages,
-            });
-
-            if let Some(ref t) = tools {
-                payload["tools"] = t.clone();
-            }
-
-            // Merge provider/model config_json (e.g. temperature, thinking, max_tokens, etc.)
-            // Exclude non-completion metadata fields like context_window and name
-            if let Some(ref cfg_str) = target.config_json {
-                if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(cfg_str) {
-                    if let Some(target_obj) = payload.as_object_mut() {
-                        for (k, v) in map {
-                            if k != "context_window" && k != "name" {
-                                target_obj.insert(k, v);
-                            }
-                        }
-                    }
-                }
-            }
+            let payload = Self::build_payload(target, &messages, tools.as_ref());
 
             let endpoint = format!(
                 "{}/chat/completions",
@@ -157,5 +175,74 @@ impl ProviderRouter {
         }
 
         Err(last_err.unwrap_or(RouterError::AllProvidersFailed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_dummy_target(params_json: Option<&str>, config_json: Option<&str>) -> ActiveModelTarget {
+        ActiveModelTarget {
+            id: "pm_test".to_string(),
+            provider_id: "p_test".to_string(),
+            provider_name: "TestProvider".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: None,
+            model_id: "test-model".to_string(),
+            model_name: Some("Test Model".to_string()),
+            config_json: config_json.map(|s| s.to_string()),
+            params_json: params_json.map(|s| s.to_string()),
+            context_window: Some(32000),
+        }
+    }
+
+    #[test]
+    fn test_router_payload_omits_metadata_and_merges_params_json_verbatim() {
+        let target = create_dummy_target(
+            Some(r#"{"temperature": 0.7, "max_tokens": 2048, "top_p": 0.95}"#),
+            Some(r#"{"supports_thinking": true, "context_window": 128000, "icon": "robot", "name": "Sonnet"}"#),
+        );
+        let messages = vec![json!({"role": "user", "content": "hi"})];
+        let payload = ProviderRouter::build_payload(&target, &messages, None);
+
+        assert_eq!(payload["model"], "test-model");
+        assert_eq!(payload["temperature"], 0.7);
+        assert_eq!(payload["max_tokens"], 2048);
+        assert_eq!(payload["top_p"], 0.95);
+        assert!(payload.get("supports_thinking").is_none());
+        assert!(payload.get("context_window").is_none());
+        assert!(payload.get("icon").is_none());
+        assert!(payload.get("name").is_none());
+    }
+
+    #[test]
+    fn test_router_payload_fallback_to_config_json_when_params_json_is_none() {
+        let target = create_dummy_target(
+            None,
+            Some(r#"{"temperature": 0.5, "context_window": 64000, "name": "Legacy", "max_tokens": 1000}"#),
+        );
+        let messages = vec![json!({"role": "user", "content": "hello"})];
+        let payload = ProviderRouter::build_payload(&target, &messages, None);
+
+        assert_eq!(payload["model"], "test-model");
+        assert_eq!(payload["temperature"], 0.5);
+        assert_eq!(payload["max_tokens"], 1000);
+        assert!(payload.get("context_window").is_none());
+        assert!(payload.get("name").is_none());
+    }
+
+    #[test]
+    fn test_router_payload_unknown_metadata_key_not_forwarded() {
+        let target = create_dummy_target(
+            Some(r#"{"temperature": 0.0}"#),
+            Some(r#"{"supports_thinking": true, "unknown_field_xyz": "value"}"#),
+        );
+        let messages = vec![json!({"role": "user", "content": "hello"})];
+        let payload = ProviderRouter::build_payload(&target, &messages, None);
+
+        assert_eq!(payload["temperature"], 0.0);
+        assert!(payload.get("supports_thinking").is_none());
+        assert!(payload.get("unknown_field_xyz").is_none());
     }
 }

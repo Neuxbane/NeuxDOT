@@ -71,6 +71,35 @@ impl Database {
             .ok_or(sqlx::Error::RowNotFound)
     }
 
+    /// Minimal, non-privileged account lookup for share pickers.
+    ///
+    /// Returns only `(account_id, username, display_name, avatar_url)` so any
+    /// authenticated user can pick a sharee without seeing password hashes,
+    /// roles or timestamps of every account.
+    pub async fn search_accounts_for_sharing(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>, sqlx::Error> {
+        let like = format!("%{}%", query.trim());
+        sqlx::query_as(
+            r#"
+            SELECT a.id, a.username, p.display_name, p.avatar_url
+            FROM accounts a
+            LEFT JOIN profiles p ON p.account_id = a.id
+            WHERE ? = '%%' OR a.username LIKE ? OR COALESCE(p.display_name, '') LIKE ?
+            ORDER BY a.username ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(&like)
+        .bind(&like)
+        .bind(&like)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn list_accounts(&self) -> Result<Vec<Account>, sqlx::Error> {
         sqlx::query_as::<_, Account>(
             "SELECT * FROM accounts ORDER BY CASE WHEN role = 'root' THEN 0 ELSE 1 END, username ASC",
@@ -399,18 +428,55 @@ impl Database {
         .await
     }
 
+fn split_config_json(
+    config_json: Option<&str>,
+    params_json: Option<&str>,
+    context_window: Option<i64>,
+) -> (Option<String>, Option<i64>) {
+    let mut effective_params = params_json.map(|s| s.to_string());
+    let mut effective_cw = context_window;
+
+    if let Some(raw_cfg) = config_json {
+        if let Ok(serde_json::Value::Object(mut map)) = serde_json::from_str::<serde_json::Value>(raw_cfg) {
+            if effective_cw.is_none() {
+                if let Some(cw_val) = map.remove("context_window") {
+                    effective_cw = cw_val.as_i64();
+                }
+            } else {
+                map.remove("context_window");
+            }
+            map.remove("name");
+
+            if effective_params.is_none() {
+                if let Ok(serialized) = serde_json::to_string(&map) {
+                    effective_params = Some(serialized);
+                }
+            }
+        }
+    }
+
+    (effective_params, effective_cw)
+}
+
     pub async fn add_provider_model(
         &self,
         provider_id: &str,
         model_id: &str,
         name: Option<&str>,
         config_json: Option<&str>,
+        params_json: Option<&str>,
+        context_window: Option<i64>,
     ) -> Result<ProviderModel, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
+        let (effective_params, effective_cw) = Self::split_config_json(
+            config_json,
+            params_json,
+            context_window,
+        );
         sqlx::query(
             r#"
-            INSERT INTO provider_models (id, provider_id, model_id, name, config_json, is_active)
-            VALUES (?, ?, ?, ?, ?, 1)
+            INSERT INTO provider_models (id, provider_id, model_id, name, config_json, params_json, context_window, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             "#,
         )
         .bind(&id)
@@ -418,6 +484,8 @@ impl Database {
         .bind(model_id)
         .bind(name)
         .bind(config_json)
+        .bind(effective_params.as_deref())
+        .bind(effective_cw)
         .execute(&self.pool)
         .await?;
 
@@ -440,10 +508,15 @@ impl Database {
 
         for m in models {
             let id = Uuid::new_v4().to_string();
+            let (effective_params, effective_cw) = Self::split_config_json(
+                m.config_json.as_deref(),
+                m.params_json.as_deref(),
+                m.context_window,
+            );
             sqlx::query(
                 r#"
-                INSERT INTO provider_models (id, provider_id, model_id, name, config_json, is_active)
-                VALUES (?, ?, ?, ?, ?, 1)
+                INSERT INTO provider_models (id, provider_id, model_id, name, config_json, params_json, context_window, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
                 "#,
             )
             .bind(&id)
@@ -451,6 +524,8 @@ impl Database {
             .bind(&m.model_id)
             .bind(m.name.as_deref())
             .bind(m.config_json.as_deref())
+            .bind(effective_params.as_deref())
+            .bind(effective_cw)
             .execute(&mut *tx)
             .await?;
         }
@@ -473,6 +548,197 @@ impl Database {
             .bind(account_id)
             .fetch_all(&self.pool)
             .await
+    }
+
+    // --- Agent sharing ---
+
+    /// Resolves what `account_id` may do with an agent.
+    pub async fn resolve_agent_access(
+        &self,
+        agent: &Agent,
+        account_id: &str,
+    ) -> Result<AgentAccess, sqlx::Error> {
+        if agent.account_id == account_id {
+            return Ok(AgentAccess::Owner);
+        }
+        let share: Option<(bool, bool)> = sqlx::query_as(
+            "SELECT can_edit, can_manage_shares FROM agent_shares WHERE agent_id = ? AND account_id = ?",
+        )
+        .bind(&agent.id)
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(match share {
+            Some((can_edit, can_manage_shares)) => AgentAccess::Shared {
+                can_edit,
+                can_manage_shares,
+            },
+            None => AgentAccess::None,
+        })
+    }
+
+    /// Every agent the account can see: its own, plus those shared with it.
+    /// Each row is (agent, is_owner, can_edit, can_manage_shares).
+    pub async fn list_agents_for_account(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<(Agent, bool, bool, bool)>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, Agent>(
+            r#"
+            SELECT a.* FROM agents a
+            WHERE a.account_id = ?
+               OR EXISTS (SELECT 1 FROM agent_shares s WHERE s.agent_id = a.id AND s.account_id = ?)
+            ORDER BY a.name ASC
+            "#,
+        )
+        .bind(account_id)
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for agent in rows {
+            let access = self.resolve_agent_access(&agent, account_id).await?;
+            out.push((
+                agent,
+                access.is_owner(),
+                access.can_edit(),
+                access.can_manage_shares(),
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Shares an agent with `account_id`. Idempotent per (agent, account).
+    pub async fn upsert_agent_share(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+        can_edit: bool,
+        can_manage_shares: bool,
+    ) -> Result<AgentShare, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO agent_shares (id, agent_id, account_id, can_edit, can_manage_shares)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(agent_id, account_id)
+            DO UPDATE SET can_edit = excluded.can_edit,
+                          can_manage_shares = excluded.can_manage_shares
+            "#,
+        )
+        .bind(&id)
+        .bind(agent_id)
+        .bind(account_id)
+        .bind(can_edit)
+        .bind(can_manage_shares)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query_as::<_, AgentShare>(
+            "SELECT * FROM agent_shares WHERE agent_id = ? AND account_id = ?",
+        )
+        .bind(agent_id)
+        .bind(account_id)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn update_agent_share(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+        can_edit: Option<bool>,
+        can_manage_shares: Option<bool>,
+    ) -> Result<Option<AgentShare>, sqlx::Error> {
+        let Some(current) = self
+            .get_agent_share(agent_id, account_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let final_edit = can_edit.unwrap_or(current.can_edit);
+        let final_manage = can_manage_shares.unwrap_or(current.can_manage_shares);
+
+        sqlx::query(
+            "UPDATE agent_shares SET can_edit = ?, can_manage_shares = ? WHERE agent_id = ? AND account_id = ?",
+        )
+        .bind(final_edit)
+        .bind(final_manage)
+        .bind(agent_id)
+        .bind(account_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_agent_share(agent_id, account_id).await
+    }
+
+    pub async fn get_agent_share(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+    ) -> Result<Option<AgentShare>, sqlx::Error> {
+        sqlx::query_as::<_, AgentShare>(
+            "SELECT * FROM agent_shares WHERE agent_id = ? AND account_id = ?",
+        )
+        .bind(agent_id)
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Removes a share. Returns false when there was nothing to remove.
+    pub async fn delete_agent_share(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM agent_shares WHERE agent_id = ? AND account_id = ?")
+            .bind(agent_id)
+            .bind(account_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Shares with the granted account, joined with profile info for display.
+    pub async fn list_agent_shares(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+        let rows: Vec<(String, String, Option<String>, Option<String>, bool, bool, Option<chrono::DateTime<chrono::Utc>>)> =
+            sqlx::query_as(
+                r#"
+                SELECT s.account_id, a.username, p.display_name, p.avatar_url,
+                       s.can_edit, s.can_manage_shares, s.created_at
+                FROM agent_shares s
+                JOIN accounts a ON a.id = s.account_id
+                LEFT JOIN profiles p ON p.account_id = s.account_id
+                WHERE s.agent_id = ?
+                ORDER BY a.username ASC
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(account_id, username, display_name, avatar_url, can_edit, can_manage_shares, created_at)| {
+                    serde_json::json!({
+                        "account_id": account_id,
+                        "username": username,
+                        "display_name": display_name,
+                        "avatar_url": avatar_url,
+                        "can_edit": can_edit,
+                        "can_manage_shares": can_manage_shares,
+                        "created_at": created_at,
+                    })
+                },
+            )
+            .collect())
     }
 
     pub async fn get_agent(&self, id: &str) -> Result<Option<Agent>, sqlx::Error> {
@@ -612,7 +878,9 @@ impl Database {
                 p.api_key as api_key,
                 pm.model_id as model_id,
                 pm.name as model_name,
-                pm.config_json as config_json
+                pm.config_json as config_json,
+                pm.params_json as params_json,
+                pm.context_window as context_window
             FROM provider_models pm
             JOIN providers p ON p.id = pm.provider_id
             JOIN agent_providers ap ON ap.provider_model_id = pm.id
@@ -664,7 +932,6 @@ impl Database {
 
     // --- MCP Servers ---
     pub async fn list_mcp_servers(&self, account_id: &str) -> Result<Vec<McpServer>, sqlx::Error> {
-        let _ = self.sync_wasm_mcp_servers(account_id).await;
         sqlx::query_as::<_, McpServer>(
             "SELECT * FROM mcp_servers WHERE account_id = ? ORDER BY name ASC",
         )
@@ -739,16 +1006,6 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
-        if let Some(ext_id) = id.strip_prefix("wasm:") {
-            let _ = sqlx::query("DELETE FROM extensions WHERE id = ?")
-                .bind(ext_id)
-                .execute(&self.pool)
-                .await;
-            let _ = sqlx::query("DELETE FROM extension_kv WHERE extension_id = ?")
-                .bind(ext_id)
-                .execute(&self.pool)
-                .await;
-        }
         let _ = sqlx::query("DELETE FROM extension_kv WHERE extension_id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -938,74 +1195,6 @@ impl Database {
         Ok(())
     }
 
-    // --- Synchronize WASM MCP Servers (Unified Plugins) ---
-    pub async fn sync_wasm_mcp_servers(&self, account_id: &str) -> Result<(), sqlx::Error> {
-        let all_exts = sqlx::query_as::<_, Extension>(
-            "SELECT * FROM extensions WHERE account_id = ? ORDER BY name ASC",
-        )
-        .bind(account_id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        for ext in all_exts {
-            let manifest_val = serde_json::from_str::<serde_json::Value>(&ext.manifest_json)
-                .unwrap_or(serde_json::Value::Null);
-            let mcp = manifest_val.get("mcp");
-            let mcp_id = format!("wasm:{}", ext.id);
-            let server_name = ext
-                .name
-                .trim_end_matches(" (WASM)")
-                .to_string();
-            let server_alias = mcp
-                .and_then(|m| m.get("alias").or_else(|| m.get("server_alias")))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| ext.name.clone());
-            let transport = "wasm_stdio";
-            let url_or_command = format!("wasm://{}", ext.id);
-
-            sqlx::query(
-                r#"
-                INSERT INTO mcp_servers (
-                    id, account_id, name, alias, transport, url_or_command,
-                    version, description, wasm_hash, wasm_binary, manifest_json,
-                    is_active, storage_bytes
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = excluded.name,
-                    alias = excluded.alias,
-                    transport = excluded.transport,
-                    url_or_command = excluded.url_or_command,
-                    version = excluded.version,
-                    description = excluded.description,
-                    wasm_hash = excluded.wasm_hash,
-                    wasm_binary = excluded.wasm_binary,
-                    manifest_json = excluded.manifest_json,
-                    is_active = excluded.is_active,
-                    storage_bytes = excluded.storage_bytes
-                "#,
-            )
-            .bind(&mcp_id)
-            .bind(account_id)
-            .bind(&server_name)
-            .bind(&server_alias)
-            .bind(transport)
-            .bind(&url_or_command)
-            .bind(&ext.version)
-            .bind(&ext.description)
-            .bind(&ext.wasm_hash)
-            .bind(&ext.wasm_binary)
-            .bind(&ext.manifest_json)
-            .bind(ext.is_active)
-            .bind(ext.storage_bytes)
-            .execute(&self.pool)
-            .await?;
-        }
-
-        Ok(())
-    }
-
     pub async fn update_plugin_permissions(
         &self,
         id: &str,
@@ -1025,11 +1214,6 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
-        if let Some(ext_id) = id.strip_prefix("wasm:") {
-            let _ = self.set_extension_active(ext_id, is_active).await;
-        } else {
-            let _ = self.set_extension_active(id, is_active).await;
-        }
         Ok(res.rows_affected() > 0)
     }
 
@@ -1856,136 +2040,7 @@ impl Database {
         Ok(Some(item))
     }
 
-    // --- Extensions & Isolated Host-Managed Storage ---
-    pub async fn list_extensions(
-        &self,
-        account_id: &str,
-    ) -> Result<Vec<ExtensionSummary>, sqlx::Error> {
-        sqlx::query_as::<_, ExtensionSummary>(
-            "SELECT id, account_id, name, version, description, wasm_hash, manifest_json, is_active, storage_bytes, created_at FROM extensions WHERE account_id = ? ORDER BY name ASC"
-        )
-        .bind(account_id)
-        .fetch_all(&self.pool)
-        .await
-    }
-
-    pub async fn list_active_extensions(
-        &self,
-        account_id: &str,
-    ) -> Result<Vec<Extension>, sqlx::Error> {
-        sqlx::query_as::<_, Extension>(
-            "SELECT * FROM extensions WHERE account_id = ? AND is_active = 1 ORDER BY name ASC"
-        )
-        .bind(account_id)
-        .fetch_all(&self.pool)
-        .await
-    }
-
-    pub async fn get_extension(&self, id: &str) -> Result<Option<Extension>, sqlx::Error> {
-        sqlx::query_as::<_, Extension>("SELECT * FROM extensions WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-    }
-
-    pub async fn get_extension_by_hash(
-        &self,
-        wasm_hash: &str,
-    ) -> Result<Option<Extension>, sqlx::Error> {
-        sqlx::query_as::<_, Extension>("SELECT * FROM extensions WHERE wasm_hash = ?")
-            .bind(wasm_hash)
-            .fetch_optional(&self.pool)
-            .await
-    }
-
-    pub async fn upsert_extension(&self, ext: &Extension) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            INSERT INTO extensions (id, account_id, name, version, description, wasm_hash, wasm_binary, manifest_json, is_active, storage_bytes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                name = excluded.name,
-                version = excluded.version,
-                description = excluded.description,
-                wasm_hash = excluded.wasm_hash,
-                wasm_binary = excluded.wasm_binary,
-                manifest_json = excluded.manifest_json,
-                is_active = excluded.is_active,
-                storage_bytes = excluded.storage_bytes
-            "#
-        )
-        .bind(&ext.id)
-        .bind(&ext.account_id)
-        .bind(&ext.name)
-        .bind(&ext.version)
-        .bind(&ext.description)
-        .bind(&ext.wasm_hash)
-        .bind(&ext.wasm_binary)
-        .bind(&ext.manifest_json)
-        .bind(ext.is_active)
-        .bind(ext.storage_bytes)
-        .execute(&self.pool)
-        .await?;
-
-        let _ = self.sync_wasm_mcp_servers(&ext.account_id).await;
-
-        Ok(())
-    }
-
-    pub async fn set_extension_active(
-        &self,
-        id: &str,
-        is_active: bool,
-    ) -> Result<bool, sqlx::Error> {
-        let res = sqlx::query("UPDATE extensions SET is_active = ? WHERE id = ?")
-            .bind(is_active)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        let mcp_id = format!("wasm:{}", id);
-        let _ = sqlx::query("UPDATE mcp_servers SET is_active = ? WHERE id = ? OR id = ?")
-            .bind(is_active)
-            .bind(&mcp_id)
-            .bind(id)
-            .execute(&self.pool)
-            .await;
-        Ok(res.rows_affected() > 0)
-    }
-
-    pub async fn update_extension_storage(
-        &self,
-        id: &str,
-        storage_bytes: i64,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE extensions SET storage_bytes = ? WHERE id = ?")
-            .bind(storage_bytes)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        let mcp_id = format!("wasm:{}", id);
-        let _ = sqlx::query("UPDATE mcp_servers SET storage_bytes = ? WHERE id = ? OR id = ?")
-            .bind(storage_bytes)
-            .bind(&mcp_id)
-            .bind(id)
-            .execute(&self.pool)
-            .await;
-        Ok(())
-    }
-
-    pub async fn delete_extension(&self, id: &str) -> Result<bool, sqlx::Error> {
-        let res = sqlx::query("DELETE FROM extensions WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        let mcp_id = format!("wasm:{}", id);
-        let _ = sqlx::query("DELETE FROM mcp_servers WHERE id = ? OR id = ?")
-            .bind(&mcp_id)
-            .bind(id)
-            .execute(&self.pool)
-            .await;
-        Ok(res.rows_affected() > 0)
-    }
-
+    // --- Isolated Host-Managed Storage ---
     pub async fn list_extension_kv(
         &self,
         extension_id: &str,

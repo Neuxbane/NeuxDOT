@@ -65,7 +65,13 @@
 		}
 	}
 
-	function parseModelItem(model_id: string, name?: string, config_json?: string): FormModelItem {
+	function parseModelItem(
+		model_id: string,
+		name?: string,
+		config_json?: string,
+		params_json?: string,
+		context_window_field?: number
+	): FormModelItem {
 		let context_window: number | undefined;
 		let max_tokens: number | undefined;
 		let temperature: number | undefined = 0.7;
@@ -74,10 +80,14 @@
 		let thinking_budget: number | undefined = 2048;
 		let custom_json = '';
 
-		if (config_json) {
+		// Completion parameters live in params_json; metadata in its own column.
+		// Legacy rows only have config_json, which mixes both, so fall back to it.
+		const source = params_json ?? config_json;
+		if (context_window_field) context_window = Number(context_window_field);
+
+		if (source) {
 			try {
-				const p = JSON.parse(config_json);
-				if (p.context_window) context_window = Number(p.context_window);
+				const p = JSON.parse(source);
 				if (p.max_tokens) max_tokens = Number(p.max_tokens);
 				if (p.temperature !== undefined) temperature = Number(p.temperature);
 				if (p.top_p !== undefined) top_p = Number(p.top_p);
@@ -115,8 +125,10 @@
 	}
 
 	function serializeModelItem(item: FormModelItem): ModelConfigPayload {
+		// Only completion hyperparameters go to the provider. Metadata such as
+		// context_window travels in its own column so it can never be forwarded
+		// to the provider API (which rejects unknown fields).
 		const cfg: Record<string, any> = {};
-		if (item.context_window && !isNaN(item.context_window)) cfg.context_window = item.context_window;
 		if (item.max_tokens && !isNaN(item.max_tokens)) cfg.max_tokens = item.max_tokens;
 		if (item.temperature !== undefined && !isNaN(item.temperature)) cfg.temperature = item.temperature;
 		if (item.top_p !== undefined && !isNaN(item.top_p)) cfg.top_p = item.top_p;
@@ -136,7 +148,9 @@
 		return {
 			model_id: item.model_id,
 			name: item.name?.trim() || undefined,
-			config_json: Object.keys(cfg).length > 0 ? JSON.stringify(cfg) : undefined
+			params_json: Object.keys(cfg).length > 0 ? JSON.stringify(cfg) : undefined,
+			context_window:
+				item.context_window && !isNaN(item.context_window) ? item.context_window : undefined
 		};
 	}
 
@@ -157,7 +171,7 @@
 		formName = p.name;
 		formBaseUrl = p.base_url;
 		formApiKey = p.api_key || '';
-		formModels = (p.models || []).map((m) => parseModelItem(m.model_id, m.name, m.config_json));
+		formModels = (p.models || []).map((m) => parseModelItem(m.model_id, m.name, m.config_json, m.params_json, m.context_window));
 		newModelInput = '';
 		fetchError = null;
 		fetchSuccessMessage = null;
@@ -219,16 +233,23 @@
 		return `${count}`;
 	}
 
-	function getModelBadges(cfgJson?: string): { ctx?: string; think?: string } {
-		if (!cfgJson) return {};
-		try {
-			const p = JSON.parse(cfgJson);
-			const ctx = p.context_window ? `${formatTokens(Number(p.context_window))} ctx` : undefined;
-			const think = p.thinking ? 'thinking' : undefined;
-			return { ctx, think };
-		} catch {
-			return {};
+	/**
+	 * Badges for a model row. `contextWindow` is authoritative now that it has
+	 * its own column; `cfgJson` is only the legacy fallback.
+	 */
+	function getModelBadges(cfgJson?: string, contextWindow?: number): { ctx?: string; think?: string } {
+		let p: Record<string, any> = {};
+		if (cfgJson) {
+			try {
+				p = JSON.parse(cfgJson) ?? {};
+			} catch {
+				p = {};
+			}
 		}
+		const ctxValue = contextWindow ?? p.context_window;
+		const ctx = ctxValue ? `${formatTokens(Number(ctxValue))} ctx` : undefined;
+		const think = p.thinking ? 'thinking' : undefined;
+		return { ctx, think };
 	}
 
 	async function saveProvider() {
@@ -372,7 +393,7 @@
 									{:else}
 										<div class="flex flex-wrap items-center gap-1.5">
 											{#each prov.models.slice(0, 4) as m}
-												{@const badges = getModelBadges(m.config_json)}
+												{@const badges = getModelBadges(m.params_json ?? m.config_json, m.context_window)}
 												<span
 													class="inline-flex items-center gap-1 rounded-lg bg-zinc-100 dark:bg-zinc-800/90 px-2 py-0.5 font-mono text-[11px] font-medium text-zinc-800 dark:text-zinc-200 border border-zinc-200/60 dark:border-zinc-700/60"
 												>

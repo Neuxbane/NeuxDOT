@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -372,4 +372,41 @@ pub async fn change_password_handler(
         .map_err(internal_error)?;
 
     Ok(Json(json!({ "ok": true, "account_id": account.id })))
+}
+
+#[derive(Deserialize)]
+pub struct SearchAccountsQuery {
+    #[serde(default)]
+    pub q: String,
+}
+
+/// `GET /api/accounts/search?q=...`
+///
+/// Deliberately **not** root-only: any signed-in user needs to find someone to
+/// share a bot with. Only non-sensitive fields are returned, so this cannot be
+/// used to enumerate password hashes, roles or creation dates.
+pub async fn search_accounts_handler(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Query(query): Query<SearchAccountsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let rows = state
+        .db
+        .search_accounts_for_sharing(&query.q, 20)
+        .await
+        .map_err(internal_error)?;
+
+    let items: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(account_id, username, display_name, avatar_url)| {
+            json!({
+                "account_id": account_id,
+                "username": username,
+                "display_name": display_name,
+                "avatar_url": avatar_url,
+            })
+        })
+        .collect();
+
+    Ok(Json(items))
 }

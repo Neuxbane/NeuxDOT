@@ -48,7 +48,7 @@ async fn setup() -> TestApp {
     let pool = init_db("sqlite::memory:").await.unwrap();
     let db = Arc::new(Database::new(pool));
 
-    let (root, _) = db.get_or_init_root_account().await.unwrap();
+    let (_root, _) = db.get_or_init_root_account().await.unwrap();
 
     // Two independent accounts -> presets must not leak between them.
     let hash = hash_password("SomePassw0rd").unwrap();

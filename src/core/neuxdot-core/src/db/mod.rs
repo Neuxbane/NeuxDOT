@@ -65,6 +65,22 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE agents ADD COLUMN instruction_preset_id TEXT DEFAULT NULL")
         .execute(&pool)
         .await;
+    // Agent sharing (owner stays agents.account_id).
+    let _ = sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_shares (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            can_edit BOOLEAN NOT NULL DEFAULT 0,
+            can_manage_shares BOOLEAN NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (agent_id, account_id)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await;
     let _ = sqlx::query("ALTER TABLE agent_pushed_messages ADD COLUMN is_consumed BOOLEAN DEFAULT 0")
         .execute(&pool)
         .await;
@@ -126,6 +142,24 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("UPDATE accounts SET role = 'root' WHERE username = 'root'")
         .execute(&pool)
         .await;
+
+    // Model hyperparameters and context window separation
+    let _ = sqlx::query("ALTER TABLE provider_models ADD COLUMN params_json TEXT DEFAULT NULL")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE provider_models ADD COLUMN context_window INTEGER DEFAULT NULL")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query(
+        "UPDATE provider_models SET context_window = CAST(json_extract(config_json, '$.context_window') AS INTEGER) WHERE context_window IS NULL AND config_json IS NOT NULL AND json_valid(config_json) = 1 AND json_extract(config_json, '$.context_window') IS NOT NULL"
+    )
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query(
+        "UPDATE provider_models SET params_json = json_remove(config_json, '$.context_window', '$.name') WHERE params_json IS NULL AND config_json IS NOT NULL AND json_valid(config_json) = 1"
+    )
+    .execute(&pool)
+    .await;
 
     Ok(pool)
 }

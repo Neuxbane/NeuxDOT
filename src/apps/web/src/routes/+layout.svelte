@@ -271,6 +271,9 @@ aria-label="Close navigation"
 								class="shrink-0"
 							/>
 							<span class="truncate font-medium">{agent.name}</span>
+{#if agent.is_owner === false}
+<span class="shrink-0 rounded-full border border-amber-500/20 bg-amber-500/10 px-1 py-0.5 text-[9px] font-mono text-amber-600 dark:text-amber-400" title="Shared with you">S</span>
+{/if}
 						</a>
 
 						<div class="flex items-center gap-1">

@@ -69,10 +69,13 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
             "llama3:8b",
             Some("Llama 3 8B"),
             Some(&config.to_string()),
+            None,
+            None,
         )
         .await?;
     assert_eq!(p_model.model_id, "llama3:8b");
-    assert!(p_model.config_json.unwrap().contains("budget_tokens"));
+    assert!(p_model.config_json.as_ref().unwrap().contains("budget_tokens"));
+    assert!(p_model.params_json.as_ref().unwrap().contains("budget_tokens"));
 
     // 4. External MCP Server Registration
     let mcp = db

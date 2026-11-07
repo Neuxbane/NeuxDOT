@@ -19,8 +19,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
+    // Ensure data directory exists and migrate root neuxdot.sqlite if present
+    let _ = std::fs::create_dir_all("data");
+    if std::path::Path::new("neuxdot.sqlite").exists() && !std::path::Path::new("data/neuxdot.sqlite").exists() {
+        let _ = std::fs::rename("neuxdot.sqlite", "data/neuxdot.sqlite");
+    }
+
     let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite:neuxdot.sqlite?mode=rwc".to_string());
+        .unwrap_or_else(|_| "sqlite:data/neuxdot.sqlite?mode=rwc".to_string());
 
     info!("Connecting to SQLite database: {}", db_url);
     let pool = init_db(&db_url).await?;

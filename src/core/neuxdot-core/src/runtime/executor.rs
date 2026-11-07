@@ -17,7 +17,6 @@ use crate::mcp::client::{McpClientSession, McpNotification, McpTool};
 use crate::mcp::custom_tools::CustomToolsTransport;
 use crate::mcp::http::HttpTransport;
 use crate::mcp::stdio::StdioTransport;
-use crate::mcp::wasm_stdio::WasmStdioTransport;
 
 #[derive(Debug, Clone)]
 pub struct ToolRegistryEntry {
@@ -784,7 +783,7 @@ impl AgentExecutor {
             let (notif_tx, notif_rx) = mpsc::unbounded_channel::<McpNotification>();
 
             let transport: Option<Arc<dyn crate::mcp::client::McpTransport>> =
-                if server.transport == "stdio" {
+                if server.transport == "stdio" || server.transport == "binary" {
                     match StdioTransport::spawn(
                         &server.url_or_command,
                         server.headers_or_env.as_deref(),
@@ -801,27 +800,6 @@ impl AgentExecutor {
                                     server.name, e
                                 ),
                             });
-                            None
-                        }
-                    }
-                } else if server.transport == "wasm_stdio" || server.url_or_command.starts_with("wasm://") {
-                    let ext_id = server.id.strip_prefix("wasm:").unwrap_or(&server.id);
-                    match self.db.get_extension(ext_id).await {
-                        Ok(Some(ext)) => {
-                            let manifest_val: Value = serde_json::from_str(&ext.manifest_json).unwrap_or(Value::Null);
-                            let data_dir = std::path::PathBuf::from("data/extensions");
-                            let _ = std::fs::create_dir_all(&data_dir);
-                            Some(Arc::new(WasmStdioTransport::new(
-                                Arc::clone(&self.db),
-                                ext.id.clone(),
-                                ext.wasm_hash.clone(),
-                                manifest_val,
-                                notif_tx,
-                                data_dir,
-                            )))
-                        }
-                        _ => {
-                            warn!("WASM extension not found for MCP server: {}", server.name);
                             None
                         }
                     }
@@ -1488,7 +1466,7 @@ impl AgentExecutor {
 
                         "call_tool" => {
                             let name = fn_args["name"].as_str().unwrap_or("");
-                            let mut arguments = fn_args.get("arguments").cloned().unwrap_or(json!({}));
+                            let arguments = fn_args.get("arguments").cloned().unwrap_or(json!({}));
 
                             // Optional per-call head/body/tail overrides. Any
                             // omitted segment falls back to the agent default.
@@ -1515,13 +1493,16 @@ impl AgentExecutor {
 
                             match resolve_tool(&tool_registry, name) {
                                 Ok(entry) => {
-                                    // If tool is chat_send, unconditionally route to this agent's actual ID
-                                    if entry.original_tool_name == "chat_send" {
-                                        if let Some(obj) = arguments.as_object_mut() {
-                                            obj.insert("agent_id".to_string(), json!(self.agent.id));
-                                        }
-                                    }
-
+                                    // Arguments are forwarded exactly as the model
+                                    // supplied them. The runtime must not know any
+                                    // plugin's schema; tools that need the caller
+                                    // read the host-stamped `_sender_*` metadata that
+                                    // the HTTP proxy adds.
+                                    //
+                                    // Agent-initiated calls have no authenticated
+                                    // human behind them, so nothing is stamped here
+                                    // and plugins must treat a missing sender as
+                                    // "the agent itself".
                                     if let Some(session) = sessions.get(&entry.server_id) {
                                         match session.call_tool(&entry.original_tool_name, arguments).await {
                                             Ok(res) => (res, true),

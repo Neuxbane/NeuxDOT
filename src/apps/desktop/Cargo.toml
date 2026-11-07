@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lib]
+# Tauri mobile (Android/iOS) requires a cdylib/staticlib library target.
+# `rlib` keeps the desktop binary able to link against it.
+name = "neuxdot_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -12,5 +18,5 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-neuxdot-core = { path = "../crates/neuxdot-core" }
+neuxdot-core = { path = "../../core/neuxdot-core" }
 tokio = { workspace = true }

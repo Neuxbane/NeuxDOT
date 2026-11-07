@@ -4,8 +4,6 @@
 		type McpServer,
 		type Agent,
 		type PluginPermissions,
-		type ExtensionKvEntry,
-		type ExtensionStorageInfo,
 		type CustomToolDef
 	} from '$lib/api';
 	import { parseCurlCommand, type ParsedCurlTool } from '$lib/utils/curlParser';
@@ -32,12 +30,14 @@
 		Upload,
 		Database,
 		Layers,
+		Binary,
 		Terminal,
 		Globe,
 		Code2,
 		Play,
 		RefreshCw,
-		Wrench
+		Wrench,
+		ShieldCheck
 	} from 'lucide-svelte';
 
 	let servers = $state<McpServer[]>([]);
@@ -49,16 +49,15 @@
 
 	let formName = $state('');
 	let formAlias = $state('');
-	let formTransport = $state<'stdio' | 'http' | 'wasm' | 'custom_tools'>('stdio');
-	let formUrlOrCommand = $state('node ./mcp-tools/server.js');
+	let formTransport = $state<'stdio' | 'binary' | 'http' | 'custom_tools'>('binary');
+	let formUrlOrCommand = $state('');
 	let formHeadersOrEnv = $state('');
-	let formPermissions = $state<PluginPermissions>(permissionsFromManifest(null, 'stdio'));
+	let formPermissions = $state<PluginPermissions>(permissionsFromManifest(null, 'binary'));
 
 	/**
 	 * What the plugin declares it needs. Derived for display only — users cannot
 	 * toggle grants here; the manifest is the single source of truth.
 	 */
-	const formRequiredAccess = $derived(requiredAccessList(formPermissions));
 	let formIsActive = $state(true);
 	let isSaving = $state(false);
 
@@ -143,25 +142,18 @@
 		}
 	}
 
-	// WASM Upload / URL installation state inside Add Plugin modal
-	let wasmUrl = $state('');
-	let wasmInspectPending = $state<{
-		file: File;
-		id: string;
-		name: string;
-		version: string;
-		description?: string;
-		wasm_hash: string;
-		manifest: any;
-		existing: any | null;
+	// Binary Upload state inside Add Plugin modal
+	let isUploadingBinary = $state(false);
+	let uploadedBinaryInfo = $state<{
+		path: string;
+		filename: string;
+		size: number;
+		suggested_name: string;
+		suggested_alias: string;
 	} | null>(null);
-	let isInspectingWasm = $state(false);
 
-	// Storage / KV Inspector drawer for WASM plugins
-	let selectedStoragePlugin = $state<McpServer | null>(null);
-	let storageInfo = $state<ExtensionStorageInfo | null>(null);
-	let kvEntries = $state<ExtensionKvEntry[]>([]);
-	let loadingStorage = $state(false);
+	/** Plugin whose required-access drawer is open. */
+	let accessPlugin = $state<McpServer | null>(null);
 
 	$effect(() => {
 		loadData();
@@ -231,13 +223,13 @@ return permissionsForServer(srv);
 		editingServer = null;
 		formName = '';
 		formAlias = '';
-		formTransport = 'stdio';
-		formUrlOrCommand = 'node ./mcp-tools/server.js';
+		formTransport = 'binary';
+		formUrlOrCommand = '';
 		formHeadersOrEnv = '';
-		formPermissions = parsePermissionsFromManifest(null, 'stdio');
+		formPermissions = parsePermissionsFromManifest(null, 'binary');
 		formIsActive = true;
-		wasmInspectPending = null;
-		wasmUrl = '';
+		uploadedBinaryInfo = null;
+		isUploadingBinary = false;
 		customTools = [];
 		sessionVariables = {};
 		addCustomTool();
@@ -249,8 +241,8 @@ return permissionsForServer(srv);
 		formName = s.name;
 		formAlias = s.alias || '';
 		formTransport =
-			s.transport === 'wasm_stdio'
-				? 'wasm'
+			s.transport === 'binary'
+				? 'binary'
 				: s.transport === 'custom_tools' || s.transport === 'curl'
 					? 'custom_tools'
 					: (s.transport as 'stdio' | 'http');
@@ -258,7 +250,8 @@ return permissionsForServer(srv);
 		formHeadersOrEnv = s.headers_or_env || '';
 		formPermissions = parsePermissions(s);
 		formIsActive = s.is_active !== false;
-		wasmInspectPending = null;
+		uploadedBinaryInfo = null;
+		isUploadingBinary = false;
 		customTools = [];
 		sessionVariables = {};
 		if (formTransport === 'custom_tools') {
@@ -266,14 +259,25 @@ return permissionsForServer(srv);
 				const m = JSON.parse(s.url_or_command);
 				if (m.tools && Array.isArray(m.tools)) {
 					customTools = m.tools.map((t: any, idx: number) => {
-						const reconstructedCurl = `${t.captures?.cookies ? `${t.captures.cookies}=$(` : ''}curl -s -X ${t.method} "${t.url}"${Object.entries(t.headers || {})
+						const reconstructedCurl = `${t.captures?.cookies ? `${t.captures.cookies}=$(curl -s` : 'curl -s'} -X ${t.method} "${t.url}"${Object.entries(t.headers || {})
 							.map(([k, v]) => ` \\\n  -H "${k}: ${v}"`)
 							.join('')}${t.cookie_expression ? ` \\\n  -b "${t.cookie_expression}"` : ''}${t.captures?.cookies ? ` \\\n  -c -` : ''}${t.body ? ` \\\n  -d '${t.body}'` : ''}${t.captures?.cookies ? ')' : ''}`;
+						// Stored tools are `CustomToolDef` JSON. They have no `variables` /
+						// `session_variables` / `input_schema` shape, so using them directly as a
+						// `ParsedCurlTool` breaks the editor (it reads `.variables.length`).
+						// Re-parse the curl we just rebuilt, then restore what the parser
+						// cannot infer (saved name, description and schema).
+						const parsed = parseCurlCommand(reconstructedCurl, idx);
+						if (typeof t.name === 'string') parsed.name = t.name;
+						if (typeof t.description === 'string') parsed.description = t.description;
+						if (t.input_schema) parsed.input_schema = t.input_schema;
+						const testArgs: Record<string, string> = {};
+						for (const v of parsed.variables) testArgs[v.name] = '';
 						return {
 							id: 'tool_' + Math.random().toString(36).substring(2, 9),
 							rawCurl: reconstructedCurl,
-							parsed: t,
-							testArgs: {},
+							parsed,
+							testArgs,
 							testResult: null,
 							isTesting: false
 						};
@@ -289,98 +293,31 @@ return permissionsForServer(srv);
 	}
 
 
-	async function handleWasmFileSelected(event: Event) {
+	async function handleBinaryFileSelected(event: Event) {
 		const input = event.target as HTMLInputElement;
 		const file = input.files?.[0];
-		input.value = '';
 		if (!file) return;
 
-		isInspectingWasm = true;
+		isUploadingBinary = true;
 		try {
-			const info = await api.plugins.inspectWasm(file);
-			wasmInspectPending = { file, ...info };
-			formPermissions = parsePermissionsFromManifest(info.manifest, 'wasm');
-		} catch (e: any) {
-			alert('Failed to inspect WASM plugin: ' + (e.message || e));
+			const res = await api.plugins.uploadBinary(file);
+			uploadedBinaryInfo = res;
+			formUrlOrCommand = res.path;
+			if (!formName) {
+				formName = res.suggested_name;
+			}
+			if (!formAlias) {
+				formAlias = res.suggested_alias;
+			}
+		} catch (err: any) {
+			alert('Failed to upload binary: ' + (err?.message || String(err)));
 		} finally {
-			isInspectingWasm = false;
-		}
-	}
-
-	async function confirmInstallWasmFile() {
-		if (!wasmInspectPending) return;
-		isSaving = true;
-		try {
-			await api.plugins.uploadWasm(wasmInspectPending.file);
-			await loadData();
-			wasmInspectPending = null;
-			isModalOpen = false;
-		} catch (e: any) {
-			alert('Failed to install/update WASM plugin: ' + (e.message || e));
-		} finally {
-			isSaving = false;
-		}
-	}
-
-	async function installWasmFromUrl() {
-		if (!wasmUrl.trim()) return;
-		isSaving = true;
-		try {
-			await api.plugins.installWasmUrl(wasmUrl.trim());
-			await loadData();
-			wasmUrl = '';
-			isModalOpen = false;
-		} catch (e: any) {
-			alert('Failed to install/update WASM plugin from URL: ' + (e.message || e));
-		} finally {
-			isSaving = false;
+			isUploadingBinary = false;
+			input.value = '';
 		}
 	}
 
 	async function saveServer() {
-		// Fold the key-prefix text box back into the grants before persisting.
-		if (formTransport === 'wasm') {
-			if (wasmInspectPending) {
-				await confirmInstallWasmFile();
-				if (editingServer) {
-					await api.mcp.update(editingServer.id, {
-						alias: formAlias.trim() || undefined,
-						is_active: formIsActive,
-						permissions: formPermissions
-					});
-					await loadData();
-				}
-				return;
-			} else if (wasmUrl.trim()) {
-				await installWasmFromUrl();
-				if (editingServer) {
-					await api.mcp.update(editingServer.id, {
-						alias: formAlias.trim() || undefined,
-						is_active: formIsActive,
-						permissions: formPermissions
-					});
-					await loadData();
-				}
-				return;
-			} else if (editingServer) {
-				isSaving = true;
-				try {
-					const updated = await api.mcp.update(editingServer.id, {
-						alias: formAlias.trim() || undefined,
-						is_active: formIsActive,
-						permissions: formPermissions
-					});
-					servers = servers.map((s) => (s.id === updated.id ? updated : s));
-					isModalOpen = false;
-				} catch (e) {
-					alert('Failed to update WASM plugin: ' + e);
-				} finally {
-					isSaving = false;
-				}
-				return;
-			}
-			return;
-		}
 		if (formTransport === 'custom_tools') {
 			if (!formName.trim() || customTools.length === 0) return;
 			const manifest = {
@@ -406,7 +343,7 @@ return permissionsForServer(srv);
 				const updated = await api.mcp.update(editingServer.id, {
 					name: formName.trim(),
 					alias: formAlias.trim() || undefined,
-					transport: editingServer.transport === 'wasm_stdio' ? 'wasm_stdio' : formTransport,
+					transport: formTransport,
 					url_or_command: formUrlOrCommand.trim(),
 					headers_or_env: formHeadersOrEnv.trim() || undefined,
 					is_active: formIsActive,
@@ -438,37 +375,8 @@ return permissionsForServer(srv);
 		try {
 			await api.mcp.delete(id);
 			servers = servers.filter((s) => s.id !== id);
-			if (selectedStoragePlugin?.id === id) {
-				selectedStoragePlugin = null;
-			}
 		} catch (e) {
 			alert('Failed to delete plugin: ' + e);
-		}
-	}
-
-	async function inspectWasmStorage(srv: McpServer) {
-		selectedStoragePlugin = srv;
-		loadingStorage = true;
-		try {
-			const [sInfo, kvs] = await Promise.all([
-				api.plugins.getStorage(srv.id),
-				api.plugins.getKv(srv.id)
-			]);
-			storageInfo = sInfo;
-			kvEntries = kvs;
-		} catch (e) {
-			console.error('Failed to load plugin storage:', e);
-		} finally {
-			loadingStorage = false;
-		}
-	}
-
-	async function deleteKvEntry(pluginId: string, key: string) {
-		try {
-			await api.plugins.deleteKvKey(pluginId, key);
-			kvEntries = kvEntries.filter((k) => k.key !== key);
-		} catch (e) {
-			alert('Failed to delete KV key: ' + e);
 		}
 	}
 
@@ -517,7 +425,7 @@ return permissionsForServer(srv);
 				</div>
 				<h3 class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">No Plugins Installed</h3>
 				<p class="mt-1 max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
-					Install a sandboxed WASM MCP-App binary, attach a local stdio process, or connect a remote Streamable HTTP MCP server.
+					Install a native binary MCP server, attach a local stdio process, or connect a remote Streamable HTTP MCP server.
 				</p>
 				<button
 					type="button"
@@ -535,7 +443,6 @@ return permissionsForServer(srv);
 							<th class="p-2.5 pl-3 md:p-3 md:pl-4">Plugin &amp; UI Hooks</th>
 							<th class="p-2.5 md:p-3">Status</th>
 							<th class="hidden p-3 md:table-cell">Runtime</th>
-							<th class="hidden p-3 md:table-cell">Permissions</th>
 							<th class="hidden p-3 md:table-cell">Source / Target</th>
 							<th class="p-2.5 pr-3 md:p-3 md:pr-4 text-right">Actions</th>
 						</tr>
@@ -563,10 +470,10 @@ return permissionsForServer(srv);
 											{#if srv.headers_or_env}
 												<span
 													class="inline-flex items-center gap-1 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-mono text-emerald-600 dark:text-emerald-400"
-													title={srv.transport === 'http' ? 'Custom HTTP Headers / Auth configured' : 'Custom Environment Variables configured'}
+													title={srv.transport === 'http' ? 'Custom HTTP Headers / Auth configured' : srv.transport === 'binary' ? 'Command Arguments configured' : 'Custom Environment Variables configured'}
 												>
 													<Key class="h-2.5 w-2.5" />
-													<span>{srv.transport === 'http' ? 'Auth' : 'Env'}</span>
+													<span>{srv.transport === 'http' ? 'Auth' : srv.transport === 'binary' ? 'Args' : 'Env'}</span>
 												</span>
 											{/if}
 										</div>
@@ -618,98 +525,9 @@ return permissionsForServer(srv);
 								</td>
 								<td class="hidden md:table-cell p-3">
 									<div class="flex flex-col items-start gap-1">
-										<span class="rounded-full px-2 py-0.5 text-[10px] font-mono uppercase {srv.transport === 'wasm_stdio' ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20' : srv.transport === 'custom_tools' || srv.transport === 'curl' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : srv.transport === 'stdio' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20' : 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20'}">
-											{srv.transport === 'wasm_stdio' ? 'WASM' : srv.transport === 'custom_tools' || srv.transport === 'curl' ? 'CUSTOM cURL' : srv.transport}
+										<span class="rounded-full px-2 py-0.5 text-[10px] font-mono uppercase {srv.transport === 'binary' ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20' : srv.transport === 'custom_tools' || srv.transport === 'curl' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : srv.transport === 'stdio' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20' : 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20'}">
+											{srv.transport === 'binary' ? 'BINARY' : srv.transport === 'custom_tools' || srv.transport === 'curl' ? 'CUSTOM cURL' : srv.transport === 'stdio' ? 'STDIO' : srv.transport}
 										</span>
-										{#if srv.transport === 'wasm_stdio'}
-											<span class="text-[10px] text-zinc-400 font-mono">
-												{formatBytes(srv.storage_bytes || 0)}
-											</span>
-										{/if}
-									</div>
-								</td>
-								<td class="hidden md:table-cell p-3">
-									<div class="flex flex-wrap items-center gap-1">
-										{#if perms.ui.enabled}
-											<span
-												class="rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 px-2 py-0.5 text-[10px] font-medium"
-												title="{perms.ui.resources.length && !perms.ui.resources.includes('*') ? `Renders MCP-App views: ${perms.ui.resources.join(', ')}` : 'Renders MCP-App UI views (ui:// resources)'}"
-											>
-												UI Hook
-											</span>
-										{/if}
-										{#if perms.storage.get || perms.storage.set || perms.storage.delete}
-											<span
-												class="rounded-md border border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300 px-2 py-0.5 text-[10px] font-medium"
-												title="{`Isolated storage: ${[perms.storage.get ? 'read' : null, perms.storage.set ? 'write' : null, perms.storage.delete ? 'delete' : null].filter(Boolean).join(' / ')}${perms.storage.keys && perms.storage.keys.length ? ` (keys: ${perms.storage.keys.join(', ')}*)` : ' (all keys)'}`}"
-											>
-												Storage
-											</span>
-										{/if}
-										{#if perms.process}
-											<span
-												class="rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300 px-2 py-0.5 text-[10px] font-medium"
-												title="Spawns a local OS child process"
-											>
-												Process
-											</span>
-										{/if}
-										{#if perms.network}
-											<span
-												class="rounded-md border border-purple-500/30 bg-purple-500/10 text-purple-600 dark:text-purple-300 px-2 py-0.5 text-[10px] font-medium"
-												title="Makes outbound HTTP/SSE network requests"
-											>
-												Network
-											</span>
-										{/if}
-										{#if perms.agent.trigger}
-											<span
-												class="rounded-md border border-zinc-400/30 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300 px-2 py-0.5 text-[10px] font-medium"
-												title="Can start an agent turn with text it composes"
-											>
-												Agent Trigger
-											</span>
-										{/if}
-										{#if perms.agent.tools}
-											<span
-												class="rounded-md border border-zinc-400/30 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300 px-2 py-0.5 text-[10px] font-medium"
-												title="Exposes its tools to the agent loop"
-											>
-												Agent Tools
-											</span>
-										{/if}
-										{#if perms.identity['agent.name']}
-											<span
-												class="rounded-md border border-teal-500/30 bg-teal-500/10 text-teal-600 dark:text-teal-300 px-2 py-0.5 text-[10px] font-medium"
-												title="Sends the bound agent&#39;s display name into the plugin UI"
-											>
-												Agent Name
-											</span>
-										{/if}
-										{#if perms.identity['agent.profile_picture']}
-											<span
-												class="rounded-md border border-teal-500/30 bg-teal-500/10 text-teal-600 dark:text-teal-300 px-2 py-0.5 text-[10px] font-medium"
-												title="Sends the bound agent&#39;s profile picture into the plugin UI"
-											>
-												Agent Picture
-											</span>
-										{/if}
-										{#if perms.identity['user.name']}
-											<span
-												class="rounded-md border border-teal-500/30 bg-teal-500/10 text-teal-600 dark:text-teal-300 px-2 py-0.5 text-[10px] font-medium"
-												title="Sends your display name into the plugin UI"
-											>
-												Your Name
-											</span>
-										{/if}
-										{#if perms.identity['user.profile_picture']}
-											<span
-												class="rounded-md border border-teal-500/30 bg-teal-500/10 text-teal-600 dark:text-teal-300 px-2 py-0.5 text-[10px] font-medium"
-												title="Sends your profile picture into the plugin UI"
-											>
-												Your Picture
-											</span>
-										{/if}
 									</div>
 								</td>
 								<td class="hidden md:table-cell p-3 font-mono text-[11px] text-zinc-500 dark:text-zinc-400 max-w-xs truncate" title={srv.url_or_command}>
@@ -717,33 +535,20 @@ return permissionsForServer(srv);
 								</td>
 								<td class="p-2.5 pr-3 md:p-3 md:pr-4 text-right">
 									<div class="flex items-center justify-end gap-1.5">
-										{#if srv.transport === 'wasm_stdio'}
-											<button
-												type="button"
-												class="flex items-center gap-1 rounded-lg bg-indigo-500/10 border border-indigo-500/25 px-2 py-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/20 transition-colors"
-												onclick={() => openEditModal(srv)}
-												title="Update or re-upload WASM binary"
-											>
-												<RefreshCw class="h-3 w-3 text-indigo-500" />
-												<span>Update</span>
-											</button>
-											<button
-												type="button"
-												class="flex items-center gap-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 px-2 py-1 text-[11px] font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
-												onclick={() => inspectWasmStorage(srv)}
-												title="Inspect isolated WASM KV & storage"
-											>
-												<Database class="h-3 w-3 text-sky-500" />
-												<span>Data</span>
-											</button>
-										{/if}
-
-
+										<button
+											type="button"
+											class="inline-flex items-center gap-1 rounded-lg border border-zinc-200 dark:border-zinc-700 px-2 py-1 text-[11px] font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+											onclick={() => (accessPlugin = srv)}
+											title="See what access this plugin requires"
+										>
+											<ShieldCheck class="h-3 w-3 text-emerald-500" />
+											<span>Access</span>
+										</button>
 										<button
 											type="button"
 											class="rounded-lg p-1 text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-zinc-800 dark:hover:text-white transition-colors"
 											onclick={() => openEditModal(srv)}
-											title="Edit Plugin & Permissions"
+											title="Edit Plugin"
 										>
 											<Edit3 class="h-3.5 w-3.5" />
 										</button>
@@ -764,62 +569,50 @@ return permissionsForServer(srv);
 			</section>
 		{/if}
 
-		<!-- WASM Storage & KV Inspector Drawer -->
-		{#if selectedStoragePlugin}
-			<section class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/60 p-5 shadow-xs space-y-4">
-				<div class="flex items-center justify-between border-b border-zinc-200/60 dark:border-zinc-800 pb-3">
-					<div class="flex items-center gap-2">
-						<Database class="h-4 w-4 text-sky-500" />
-						<h3 class="text-xs font-semibold text-zinc-900 dark:text-white">
-							Isolated Storage &amp; KV Inspector — {selectedStoragePlugin.name}
-						</h3>
-						{#if storageInfo}
-							<span class="rounded bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 font-mono text-[10px] text-zinc-500">
-								sha256: {storageInfo.wasm_hash.slice(0, 12)}... ({formatBytes(storageInfo.total_storage_bytes)})
-							</span>
-						{/if}
-					</div>
-					<button
-						type="button"
-						class="text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-white"
-						onclick={() => (selectedStoragePlugin = null)}
-					>
-						Close
-					</button>
-				</div>
+<!-- Required Access drawer: what this plugin is allowed to touch -->
+{#if accessPlugin}
+{@const accessItems = requiredAccessList(parsePermissions(accessPlugin))}
+<section class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/60 p-5 shadow-xs space-y-4">
+<div class="flex items-center justify-between border-b border-zinc-200/60 dark:border-zinc-800 pb-3">
+<div class="flex items-center gap-2">
+<ShieldCheck class="h-4 w-4 text-emerald-500" />
+<h3 class="text-xs font-semibold text-zinc-900 dark:text-white">
+Required Access — {accessPlugin.name}
+</h3>
+{#if accessPlugin.version}
+<span class="rounded bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 font-mono text-[10px] text-zinc-500">v{accessPlugin.version}</span>
+{/if}
+</div>
+<button
+type="button"
+class="text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-white"
+onclick={() => (accessPlugin = null)}
+>
+Close
+</button>
+</div>
 
-				{#if loadingStorage}
-					<div class="py-6 text-center text-xs text-zinc-400">Loading plugin storage...</div>
-				{:else}
-					<div class="space-y-2">
-						<div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-							Key-Value Entries ({kvEntries.length})
-						</div>
-						{#if kvEntries.length === 0}
-							<p class="text-xs text-zinc-500 italic">No KV entries stored by this plugin.</p>
-						{:else}
-							<div class="divide-y divide-zinc-200/60 dark:divide-zinc-800 rounded-xl border border-zinc-200/80 dark:border-zinc-800">
-								{#each kvEntries as entry (entry.key)}
-									<div class="flex items-start justify-between gap-4 p-3 text-xs">
-										<div class="min-w-0 flex-1">
-											<div class="font-mono font-semibold text-indigo-600 dark:text-indigo-400">{entry.key}</div>
-											<pre class="mt-1 overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-zinc-600 dark:text-zinc-300">{entry.value}</pre>
-										</div>
-										<button
-											type="button"
-											onclick={() => selectedStoragePlugin && deleteKvEntry(selectedStoragePlugin.id, entry.key)}
-											class="rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-500 hover:bg-rose-500/20"
-										>
-											Delete Key
-										</button>
-									</div>
-								{/each}
-							</div>
-						{/if}
-					</div>
-				{/if}
-			</section>
-		{/if}
+{#if accessItems.length === 0}
+<p class="text-xs text-zinc-500 dark:text-zinc-400">
+This plugin requests no access. It runs in isolation and cannot read storage, the network, or the agent.
+</p>
+{:else}
+<ul class="space-y-2">
+{#each accessItems as item (item.group + item.scope)}
+<li class="flex flex-col gap-0.5 rounded-xl border border-zinc-200/70 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 px-3 py-2">
+<div class="flex flex-wrap items-center gap-2">
+<span class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+{item.group}
+</span>
+<span class="font-mono text-[10px] text-zinc-500 dark:text-zinc-400">{item.scope}</span>
+</div>
+<p class="text-[11px] text-zinc-600 dark:text-zinc-400">{item.description}</p>
+</li>
+{/each}
+</ul>
+{/if}
+</section>
+{/if}
 	</main>
 </div>
 
@@ -875,19 +668,25 @@ return permissionsForServer(srv);
 							<button
 								type="button"
 								onclick={() => {
-									formTransport = 'wasm';
-									formPermissions = parsePermissionsFromManifest(wasmInspectPending?.manifest, 'wasm');
+									formTransport = 'binary';
+									formPermissions = parsePermissionsFromManifest(null, 'binary');
+									if (!uploadedBinaryInfo) {
+										formUrlOrCommand = '';
+									}
 								}}
-								class="flex flex-col items-center gap-1 rounded-xl border p-2.5 text-xs font-medium transition-all cursor-pointer {formTransport === 'wasm' ? 'border-indigo-500 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300' : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400'}"
+								class="flex flex-col items-center gap-1 rounded-xl border p-2.5 text-xs font-medium transition-all cursor-pointer {formTransport === 'binary' ? 'border-purple-500 bg-purple-500/10 text-purple-600 dark:text-purple-300' : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400'}"
 							>
-								<Layers class="h-4 w-4" />
-								<span>WASM Binary</span>
+								<Binary class="h-4 w-4" />
+								<span>Binary</span>
 							</button>
 							<button
 								type="button"
 								onclick={() => {
 									formTransport = 'stdio';
 									formPermissions = parsePermissionsFromManifest(null, 'stdio');
+									if (!formUrlOrCommand || formUrlOrCommand.startsWith('data/binaries/')) {
+										formUrlOrCommand = 'node ./mcp-tools/server.js';
+									}
 								}}
 								class="flex flex-col items-center gap-1 rounded-xl border p-2.5 text-xs font-medium transition-all cursor-pointer {formTransport === 'stdio' ? 'border-amber-500 bg-amber-500/10 text-amber-600 dark:text-amber-300' : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400'}"
 							>
@@ -921,67 +720,7 @@ return permissionsForServer(srv);
 					</div>
 				{/if}
 
-				{#if formTransport === 'wasm'}
-					<!-- WASM Upload or URL -->
-					<div class="space-y-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/30 p-4">
-						{#if editingServer}
-							<div class="rounded-xl border border-zinc-200 dark:border-zinc-700/60 bg-white dark:bg-zinc-900 p-3 text-xs space-y-1.5">
-								<div class="flex items-center justify-between">
-									<div class="flex items-center gap-2">
-										<Layers class="h-4 w-4 text-indigo-500" />
-										<span class="font-semibold text-zinc-900 dark:text-zinc-100">Installed Binary</span>
-										<span class="rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 px-1.5 py-0.2 font-mono text-[10px]">v{editingServer.version || '1.0.0'}</span>
-									</div>
-									<span class="text-[10px] text-zinc-400 font-mono">Storage: {formatBytes(editingServer.storage_bytes || 0)}</span>
-								</div>
-								{#if editingServer.wasm_hash}
-									<div class="text-[10px] font-mono text-zinc-400 dark:text-zinc-500 truncate" title={editingServer.wasm_hash}>
-										Hash: {editingServer.wasm_hash}
-									</div>
-								{/if}
-							</div>
-						{/if}
-
-						<label class="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 dark:border-zinc-700 p-4 text-center cursor-pointer hover:border-indigo-500 transition-colors bg-white/50 dark:bg-zinc-900/50">
-							<Upload class="h-5 w-5 text-indigo-500" />
-							<span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">
-								{isInspectingWasm ? 'Inspecting WASM binary...' : editingServer ? 'Select New .wasm Binary to Update / Upgrade' : 'Select .wasm Plugin File'}
-							</span>
-							<span class="text-[11px] text-zinc-400">Exports get_manifest &amp; mcp_handle_request</span>
-							<input type="file" accept=".wasm" onchange={handleWasmFileSelected} class="hidden" />
-						</label>
-
-						{#if wasmInspectPending}
-							<div class="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3 text-xs space-y-1">
-								<div class="flex items-center justify-between">
-									<span class="font-semibold text-indigo-300">Ready to update: {wasmInspectPending.name} v{wasmInspectPending.version}</span>
-									<span class="font-mono text-[10px] text-indigo-400">id: {wasmInspectPending.id}</span>
-								</div>
-								{#if wasmInspectPending.description}
-									<p class="text-[11px] text-zinc-300">{wasmInspectPending.description}</p>
-								{/if}
-								{#if wasmInspectPending.manifest?.mcp?.resources?.length}
-									<div class="pt-1 text-[11px] text-emerald-300">
-										MCP-App UI Hooks: {wasmInspectPending.manifest.mcp.resources.map((r: any) => r.uri).join(', ')}
-									</div>
-								{/if}
-							</div>
-						{/if}
-
-						<div class="relative flex py-1 items-center">
-							<div class="grow border-t border-zinc-200 dark:border-zinc-800"></div>
-							<span class="shrink mx-2 text-[10px] uppercase text-zinc-400">{editingServer ? 'Or update from URL' : 'Or install via URL'}</span>
-							<div class="grow border-t border-zinc-200 dark:border-zinc-800"></div>
-						</div>
-
-						<input
-							type="text"
-							bind:value={wasmUrl}
-							placeholder="https://example.com/plugin.wasm"
-							class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-white dark:bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-900 dark:text-white"
-						/>
-					</div>
-				{:else if formTransport === 'custom_tools'}
+				{#if formTransport === 'custom_tools'}
 					<!-- Custom Tools (cURL / HTTP Multi-Tool Builder) -->
 					<div class="space-y-4">
 						<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1122,9 +861,9 @@ return permissionsForServer(srv);
 										<span class="font-mono text-zinc-700 dark:text-zinc-300 break-all">{currentTool.parsed.url || 'No URL specified'}</span>
 									</div>
 
-									{#if currentTool.parsed.cookie_expression || currentTool.parsed.captures.cookies}
+									{#if currentTool.parsed.cookie_expression || currentTool.parsed.captures?.cookies}
 										<div class="flex flex-wrap items-center gap-2 pt-1 border-t border-zinc-100 dark:border-zinc-800 text-[11px]">
-											{#if currentTool.parsed.captures.cookies}
+											{#if currentTool.parsed.captures?.cookies}
 												<span class="inline-flex items-center gap-1 rounded bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-amber-700 dark:text-amber-300 font-mono text-[10px]">
 													Captures &rarr; ${currentTool.parsed.captures.cookies}
 												</span>
@@ -1138,7 +877,7 @@ return permissionsForServer(srv);
 									{/if}
 
 									<!-- Detected LLM Arguments -->
-									{#if currentTool.parsed.variables.length > 0}
+									{#if currentTool.parsed.variables?.length > 0}
 										<div class="pt-2 border-t border-zinc-100 dark:border-zinc-800 space-y-1.5">
 											<div class="text-[10px] font-semibold uppercase text-zinc-400">
 												Agent Input Arguments (auto-exposed in tool schema)
@@ -1176,7 +915,7 @@ return permissionsForServer(srv);
 											</button>
 										</div>
 
-										{#if currentTool.parsed.variables.length > 0}
+										{#if currentTool.parsed.variables?.length > 0}
 											<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
 												{#each currentTool.parsed.variables as v}
 													<div>
@@ -1184,7 +923,8 @@ return permissionsForServer(srv);
 														<input
 															id="test-{v.name}"
 															type="text"
-															bind:value={currentTool.testArgs[v.name]}
+															value={currentTool.testArgs[v.name] ?? ''}
+											oninput={(e) => (currentTool.testArgs[v.name] = (e.currentTarget as HTMLInputElement).value)}
 															placeholder={`e.g. sample_${v.name}`}
 															class="w-full rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 px-2.5 py-1 text-xs font-mono text-zinc-900 dark:text-white"
 														/>
@@ -1214,6 +954,45 @@ return permissionsForServer(srv);
 						{/if}
 					</div>
 				{:else}
+					{#if formTransport === 'binary'}
+						<!-- Upload Native Binary Section -->
+						<div class="space-y-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/30 p-4">
+							{#if editingServer}
+								<div class="rounded-xl border border-zinc-200 dark:border-zinc-700/60 bg-white dark:bg-zinc-900 p-3 text-xs space-y-1.5">
+									<div class="flex items-center justify-between">
+										<div class="flex items-center gap-2">
+											<Binary class="h-4 w-4 text-purple-500" />
+											<span class="font-semibold text-zinc-900 dark:text-zinc-100">Installed Binary</span>
+											<span class="rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 px-1.5 py-0.2 font-mono text-[10px]">v{editingServer.version || '1.0.0'}</span>
+										</div>
+									</div>
+									<div class="text-[10px] font-mono text-zinc-400 dark:text-zinc-500 truncate" title={editingServer.url_or_command}>
+										Server Path: {editingServer.url_or_command}
+									</div>
+								</div>
+							{/if}
+
+							<label class="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 dark:border-zinc-700 p-4 text-center cursor-pointer hover:border-purple-500 transition-colors bg-white/50 dark:bg-zinc-900/50">
+								<Upload class="h-5 w-5 text-purple-500" />
+								<span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">
+									{isUploadingBinary ? 'Uploading binary to server...' : editingServer ? 'Choose New Binary File to Replace / Upgrade' : 'Choose / Upload Native Binary File'}
+								</span>
+								<span class="text-[11px] text-zinc-400">Upload executable to server (saved to data/binaries/ with executable permissions)</span>
+								<input type="file" onchange={handleBinaryFileSelected} class="hidden" disabled={isUploadingBinary} />
+							</label>
+
+							{#if uploadedBinaryInfo}
+								<div class="rounded-xl border border-purple-500/30 bg-purple-500/10 p-3 text-xs space-y-1">
+									<div class="flex items-center justify-between">
+										<span class="font-semibold text-purple-300">Ready to run: {uploadedBinaryInfo.filename}</span>
+										<span class="font-mono text-[10px] text-purple-400">{formatBytes(uploadedBinaryInfo.size)}</span>
+									</div>
+									<div class="text-[11px] font-mono text-zinc-300">Server Path: {uploadedBinaryInfo.path}</div>
+								</div>
+							{/if}
+						</div>
+					{/if}
+
 					<div>
 						<label for="mcp-name" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">Plugin Name</label>
 						<input
@@ -1238,25 +1017,34 @@ return permissionsForServer(srv);
 						/>
 					</div>
 
-					{#if editingServer?.transport !== 'wasm_stdio'}
+					{#if formTransport !== 'binary'}
 						<div>
-							<label for="mcp-cmd" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-								{formTransport === 'stdio' ? 'Binary / Command + Arguments' : 'Streamable HTTP / SSE Endpoint URL'}
-							</label>
+							<div class="flex items-center justify-between mb-1">
+								<label for="mcp-cmd" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+									{formTransport === 'stdio' ? 'Command + Arguments' : 'Streamable HTTP / SSE Endpoint URL'}
+								</label>
+							</div>
 							<input
 								id="mcp-cmd"
 								type="text"
 								bind:value={formUrlOrCommand}
 								placeholder={formTransport === 'stdio'
-									? 'npx -y @modelcontextprotocol/server-filesystem /path'
+									? 'node ./mcp-tools/server.js'
 									: 'http://localhost:3001/sse'}
 								class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none"
 							/>
 						</div>
+					{/if}
 
 						<div>
 							<label for="mcp-headers" class="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-								{formTransport === 'http' ? 'Headers & Authentication (Optional)' : 'Environment Variables (Optional)'}
+								{#if formTransport === 'http'}
+									Headers & Authentication (Optional)
+								{:else if formTransport === 'binary'}
+									Command Arguments (Optional)
+								{:else}
+									Environment Variables (Optional)
+								{/if}
 							</label>
 							<textarea
 								id="mcp-headers"
@@ -1264,38 +1052,18 @@ return permissionsForServer(srv);
 								bind:value={formHeadersOrEnv}
 								placeholder={formTransport === 'http'
 									? '{"Authorization": "Bearer YOUR_API_KEY"}\nor\nAuthorization: Bearer YOUR_API_KEY'
+									: formTransport === 'binary'
+									? '--token YOUR_TOKEN --read-only\nor\n["--token", "YOUR_TOKEN"]'
 									: '{"GITHUB_TOKEN": "ghp_xxx"}\nor\nKEY=VALUE'}
 								class="w-full rounded-xl border border-zinc-200 dark:border-zinc-750 bg-zinc-50 dark:bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-900 dark:text-white focus:border-zinc-400 dark:focus:border-zinc-600 focus:bg-white dark:focus:bg-zinc-950 focus:outline-none"
 							></textarea>
+							{#if formTransport === 'binary'}
+								<p class="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+									CLI flags or arguments passed directly to the binary process upon startup.
+								</p>
+							{/if}
 						</div>
-					{/if}
 				{/if}
-
-<!-- Required Access (read-only: what the plugin declares it needs) -->
-<div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/70 p-3.5 space-y-2.5">
-<div class="flex items-center justify-between">
-<div class="flex items-center gap-1.5 text-xs font-semibold text-zinc-800 dark:text-zinc-200">
-<Shield class="h-3.5 w-3.5 text-zinc-500 dark:text-zinc-400" />
-<span>Required Access</span>
-</div>
-<span class="text-[10px] text-zinc-400">Declared by the plugin — not configurable</span>
-</div>
-
-{#if formRequiredAccess.length === 0}
-<p class="text-[11px] text-zinc-500 dark:text-zinc-400">
-This plugin requests no special access. It only exposes the tools listed above.
-</p>
-{:else}
-<ul class="space-y-1">
-{#each formRequiredAccess as item (item.scope)}
-<li class="flex items-start gap-2 rounded-lg bg-white dark:bg-zinc-900/60 px-2.5 py-1.5">
-<span class="mt-0.5 shrink-0 rounded-md bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600 dark:text-zinc-300">{item.scope}</span>
-<span class="min-w-0 text-[10px] leading-snug text-zinc-500 dark:text-zinc-400">{item.description}</span>
-</li>
-{/each}
-</ul>
-{/if}
-</div>
 
 				<div class="mt-6 flex justify-end gap-2 border-t border-zinc-100 dark:border-zinc-800 pt-3">
 					<button
@@ -1310,19 +1078,15 @@ This plugin requests no special access. It only exposes the tools listed above.
 						class="rounded-xl bg-zinc-900 dark:bg-white px-4 py-2 text-xs font-medium text-white dark:text-zinc-950 hover:bg-zinc-800 dark:hover:bg-zinc-100 disabled:opacity-40 transition-all shadow-xs cursor-pointer"
 						onclick={saveServer}
 						disabled={isSaving ||
-							(formTransport === 'wasm'
-								? !editingServer && !wasmInspectPending && !wasmUrl.trim()
-								: formTransport === 'custom_tools'
-									? !formName.trim() || customTools.length === 0 || !customTools[0]?.parsed?.url
-									: !formName.trim() || !formUrlOrCommand.trim())}
+							(formTransport === 'custom_tools'
+								? !formName.trim() || customTools.length === 0 || !customTools[0]?.parsed?.url
+								: !formName.trim() || !formUrlOrCommand.trim())}
 					>
 						{isSaving
 							? 'Saving...'
-							: formTransport === 'wasm' && wasmInspectPending
-								? 'Update WASM Binary'
-								: editingServer
-									? 'Update Plugin'
-									: 'Save Plugin'}
+							: editingServer
+								? 'Update Plugin'
+								: 'Save Plugin'}
 					</button>
 				</div>
 			</div>
