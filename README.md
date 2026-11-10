@@ -71,6 +71,18 @@ That last row is the useful part. Conversations are *not* mutated to reflect a
 new instruction mid-flight; `compact` is the designated rebuild point, so a
 running agent keeps a warm cache until it is genuinely time to rebuild.
 
+Concretely, the system instruction + memory block is rendered **once** and
+persisted as row 0 of `agent_history`. It is then carried as the conversation
+prefix, not re-appended. It is re-rendered only in three places: an empty
+history (new session), a changed instruction template, or `compact`. A test
+(`system_prompt_stability_test.rs`) captures two consecutive provider requests
+and asserts exactly one system message, byte-identical between turns.
+
+> Side effect worth knowing: `{{time}}` and `{{context_remaining}}` are frozen
+> at render time, because re-rendering them every turn is precisely what would
+> break the prefix cache. Read the live values from the `ctx:N%` header on tool
+> results instead.
+
 > **Honest caveat:** the memory block is embedded in the system prompt, so
 > editing it *does* eventually invalidate the prefix. NeuxDOT's claim is
 > "stable across an ordinary turn", not "memory is free". `memoryNode*` exists
@@ -412,7 +424,7 @@ of the README can be trusted.
 | automatic compaction | silent group prune; no model-written summary |
 | agent-to-agent messaging | **absent** — `server_*` can configure an agent, not converse with it |
 
-Test footprint: **176 tests** across core + server (`cargo test --workspace`).
+Test footprint: **177 tests** across core + server (`cargo test --workspace`).
 
 ---
 
@@ -465,7 +477,7 @@ omission rule for ungranted identity.
 ## 🧪 Testing
 
 ```bash
-cargo test --workspace          # 176 tests
+cargo test --workspace          # 177 tests
 pnpm --filter web check         # svelte-check
 pnpm --filter web build         # production bundle
 ```
