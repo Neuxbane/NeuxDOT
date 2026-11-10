@@ -138,13 +138,18 @@ to run for hours or days: it works, calls `sleep`, wakes on its own timer or on
 a push event, and continues in the same turn. `sleep` is a yield point inside
 the loop — it blocks the turn, is interruptible, and does not end it.
 
-**One turn per agent.** Messages that arrive mid-turn are held and merged into a
-single batch (`runtime/turn_queue.rs`), which runs as the next turn when the
-current one yields. A sleeping agent is woken immediately, but a second turn is
-never started in parallel. This matters: two concurrent turns each called
-`sleep`, and each new timer cancelled the other, so the log showed an endless
-`SLEEP 30m → WAKE cancelled: superseded by new timer` ping-pong. Ownership is a
-token with a drop guard, so a turn that unwinds still releases the agent.
+**One turn per agent.** Messages that arrive mid-turn are purely additive: they
+are held and merged into a single batch (`runtime/turn_queue.rs`), which runs as
+the next turn once the current one finishes. The running turn is never
+cancelled, interrupted or duplicated. This matters: previously two concurrent
+turns each called `sleep`, and each new timer cancelled the other, producing an
+endless `SLEEP 30m → WAKE cancelled: superseded by new timer` ping-pong.
+
+Because a turn can be unbounded, "when it finishes" needs a boundary: `sleep` is
+that boundary. When a sleep completes and queued work is waiting, the turn ends
+so the batch can run next. The sleep is never cut short — it runs its full
+duration, then yields. Ownership is a token with a drop guard, so a turn that
+unwinds still releases the agent.
 
 The only guard is a liveness one, not a work cap: if a tool-only agent replies
 with prose **5 times in a row** without calling any tool, the turn aborts loudly

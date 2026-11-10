@@ -13,10 +13,10 @@
 //! ```
 //!
 //! This queue makes the rule explicit: **an agent has at most one running
-//! turn.** A message that arrives mid-turn is held and merged with any other
-//! arrivals into a single batch, which runs as the next turn once the current
-//! one finishes. A sleeping agent is woken so the batch is not stuck behind a
-//! 30-minute timer, but the running turn is never duplicated.
+//! turn.** A message that arrives mid-turn is purely additive — it is held and
+//! merged with any other arrivals into a single batch, which runs as the next
+//! turn once the current one finishes on its own terms. The running turn is
+//! never cancelled, interrupted or duplicated.
 //!
 //! Ownership is a token, not a boolean, so a runner that unwinds still releases
 //! the agent (see [`TurnGuard`]) without a stale runner clobbering its
@@ -32,9 +32,6 @@ struct AgentState {
     running: Option<u64>,
     /// Messages that arrived while a turn was running.
     pending: Vec<String>,
-    /// Set when a new message arrived mid-turn: the running turn should stop at
-    /// its next iteration boundary so the batch can be handled promptly.
-    preempted: bool,
 }
 
 #[derive(Default)]
@@ -72,9 +69,9 @@ impl AgentTurnQueue {
         entry.pending.push(input);
 
         if entry.running.is_some() {
-            // Ask the active turn to yield at the next boundary. It will drain
-            // this message (batched with any others) when it returns.
-            entry.preempted = true;
+            // Purely additive: the running turn is never disturbed. This
+            // message waits with any other arrivals and is handled as the next
+            // batch once the current turn finishes on its own terms.
             None
         } else {
             let token = self.next_token.fetch_add(1, Ordering::SeqCst) + 1;
@@ -93,21 +90,8 @@ impl AgentTurnQueue {
         if entry.pending.is_empty() {
             return None;
         }
-        entry.preempted = false;
         let batch: Vec<String> = entry.pending.drain(..).collect();
         Some(format_batch(&batch))
-    }
-
-    /// True once, if a message arrived while the current turn was running.
-    pub fn take_preempt(&self, agent_id: &str) -> bool {
-        let mut state = self.state.lock().unwrap();
-        match state.get_mut(agent_id) {
-            Some(entry) if entry.preempted => {
-                entry.preempted = false;
-                true
-            }
-            _ => false,
-        }
     }
 
     fn release(&self, agent_id: &str, token: u64) {
@@ -237,16 +221,6 @@ mod tests {
         let q = AgentTurnQueue::new();
         let t = q.submit("a", "hello".into()).unwrap();
         assert_eq!(q.take_batch("a", t).as_deref(), Some("hello"));
-    }
-
-    #[test]
-    fn preempt_is_consumed_once() {
-        let q = AgentTurnQueue::new();
-        q.submit("a", "first".into());
-        assert!(!q.take_preempt("a"));
-        q.submit("a", "second".into());
-        assert!(q.take_preempt("a"));
-        assert!(!q.take_preempt("a"));
     }
 
     #[test]

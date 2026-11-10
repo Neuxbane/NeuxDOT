@@ -1482,10 +1482,9 @@ impl AgentExecutor {
                 "agent {} is busy; queued the incoming message for the next batch",
                 self.agent.id
             );
-            // Interrupt a sleep so the queued message is handled now rather
-            // than after a 30-minute timer. The running turn yields at its next
-            // boundary; it is never started a second time.
-            global_timer_manager().cancel_timer(&self.agent.id, "new message queued");
+            // Additive only: the active turn keeps running to completion (and
+            // any sleep it is in runs its full duration). The batch is handled
+            // afterwards by the runner, never as a second concurrent turn.
             return Ok(String::new());
         };
 
@@ -1791,6 +1790,9 @@ impl AgentExecutor {
         // Counts consecutive model replies that contained no tool call while
         // output text was disallowed. Reset by any tool call.
         let mut text_rejections: u32 = 0;
+        // Set when the agent finished a sleep and queued work is waiting: the
+        // natural end of this turn, so the batch can run next.
+        let mut yield_to_batch = false;
 
         // A turn is deliberately UNBOUNDED.
         //
@@ -1810,9 +1812,7 @@ impl AgentExecutor {
         // a new message, which sets `turn_superseded`.
         loop {
             iteration += 1;
-            if turn_superseded || global_turn_queue().take_preempt(&self.agent.id) {
-                // A newer message arrived: stop this turn so the queued batch
-                // can be handled as the next turn.
+            if turn_superseded || yield_to_batch {
                 break;
             }
             if iteration % 100 == 0 {
@@ -2723,15 +2723,28 @@ impl AgentExecutor {
                                             Ok(reason) = &mut cancel_rx => {
                                                 was_interrupted = true;
                                                 wake_reason = format!("interrupted: {}", reason);
-                                                if reason == "new turn started"
-                                                    || reason == "new message queued"
-                                                {
+                                                if reason == "new turn started" {
                                                     turn_superseded = true;
                                                 }
                                             }
                                         }
 
                                         let elapsed_secs = start_time.elapsed().as_secs();
+
+                                        // `sleep` is the agent's own declaration
+                                        // that it has nothing to do right now, so
+                                        // it is the natural boundary for a queued
+                                        // batch: finish this turn and let the
+                                        // runner start the next one with the
+                                        // messages that arrived meanwhile. The
+                                        // turn itself is never interrupted.
+                                        if !was_interrupted
+                                            && global_turn_queue()
+                                                .pending_len(&self.agent.id)
+                                                > 0
+                                        {
+                                            yield_to_batch = true;
+                                        }
 
                                         self.emit(AgentEvent::AgentWokeUp {
                                             agent_id: self.agent.id.clone(),
