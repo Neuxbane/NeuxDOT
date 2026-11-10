@@ -364,6 +364,27 @@ carries `plugins_unavailable: [...]` and a note instead of a bare empty list.
 
 ---
 
+### 7.7 One turn per agent, and batching
+
+An agent runs **at most one turn at a time** (`runtime/turn_queue.rs`). The HTTP
+route, the MCP push bridge and the `SubscriptionHub` may all try to start one;
+only the first becomes the runner.
+
+* A message arriving mid-turn is appended to a pending queue.
+* When the running turn yields (a `sleep` is interrupted, or the loop reaches an
+  iteration boundary), it stops and the runner drains the queue.
+* Two or more queued messages are merged into one prompt:
+  `"N messages arrived while you were working. Address them together in one reply: 1. … 2. …"`.
+  A single queued message passes through unwrapped.
+* Ownership is a token, released by a drop guard, so a turn that unwinds cannot
+  leave the agent locked.
+
+Without this, two concurrent turns each call `sleep`, each `register_timer`
+cancels the other, and the agent ping-pongs on `cancelled: superseded by new
+timer` forever.
+
+---
+
 ## 8. Lifecycle inside the host
 
 1. **Install** — `POST /api/plugins` (aka `/api/mcp`, `/api/extensions`) stores

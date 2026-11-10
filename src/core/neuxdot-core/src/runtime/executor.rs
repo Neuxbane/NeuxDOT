@@ -10,6 +10,7 @@ use super::meta_tools::{
 };
 use super::router::ProviderRouter;
 use super::timer_manager::global_timer_manager;
+use super::turn_queue::global_turn_queue;
 use crate::db::repos::Database;
 use crate::db::schema::{ActiveModelTarget, Agent, AgentPushedMessage, McpServer};
 use crate::events::{AgentEvent, EventEnvelope};
@@ -1465,8 +1466,43 @@ impl AgentExecutor {
         (sessions, tool_registry, unreachable)
     }
 
-    /// Execute an agent turn using persistent running history and enforcing output text settings
+    /// Offer a message to this agent.
+    ///
+    /// Exactly one turn runs per agent. If a turn is already active the message
+    /// is queued and merged with any other arrivals into a single batch, which
+    /// runs as the next turn when the current one yields. A sleeping agent is
+    /// woken so the batch is not stuck behind the timer, but the running turn
+    /// is never duplicated — that duplication is what made two `sleep` calls
+    /// cancel each other forever.
     pub async fn run_turn(&self, user_input: &str) -> Result<String, String> {
+        let Some((token, _guard)) =
+            global_turn_queue().acquire(&self.agent.id, user_input.to_string())
+        else {
+            info!(
+                "agent {} is busy; queued the incoming message for the next batch",
+                self.agent.id
+            );
+            // Interrupt a sleep so the queued message is handled now rather
+            // than after a 30-minute timer. The running turn yields at its next
+            // boundary; it is never started a second time.
+            global_timer_manager().cancel_timer(&self.agent.id, "new message queued");
+            return Ok(String::new());
+        };
+
+        // This caller owns the agent. Drain the queue until nothing is left.
+        // `_guard` releases the agent on drop, including on unwind.
+        let mut last: Result<String, String> = Ok(String::new());
+        loop {
+            let Some(batch) = global_turn_queue().take_batch(&self.agent.id, token) else {
+                break;
+            };
+            last = self.run_turn_inner(&batch).await;
+        }
+        last
+    }
+
+    /// Execute one agent turn using persistent running history and enforcing output text settings.
+    async fn run_turn_inner(&self, user_input: &str) -> Result<String, String> {
         let turn_id = uuid::Uuid::new_v4().to_string();
         // Monotonic per-agent turn number, persisted in the transcript so
         // exports can group rows into turns for distillation.
@@ -1774,7 +1810,9 @@ impl AgentExecutor {
         // a new message, which sets `turn_superseded`.
         loop {
             iteration += 1;
-            if turn_superseded {
+            if turn_superseded || global_turn_queue().take_preempt(&self.agent.id) {
+                // A newer message arrived: stop this turn so the queued batch
+                // can be handled as the next turn.
                 break;
             }
             if iteration % 100 == 0 {
@@ -2685,7 +2723,9 @@ impl AgentExecutor {
                                             Ok(reason) = &mut cancel_rx => {
                                                 was_interrupted = true;
                                                 wake_reason = format!("interrupted: {}", reason);
-                                                if reason == "new turn started" {
+                                                if reason == "new turn started"
+                                                    || reason == "new message queued"
+                                                {
                                                     turn_superseded = true;
                                                 }
                                             }

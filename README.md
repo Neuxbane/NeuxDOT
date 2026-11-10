@@ -133,10 +133,18 @@ leaves a marker. Where the system cannot be certain, it says so.
 ### 5. A turn is a lifetime, not a request.
 
 There is **no iteration cap**. `run_turn` loops until the agent decides it is
-done, a newer turn supersedes it, or a fatal error occurs. An agent is expected
+done, it yields to a queued batch, or a fatal error occurs. An agent is expected
 to run for hours or days: it works, calls `sleep`, wakes on its own timer or on
 a push event, and continues in the same turn. `sleep` is a yield point inside
 the loop — it blocks the turn, is interruptible, and does not end it.
+
+**One turn per agent.** Messages that arrive mid-turn are held and merged into a
+single batch (`runtime/turn_queue.rs`), which runs as the next turn when the
+current one yields. A sleeping agent is woken immediately, but a second turn is
+never started in parallel. This matters: two concurrent turns each called
+`sleep`, and each new timer cancelled the other, so the log showed an endless
+`SLEEP 30m → WAKE cancelled: superseded by new timer` ping-pong. Ownership is a
+token with a drop guard, so a turn that unwinds still releases the agent.
 
 The only guard is a liveness one, not a work cap: if a tool-only agent replies
 with prose **5 times in a row** without calling any tool, the turn aborts loudly
@@ -420,11 +428,12 @@ of the README can be trusted.
 | per-plugin consent, MCP-App host bridge, storage KV | **implemented** |
 | **WASM / Wasmtime extensions** | **not implemented** — the `extensions` table, `wasm_binary` column and `wasm` transport name exist as scaffolding only. No Wasmtime dependency, no host ABI, no runner. Do not rely on it. |
 | `sleep` persistence | **process-local** — a restart drops pending wakes |
-| unbounded turn length | **implemented** — no iteration cap; a turn runs until the agent stops, is superseded, or trips the 5-text-reply liveness guard |
+| unbounded turn length | **implemented** — no iteration cap; a turn runs until the agent stops, yields to a queued batch, or trips the 5-text-reply liveness guard |
+| one turn per agent + batching | **implemented** — mid-turn arrivals merge into the next turn (`runtime/turn_queue.rs`) |
 | automatic compaction | silent group prune; no model-written summary |
 | agent-to-agent messaging | **absent** — `server_*` can configure an agent, not converse with it |
 
-Test footprint: **177 tests** across core + server (`cargo test --workspace`).
+Test footprint: **186 tests** across core + server (`cargo test --workspace`).
 
 ---
 
@@ -477,7 +486,7 @@ omission rule for ungranted identity.
 ## 🧪 Testing
 
 ```bash
-cargo test --workspace          # 177 tests
+cargo test --workspace          # 186 tests
 pnpm --filter web check         # svelte-check
 pnpm --filter web build         # production bundle
 ```
