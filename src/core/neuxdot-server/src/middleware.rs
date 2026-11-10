@@ -1,3 +1,4 @@
+use axum::extract::FromRef;
 use axum::{
     async_trait,
     extract::FromRequestParts,
@@ -5,7 +6,6 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use axum::extract::FromRef;
 use neuxdot_core::auth::verify_token;
 use neuxdot_core::db::schema::{is_valid_role, ROLE_MEMBER, ROLE_ROOT};
 
@@ -28,9 +28,7 @@ impl AuthUser {
     ///
     /// The error type matches the `(StatusCode, Json<Value>)` shape used by every
     /// route handler, so handlers can simply `auth.require_root()?`.
-    pub fn require_root(
-        &self,
-    ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    pub fn require_root(&self) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
         if self.is_root() {
             Ok(())
         } else {

@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 CREATE TABLE IF NOT EXISTS agent_mcp (
     agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     mcp_id TEXT NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    config_override TEXT DEFAULT NULL,
     PRIMARY KEY (agent_id, mcp_id)
 );
 
@@ -147,6 +148,32 @@ CREATE TABLE IF NOT EXISTS agent_memories (
     hash TEXT NOT NULL DEFAULT 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Obsidian-style keyed memory: one row per node, linked with [[wikilinks]].
+-- The legacy `agent_memories` blob is kept for compatibility. Nodes are the
+-- primary store and are rendered into the prompt as a manifest.
+CREATE TABLE IF NOT EXISTS agent_memory_nodes (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '',
+    type TEXT NOT NULL DEFAULT 'concept',
+    description TEXT NOT NULL DEFAULT '',
+    hash TEXT NOT NULL DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (agent_id, key)
+);
+
+-- Directed graph edges extracted from [[Key]] references inside node values.
+CREATE TABLE IF NOT EXISTS agent_memory_links (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    src TEXT NOT NULL,
+    dst TEXT NOT NULL,
+    PRIMARY KEY (agent_id, src, dst)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_links_dst
+    ON agent_memory_links (agent_id, dst);
 
 CREATE TABLE IF NOT EXISTS agent_history (
     id TEXT PRIMARY KEY,

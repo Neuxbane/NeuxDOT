@@ -1,4 +1,4 @@
-import type { McpServer, PluginPermissions } from '$lib/api';
+import type { ControlPermissions, McpServer, PluginPermissions } from '$lib/api';
 
 /**
  * Permission helpers shared by every surface that renders or edits plugin
@@ -20,7 +20,18 @@ identity: {
 'user.profile_picture': false
 },
 process: false,
-network: false
+network: { allow: [] },
+elevated: false,
+control: {
+agents_read: false,
+agents_write: false,
+shares: false,
+plugins_read: false,
+plugins_write: false,
+providers_read: false,
+providers_write: false,
+accounts: false
+}
 };
 }
 
@@ -70,8 +81,56 @@ out.identity = {
 };
 }
 out.process = input.process === true;
-out.network = input.network === true;
+out.network = normalizeNetwork(input.network);
+out.elevated = input.elevated === true;
+out.control = normalizeControl(input.control);
 return out;
+}
+
+/**
+ * Coerce a stored/declared `network` grant into `{ allow: string[] }`.
+ *
+ * Accepts the current grouped form (`{ allow: ["api.example.com"] }`) and the
+ * legacy boolean of earlier releases, where `true` meant "unrestricted" and
+ * `false` meant "no network". Anything unrecognised denies network outright.
+ */
+function normalizeNetwork(input: unknown): { allow: string[] } {
+if (input === true) return { allow: ['*'] };
+if (input === false || input == null) return { allow: [] };
+if (isRecord(input) && Array.isArray(input.allow)) {
+return {
+allow: input.allow.filter((h: unknown): h is string => typeof h === 'string' && h.length > 0)
+};
+}
+return { allow: [] };
+}
+
+/**
+ * Coerce a stored/declared `control` grant. Every flag is denied unless it is
+ * literally `true`, so a malformed block narrows rather than widens.
+ */
+function normalizeControl(input: unknown): ControlPermissions {
+const deny: ControlPermissions = {
+agents_read: false,
+agents_write: false,
+shares: false,
+plugins_read: false,
+plugins_write: false,
+providers_read: false,
+providers_write: false,
+accounts: false
+};
+if (!isRecord(input)) return deny;
+return {
+agents_read: input.agents_read === true,
+agents_write: input.agents_write === true,
+shares: input.shares === true,
+plugins_read: input.plugins_read === true,
+plugins_write: input.plugins_write === true,
+providers_read: input.providers_read === true,
+providers_write: input.providers_write === true,
+accounts: input.accounts === true
+};
 }
 
 /** The `ui://` resources a manifest advertises. */
@@ -81,6 +140,16 @@ if (!Array.isArray(res)) return [];
 return res
 .filter((r: any) => typeof r?.uri === 'string' && r.uri.startsWith('ui://'))
 .map((r: any) => r.uri as string);
+}
+
+/**
+ * Legacy reachability declaration from pre-`permissions.network` manifests:
+ * a top-level `network.hosts` array. Returns the host strings, or `[]`.
+ */
+function legacyNetworkHosts(manifest: any): string[] {
+const hosts = manifest?.network?.hosts;
+if (!Array.isArray(hosts)) return [];
+return hosts.filter((h: unknown): h is string => typeof h === 'string' && h.length > 0);
 }
 
 /**
@@ -96,16 +165,32 @@ manifest: any,
 transport: string
 ): PluginPermissions {
 if (manifest?.permissions) {
-return normalizePermissions(manifest.permissions);
+const norm = normalizePermissions(manifest.permissions);
+if (transport === 'stdio' || transport === 'binary') {
+norm.process = true;
+}
+// Precedence: `permissions.network.allow`, then the legacy top-level
+// `network.hosts` array, then no network at all. An explicitly declared
+// `network` block always wins — the legacy fallback only fills the gap.
+const declaredNetwork = (manifest.permissions as any)?.network;
+if (declaredNetwork == null) {
+const legacy = legacyNetworkHosts(manifest);
+if (legacy.length > 0) norm.network = { allow: legacy };
+}
+return norm;
 }
 
 const uiResources = manifestUiResources(manifest);
 const hasUi = uiResources.length > 0 || Boolean(manifest?.ui_hooks?.length);
 const hasTools = Array.isArray(manifest?.mcp?.tools) && manifest.mcp.tools.length > 0;
-const hasNetwork = Boolean(manifest?.network?.hosts?.length);
+const legacyHosts = legacyNetworkHosts(manifest);
+const isProcess = transport === 'stdio' || transport === 'binary';
 
 return {
-ui: { enabled: hasUi, resources: uiResources },
+ui: {
+	enabled: hasUi || isProcess,
+	resources: hasUi ? uiResources : (isProcess ? ['*'] : [])
+},
 storage: { get: false, set: false, delete: false, keys: [] },
 agent: { trigger: hasTools, tools: hasTools },
 // Never inferred: the plugin must ask explicitly.
@@ -115,8 +200,14 @@ identity: {
 'user.name': false,
 'user.profile_picture': false
 },
-process: transport === 'stdio' || transport === 'binary',
-network: hasNetwork || transport === 'http'
+process: isProcess,
+// An HTTP/SSE transport talks to an arbitrary endpoint and cannot be
+// narrowed without a manifest allow-list, so it stays unrestricted.
+network: { allow: legacyHosts.length > 0 ? legacyHosts : transport === 'http' ? ['*'] : [] },
+// Never inferred. Only `permissions.elevated === true` sets this.
+elevated: false,
+// Never inferred either: control grants reach the server CRUD surface.
+control: normalizeControl(null)
 };
 }
 
@@ -149,10 +240,20 @@ if (!isRecord(stored) || Object.keys(stored).length === 0) return declared;
 // no grouped sections; normalising it would silently deny every capability and
 // hide the plugin's apps. Treat such a row as "no override" and fall back to
 // the plugin's declared grants instead.
-const isGrouped = ['ui', 'storage', 'agent', 'identity'].some((k) => isRecord((stored as any)[k]));
+const isGrouped = ['ui', 'storage', 'agent', 'identity', 'control', 'network'].some((k) =>
+isRecord((stored as any)[k])
+);
 if (!isGrouped) return declared;
 
-return normalizePermissions(stored);
+const norm = normalizePermissions(stored);
+if (server.transport === 'stdio' || server.transport === 'binary') {
+norm.process = true;
+}
+// `elevated` is consent declared by the manifest, never a stored override: an
+// account row must not be able to promote a plugin onto the host. Narrowing
+// only — a manifest grant may be revoked here, never invented.
+norm.elevated = declared.elevated;
+return norm;
 } catch {
 return declared;
 }
@@ -202,7 +303,48 @@ if (id?.['user.name']) out.push({ group: 'Profile & Identity', scope: 'identity.
 if (id?.['user.profile_picture']) out.push({ group: 'Profile & Identity', scope: 'identity.user.profile_picture', description: 'Reads your avatar' });
 
 if (perms.process) out.push({ group: 'Runtime', scope: 'process', description: 'Spawns a child process' });
-if (perms.network) out.push({ group: 'Runtime', scope: 'network', description: 'Makes outbound network requests' });
+
+const netAllow = perms.network?.allow ?? [];
+if (netAllow.includes('*')) {
+out.push({ group: 'Runtime', scope: 'network', description: 'Network (unrestricted): may connect to any host or IP' });
+} else if (netAllow.length > 0) {
+out.push({
+group: 'Runtime',
+scope: 'network',
+description: `Network (allow-list): ${netAllow.join(', ')}`
+});
+}
+
+// Only ever granted by an explicit manifest declaration — never inferred.
+if (perms.elevated) {
+out.push({
+group: 'Runtime',
+scope: 'elevated',
+description: 'Elevated host access: runs on the host with no sandbox, no network or filesystem isolation'
+});
+}
+
+const CONTROL_LABELS: Record<keyof ControlPermissions, string> = {
+agents_read: 'reads any agent you can see',
+agents_write: 'creates, edits and deletes agents',
+shares: 'grants and revokes agent shares',
+plugins_read: 'lists and reads plugins',
+plugins_write: 'installs, edits and deletes plugins',
+providers_read: 'lists and reads providers and models',
+providers_write: 'creates, edits and deletes providers',
+accounts: 'administers accounts (root credential only)'
+};
+
+if (perms.control) {
+for (const key of Object.keys(CONTROL_LABELS) as Array<keyof ControlPermissions>) {
+if (perms.control[key] !== true) continue;
+out.push({
+group: 'Server Control',
+scope: `control.${key}`,
+description: `Control MCP: ${CONTROL_LABELS[key]}`
+});
+}
+}
 
 return out;
 }

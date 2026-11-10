@@ -36,7 +36,12 @@ async fn load_agent_with_access(
         .get_agent(agent_id)
         .await
         .map_err(internal_error)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Agent not found" })),
+            )
+        })?;
 
     let access = state
         .db
@@ -187,7 +192,7 @@ pub async fn get_agent_handler(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-	let (agent, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    let (agent, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
     let bound_models = state
         .db
@@ -199,6 +204,11 @@ pub async fn get_agent_handler(
         .get_agent_mcp_servers(&agent.id)
         .await
         .unwrap_or_default();
+    let mcp_configs = state
+        .db
+        .get_agent_mcp_configs(&agent.id)
+        .await
+        .unwrap_or_default();
 
     let model_ids: Vec<String> = bound_models.iter().map(|m| m.id.clone()).collect();
 
@@ -208,6 +218,7 @@ pub async fn get_agent_handler(
         "provider_ids": model_ids,
         "models": bound_models,
         "mcp_ids": bound_mcp.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        "mcp_configs": mcp_configs,
         // Caller's rights over this agent, so the UI can hide what it may not do.
         "is_owner": access.is_owner(),
         "can_edit": access.can_edit(),
@@ -243,7 +254,12 @@ pub async fn create_agent_handler(
             payload.instruction_preset_id.as_deref(),
         )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
     let target_models = payload.model_ids.or(payload.provider_ids);
     if let Some(ref mids) = target_models {
@@ -290,7 +306,12 @@ pub async fn patch_agent_handler(
             payload.instruction_preset_id.as_deref(),
         )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
     let target_models = payload.model_ids.or(payload.provider_ids);
     if let Some(ref mids) = target_models {
@@ -299,6 +320,8 @@ pub async fn patch_agent_handler(
 
     if let Some(ref mids) = payload.mcp_ids {
         let _ = state.db.set_agent_mcp_servers(&id, mids).await;
+        // A binding change can add or remove the plugin that owned the stream.
+        state.subscriptions.sync_agent(&id).await;
     }
 
     Ok(Json(updated))
@@ -313,8 +336,18 @@ pub async fn delete_agent_handler(
         .db
         .get_agent(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Agent not found" })),
+            )
+        })?;
 
     // Deleting is owner-only: a sharee can leave, but never destroy the bot.
     if existing.account_id != auth.account_id {
@@ -324,11 +357,12 @@ pub async fn delete_agent_handler(
         ));
     }
 
-    let deleted = state
-        .db
-        .delete_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+    let deleted = state.db.delete_agent(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
 
     Ok(Json(json!({ "deleted": deleted })))
 }
@@ -339,7 +373,7 @@ pub async fn run_agent_handler(
     State(state): State<AppState>,
     Json(payload): Json<RunAgentRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-	let (agent, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    let (agent, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
     let models = state
         .db
@@ -374,11 +408,12 @@ pub async fn list_agent_pushed_messages_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
-    let messages = state
-        .db
-        .list_pushed_messages(&id, 50)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+    let messages = state.db.list_pushed_messages(&id, 50).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
 
     Ok(Json(messages))
 }
@@ -390,11 +425,12 @@ pub async fn get_agent_memory_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
-    let mem = state
-        .db
-        .get_agent_memory(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+    let mem = state.db.get_agent_memory(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
 
     Ok(Json(json!({
         "agent_id": mem.agent_id,
@@ -405,6 +441,26 @@ pub async fn get_agent_memory_handler(
     })))
 }
 
+/// Returns the agent's knowledge graph: every memory node plus its outgoing
+/// `[[wikilinks]]`. The client derives edges from `outbound`; a target that has
+/// no node yet is a dangling link and is rendered as such rather than dropped,
+/// because that is the model's TODO list.
+pub async fn get_agent_memory_graph_handler(
+    auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+
+    let nodes = state
+        .db
+        .memory_nodes_with_links(&id)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Json(json!({ "agent_id": id, "nodes": nodes })))
+}
+
 pub async fn get_agent_history_handler(
     auth: AuthUser,
     Path(id): Path<String>,
@@ -412,11 +468,12 @@ pub async fn get_agent_history_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
-    let history = state
-        .db
-        .get_agent_history(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+    let history = state.db.get_agent_history(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
 
     Ok(Json(history))
 }
@@ -429,11 +486,12 @@ pub async fn clear_agent_history_handler(
     let (_, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
     require_edit(access)?;
 
-    let cleared = state
-        .db
-        .clear_agent_history(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+    let cleared = state.db.clear_agent_history(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
 
     Ok(Json(json!({ "cleared": cleared })))
 }
@@ -445,11 +503,12 @@ pub async fn get_agent_tools_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
-    let servers = state
-        .db
-        .get_agent_mcp_servers(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+    let servers = state.db.get_agent_mcp_servers(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
 
     let permissions = state
         .db
@@ -473,11 +532,16 @@ pub async fn get_agent_tools_handler(
             continue;
         }
         if s.transport == "stdio" || s.transport == "binary" {
-            let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<neuxdot_core::mcp::client::McpNotification>();
-            if let Ok(transport) = neuxdot_core::mcp::stdio::StdioTransport::spawn(
+            let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<
+                neuxdot_core::mcp::client::McpNotification,
+            >();
+            let launch = neuxdot_core::mcp::sandbox::SandboxSpec::launch_for(&s);
+            if let Ok(transport) = neuxdot_core::mcp::stdio::StdioTransport::spawn_with_sandbox(
                 &s.url_or_command,
                 s.headers_or_env.as_deref(),
+                Some(id.as_str()),
                 notif_tx,
+                &launch,
             )
             .await
             {
@@ -493,7 +557,9 @@ pub async fn get_agent_tools_handler(
                     session.list_tools().await
                 };
 
-                if let Ok(Ok(tools)) = tokio::time::timeout(std::time::Duration::from_millis(3000), fetch_fut).await {
+                if let Ok(Ok(tools)) =
+                    tokio::time::timeout(std::time::Duration::from_millis(3000), fetch_fut).await
+                {
                     let server_alias = s.get_alias();
                     for tool in tools {
                         if tool.is_app_only() {
@@ -520,16 +586,32 @@ pub async fn get_agent_tools_handler(
                     }
                 }
 
-                let fetch_res_fut = async {
-                    session.transport.send_request("resources/list", None).await
-                };
-                if let Ok(Ok(res_val)) = tokio::time::timeout(std::time::Duration::from_millis(1500), fetch_res_fut).await {
+                let fetch_res_fut =
+                    async { session.transport.send_request("resources/list", None).await };
+                if let Ok(Ok(res_val)) =
+                    tokio::time::timeout(std::time::Duration::from_millis(1500), fetch_res_fut)
+                        .await
+                {
                     if let Some(res_list) = res_val.get("resources").and_then(|r| r.as_array()) {
                         for r in res_list {
-                            let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let name = r.get("name").and_then(|v| v.as_str()).unwrap_or(&uri).to_string();
-                            let desc = r.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-                            let mime = r.get("mimeType").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let uri = r
+                                .get("uri")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = r
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&uri)
+                                .to_string();
+                            let desc = r
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let mime = r
+                                .get("mimeType")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
                             let is_sub = sub_set.contains(&uri);
 
                             resources_res.push(AgentResourceItem {
@@ -546,7 +628,9 @@ pub async fn get_agent_tools_handler(
                 }
             }
         } else {
-            let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<neuxdot_core::mcp::client::McpNotification>();
+            let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<
+                neuxdot_core::mcp::client::McpNotification,
+            >();
             let transport = neuxdot_core::mcp::http::HttpTransport::new(
                 &s.url_or_command,
                 s.headers_or_env.as_deref(),
@@ -564,7 +648,9 @@ pub async fn get_agent_tools_handler(
                 session.list_tools().await
             };
 
-            if let Ok(Ok(tools)) = tokio::time::timeout(std::time::Duration::from_millis(3500), fetch_fut).await {
+            if let Ok(Ok(tools)) =
+                tokio::time::timeout(std::time::Duration::from_millis(3500), fetch_fut).await
+            {
                 let server_alias = s.get_alias();
                 for tool in tools {
                     if tool.is_app_only() {
@@ -591,16 +677,31 @@ pub async fn get_agent_tools_handler(
                 }
             }
 
-            let fetch_res_fut = async {
-                session.transport.send_request("resources/list", None).await
-            };
-            if let Ok(Ok(res_val)) = tokio::time::timeout(std::time::Duration::from_millis(1500), fetch_res_fut).await {
+            let fetch_res_fut =
+                async { session.transport.send_request("resources/list", None).await };
+            if let Ok(Ok(res_val)) =
+                tokio::time::timeout(std::time::Duration::from_millis(1500), fetch_res_fut).await
+            {
                 if let Some(res_list) = res_val.get("resources").and_then(|r| r.as_array()) {
                     for r in res_list {
-                        let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let name = r.get("name").and_then(|v| v.as_str()).unwrap_or(&uri).to_string();
-                        let desc = r.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-                        let mime = r.get("mimeType").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let uri = r
+                            .get("uri")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = r
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&uri)
+                            .to_string();
+                        let desc = r
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let mime = r
+                            .get("mimeType")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
                         let is_sub = sub_set.contains(&uri);
 
                         resources_res.push(AgentResourceItem {
@@ -638,7 +739,12 @@ pub async fn update_agent_tool_permission_handler(
         .db
         .set_agent_tool_permission(&id, &payload.mcp_id, &payload.tool_name, payload.is_enabled)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
     Ok(Json(json!({ "success": true })))
 }
@@ -650,11 +756,12 @@ pub async fn get_agent_subscriptions_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let (_, _access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
 
-    let subscriptions = state
-        .db
-        .get_agent_subscriptions(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+    let subscriptions = state.db.get_agent_subscriptions(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
 
     Ok(Json(subscriptions))
 }
@@ -672,9 +779,110 @@ pub async fn update_agent_subscriptions_handler(
         .db
         .set_agent_subscriptions(&id, &payload.subscriptions)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
-    Ok(Json(json!({ "success": true, "subscriptions": payload.subscriptions })))
+    // Persisting the URI is not the same as listening on it. Reconcile the
+    // long-lived stream now so the toggle takes effect immediately.
+    state.subscriptions.sync_agent(&id).await;
+
+    Ok(Json(
+        json!({ "success": true, "subscriptions": payload.subscriptions }),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateAgentMcpConfigRequest {
+    pub config_override: Option<String>,
+}
+
+/// `GET /api/agents/:id/mcp/:mcp_id/config`
+pub async fn get_agent_mcp_config_handler(
+    auth: AuthUser,
+    Path((id, mcp_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (agent, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    if !access.can_view() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        ));
+    }
+
+    let server = state
+        .db
+        .get_mcp_server(&mcp_id)
+        .await
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Plugin not found" })),
+            )
+        })?;
+
+    let config_override = state
+        .db
+        .get_agent_mcp_config(&agent.id, &mcp_id)
+        .await
+        .map_err(internal_error)?;
+
+    let effective = neuxdot_core::db::repos::merge_headers_or_env(
+        server.headers_or_env.as_deref(),
+        config_override.as_deref(),
+    );
+
+    Ok(Json(json!({
+        "agent_id": agent.id,
+        "mcp_id": mcp_id,
+        "plugin_name": server.name,
+        "manifest_json": server.manifest_json,
+        "global_config": server.headers_or_env,
+        "config_override": config_override,
+        "effective_config": effective,
+        "has_override": config_override.is_some(),
+    })))
+}
+
+/// `PUT /api/agents/:id/mcp/:mcp_id/config`
+pub async fn set_agent_mcp_config_handler(
+    auth: AuthUser,
+    Path((id, mcp_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Json(payload): Json<UpdateAgentMcpConfigRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (agent, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
+    require_edit(access)?;
+
+    let _server = state
+        .db
+        .get_mcp_server(&mcp_id)
+        .await
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Plugin not found" })),
+            )
+        })?;
+
+    state
+        .db
+        .set_agent_mcp_config(&agent.id, &mcp_id, payload.config_override.as_deref())
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Json(json!({
+        "success": true,
+        "agent_id": agent.id,
+        "mcp_id": mcp_id,
+        "config_override": payload.config_override
+    })))
 }
 
 // --- Agent sharing ---
@@ -703,7 +911,11 @@ pub async fn list_agent_shares_handler(
     let (_, access) = load_agent_with_access(&state, &id, &auth.account_id).await?;
     require_manage_shares(access)?;
 
-    let shares = state.db.list_agent_shares(&id).await.map_err(internal_error)?;
+    let shares = state
+        .db
+        .list_agent_shares(&id)
+        .await
+        .map_err(internal_error)?;
     Ok(Json(shares))
 }
 
@@ -759,7 +971,12 @@ pub async fn create_agent_share_handler(
 
     let share = state
         .db
-        .upsert_agent_share(&id, &account.id, payload.can_edit, payload.can_manage_shares)
+        .upsert_agent_share(
+            &id,
+            &account.id,
+            payload.can_edit,
+            payload.can_manage_shares,
+        )
         .await
         .map_err(internal_error)?;
 
@@ -778,13 +995,21 @@ pub async fn update_agent_share_handler(
 
     let updated = state
         .db
-        .update_agent_share(&id, &account_id, payload.can_edit, payload.can_manage_shares)
+        .update_agent_share(
+            &id,
+            &account_id,
+            payload.can_edit,
+            payload.can_manage_shares,
+        )
         .await
         .map_err(internal_error)?;
 
-    updated
-        .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Share not found" }))))
+    updated.map(Json).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Share not found" })),
+        )
+    })
 }
 
 /// `DELETE /api/agents/:id/shares/:account_id`

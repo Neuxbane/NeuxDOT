@@ -1,11 +1,15 @@
 pub mod client;
 pub mod custom_tools;
 pub mod http;
+pub mod proxy;
+pub mod sandbox;
 pub mod stdio;
 
 pub use client::*;
 pub use custom_tools::*;
 pub use http::*;
+pub use proxy::*;
+pub use sandbox::*;
 pub use stdio::*;
 
 /// Host-stamped tool-argument keys.

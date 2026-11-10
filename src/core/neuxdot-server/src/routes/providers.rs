@@ -83,7 +83,12 @@ pub async fn list_providers_handler(
         .db
         .list_providers_with_models(&auth.account_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
     Ok(Json(providers))
 }
@@ -102,7 +107,12 @@ pub async fn create_provider_handler(
             payload.api_key.as_deref(),
         )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
     if let Some(model_list) = payload.models {
         let configs: Vec<ModelConfigInput> = model_list
@@ -116,8 +126,18 @@ pub async fn create_provider_handler(
         .db
         .get_provider_with_models(&provider.id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Provider not found" }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Provider not found" })),
+            )
+        })?;
 
     Ok((StatusCode::CREATED, Json(result)))
 }
@@ -132,11 +152,24 @@ pub async fn update_provider_handler(
         .db
         .get_provider(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Provider not found" }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Provider not found" })),
+            )
+        })?;
 
     if existing.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        ));
     }
 
     let _updated = state
@@ -148,7 +181,12 @@ pub async fn update_provider_handler(
             payload.api_key.as_deref(),
         )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
     if let Some(model_list) = payload.models {
         let configs: Vec<ModelConfigInput> = model_list
@@ -162,8 +200,18 @@ pub async fn update_provider_handler(
         .db
         .get_provider_with_models(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Provider not found" }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Provider not found" })),
+            )
+        })?;
 
     Ok(Json(result))
 }
@@ -177,18 +225,32 @@ pub async fn delete_provider_handler(
         .db
         .get_provider(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Provider not found" }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Provider not found" })),
+            )
+        })?;
 
     if existing.account_id != auth.account_id {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        ));
     }
 
-    let deleted = state
-        .db
-        .delete_provider(&id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+    let deleted = state.db.delete_provider(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
 
     Ok(Json(json!({ "deleted": deleted })))
 }
@@ -203,7 +265,12 @@ pub async fn fetch_models_handler(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
     let mut req = client.get(&url);
     if let Some(key) = payload.api_key.as_deref() {
@@ -248,7 +315,11 @@ pub async fn fetch_models_handler(
     // Ollama format: { "models": [ { "name": "model_name" } ] }
     else if let Some(ollama_models) = resp_json.get("models").and_then(|m| m.as_array()) {
         for item in ollama_models {
-            if let Some(name) = item.get("name").or_else(|| item.get("model")).and_then(|n| n.as_str()) {
+            if let Some(name) = item
+                .get("name")
+                .or_else(|| item.get("model"))
+                .and_then(|n| n.as_str())
+            {
                 models.push(name.to_string());
             }
         }

@@ -4,7 +4,7 @@
 #
 #   ./compile.sh --server             neuxdot-server (static musl) -> release/
 #   ./compile.sh --linux              desktop GUI binary        -> release/
-#   ./compile.sh --plugins            built-in plugins (computer, chat, gitlab) -> release/plugins/
+#   ./compile.sh --plugins            built-in plugins (computer, chat, gitlab, telegram, discord) -> release/plugins/
 #   ./compile.sh --android            signed release APK        -> release/
 #   ./compile.sh --server --android   any combination
 #   ./compile.sh --all                all components
@@ -140,7 +140,7 @@ build_linux() {
 
 # -------------------------------------------------------------- plugins
 build_plugins() {
-  say "Building built-in plugins (computer, chat & gitlab stdio MCP)"
+  say "Building built-in plugins (computer, chat, gitlab, telegram & discord stdio MCP)"
   mkdir -p "$OUT/plugins"
 
   # 1. Computer MCP
@@ -163,6 +163,20 @@ build_plugins() {
   cp "$gitlab_dir/target/release/gitlab" "$OUT/plugins/gitlab"
   strip "$OUT/plugins/gitlab" 2>/dev/null || true
   ok "release/plugins/gitlab ($(du -h "$OUT/plugins/gitlab" | cut -f1))"
+
+  # 4. Telegram MCP
+  local telegram_dir="$ROOT/built-in-plugin/telegram"
+  cargo build --release --manifest-path "$telegram_dir/Cargo.toml"
+  cp "$telegram_dir/target/release/telegram" "$OUT/plugins/telegram"
+  strip "$OUT/plugins/telegram" 2>/dev/null || true
+  ok "release/plugins/telegram ($(du -h "$OUT/plugins/telegram" | cut -f1))"
+
+  # 5. Discord MCP
+  local discord_dir="$ROOT/built-in-plugin/discord"
+  cargo build --release --manifest-path "$discord_dir/Cargo.toml"
+  cp "$discord_dir/target/release/discord" "$OUT/plugins/discord"
+  strip "$OUT/plugins/discord" 2>/dev/null || true
+  ok "release/plugins/discord ($(du -h "$OUT/plugins/discord" | cut -f1))"
 }
 
 # --------------------------------------------------------------- android

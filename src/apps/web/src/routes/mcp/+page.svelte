@@ -53,6 +53,14 @@
 	let formUrlOrCommand = $state('');
 	let formHeadersOrEnv = $state('');
 	let formPermissions = $state<PluginPermissions>(permissionsFromManifest(null, 'binary'));
+	/**
+	 * Network allow-list, comma/whitespace separated. Empty = no network at all
+	 * (the sandbox default); `*` = unrestricted. Binary/stdio plugins have no
+	 * manifest to declare this, so the operator must be able to set it here —
+	 * it is written to `permissions_json`, which `get_permissions` treats as the
+	 * authoritative consent decision.
+	 */
+	let formNetworkAllow = $state('');
 
 	/**
 	 * What the plugin declares it needs. Derived for display only — users cannot
@@ -227,6 +235,7 @@ return permissionsForServer(srv);
 		formUrlOrCommand = '';
 		formHeadersOrEnv = '';
 		formPermissions = parsePermissionsFromManifest(null, 'binary');
+		formNetworkAllow = '';
 		formIsActive = true;
 		uploadedBinaryInfo = null;
 		isUploadingBinary = false;
@@ -248,7 +257,12 @@ return permissionsForServer(srv);
 					: (s.transport as 'stdio' | 'http');
 		formUrlOrCommand = s.url_or_command;
 		formHeadersOrEnv = s.headers_or_env || '';
-		formPermissions = parsePermissions(s);
+		// Prefill from the *effective* grants (stored consent wins over the
+		// manifest). Using the declared set here would silently erase an
+		// operator's narrowing on the next save.
+		const effective = resolvedPermissions(s);
+		formPermissions = effective;
+		formNetworkAllow = (effective.network?.allow ?? []).join(', ');
 		formIsActive = s.is_active !== false;
 		uploadedBinaryInfo = null;
 		isUploadingBinary = false;
@@ -337,6 +351,17 @@ return permissionsForServer(srv);
 		} else {
 			if (!formName.trim() || !formUrlOrCommand.trim()) return;
 		}
+		// Fold the network allow-list into the consent object. Entries are
+		// comma/whitespace separated; `*` means unrestricted.
+		const networkAllow = formNetworkAllow
+			.split(/[\s,]+/)
+			.map((h) => h.trim())
+			.filter(Boolean);
+		formPermissions = { ...formPermissions, network: { allow: networkAllow } };
+		if (formTransport === 'binary' || formTransport === 'stdio') {
+			formPermissions = { ...formPermissions, process: true };
+		}
+
 		isSaving = true;
 		try {
 			if (editingServer) {
@@ -571,46 +596,109 @@ return permissionsForServer(srv);
 
 <!-- Required Access drawer: what this plugin is allowed to touch -->
 {#if accessPlugin}
-{@const accessItems = requiredAccessList(parsePermissions(accessPlugin))}
+{@const accessPerms = parsePermissions(accessPlugin)}
+{@const accessItems = requiredAccessList(accessPerms)}
+{@const unrestrictedNetwork = (accessPerms.network?.allow ?? []).includes('*')}
+{@const bypassesSandbox = unrestrictedNetwork || accessPerms.elevated}
+{@const controlScopes = (Object.keys(accessPerms.control ?? {}) as Array<keyof typeof accessPerms.control>).filter((k) => accessPerms.control[k] === true)}
 <section class="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/60 p-5 shadow-xs space-y-4">
-<div class="flex items-center justify-between border-b border-zinc-200/60 dark:border-zinc-800 pb-3">
-<div class="flex items-center gap-2">
-<ShieldCheck class="h-4 w-4 text-emerald-500" />
-<h3 class="text-xs font-semibold text-zinc-900 dark:text-white">
-Required Access — {accessPlugin.name}
-</h3>
-{#if accessPlugin.version}
-<span class="rounded bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 font-mono text-[10px] text-zinc-500">v{accessPlugin.version}</span>
-{/if}
-</div>
-<button
-type="button"
-class="text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-white"
-onclick={() => (accessPlugin = null)}
->
-Close
-</button>
-</div>
+	<div class="flex items-center justify-between border-b border-zinc-200/60 dark:border-zinc-800 pb-3">
+		<div class="flex items-center gap-2">
+			<ShieldCheck class="h-4 w-4 text-emerald-500" />
+			<h3 class="text-xs font-semibold text-zinc-900 dark:text-white">
+				Required Access & Permissions — {accessPlugin.name}
+			</h3>
+			{#if accessPlugin.version}
+				<span class="rounded bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 font-mono text-[10px] text-zinc-500">v{accessPlugin.version}</span>
+			{/if}
+		</div>
+		<button
+			type="button"
+			class="text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-white"
+			onclick={() => (accessPlugin = null)}
+		>
+			Close
+		</button>
+	</div>
 
-{#if accessItems.length === 0}
-<p class="text-xs text-zinc-500 dark:text-zinc-400">
-This plugin requests no access. It runs in isolation and cannot read storage, the network, or the agent.
-</p>
-{:else}
-<ul class="space-y-2">
-{#each accessItems as item (item.group + item.scope)}
-<li class="flex flex-col gap-0.5 rounded-xl border border-zinc-200/70 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 px-3 py-2">
-<div class="flex flex-wrap items-center gap-2">
-<span class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
-{item.group}
-</span>
-<span class="font-mono text-[10px] text-zinc-500 dark:text-zinc-400">{item.scope}</span>
-</div>
-<p class="text-[11px] text-zinc-600 dark:text-zinc-400">{item.description}</p>
-</li>
-{/each}
-</ul>
-{/if}
+	<!-- Notice explaining manifest declaration -->
+	<div class="rounded-xl border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-950/40 p-3 text-xs text-zinc-600 dark:text-zinc-300 space-y-1">
+		<div class="font-medium text-emerald-500 dark:text-emerald-400 flex items-center gap-1.5">
+			<ShieldCheck class="h-3.5 w-3.5" />
+			<span>Declared by Plugin Manifest</span>
+		</div>
+		<p class="text-[11px] text-zinc-500 dark:text-zinc-400">
+			Permissions are declared upfront by the app manifest. The app cannot exceed or change these scopes.
+		</p>
+	</div>
+
+	{#if controlScopes.length > 0}
+		<!-- Soft warning: this plugin can mutate the server, not just read it. -->
+		<div
+			role="status"
+			class="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200 space-y-1"
+		>
+			<div class="font-medium flex items-center gap-1.5">
+				<Shield class="h-3.5 w-3.5" />
+				<span>Can control the server core</span>
+			</div>
+			<p class="text-[11px] text-amber-700 dark:text-amber-300">
+				This plugin may call the control MCP with its own credential and will act with that account's
+				authority (<span class="font-mono">root</span> credentials act as root). Scopes:
+				<span class="font-mono">{controlScopes.join(', ')}</span>. Only grant this to plugins you fully trust.
+			</p>
+		</div>
+	{/if}
+
+	{#if bypassesSandbox}
+		<!-- Soft warning: the plugin is not contained by the default sandbox. -->
+		<div
+			role="status"
+			class="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200 space-y-1"
+		>
+			<div class="font-medium flex items-center gap-1.5">
+				<Shield class="h-3.5 w-3.5" />
+				<span>Bypasses the default sandbox</span>
+			</div>
+			<p class="text-[11px] text-amber-700 dark:text-amber-300">
+				{#if accessPerms.elevated}
+					This plugin is declared <span class="font-mono">elevated</span> and runs on the host with no bubblewrap sandbox, no network or filesystem isolation. Only grant this to plugins you fully trust.
+				{:else}
+					This plugin requests unrestricted network access (<span class="font-mono">["*"]</span>) and is therefore not contained by the default no-network sandbox. Only grant this to plugins you fully trust.
+				{/if}
+			</p>
+		</div>
+	{/if}
+
+	{#if accessItems.length === 0}
+		<p class="text-xs text-zinc-500 dark:text-zinc-400 italic">
+			This plugin requests no special access. It runs in strict isolation and cannot read storage, profile data, or the network.
+		</p>
+	{:else}
+		<ul class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+			{#each accessItems as item (item.group + item.scope)}
+				<li class="flex flex-col gap-1 rounded-xl border border-zinc-200/70 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-3">
+					<div class="flex flex-wrap items-center gap-2">
+						<span class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+							{item.group}
+						</span>
+						<span class="font-mono text-[10px] text-zinc-500 dark:text-zinc-400">{item.scope}</span>
+					</div>
+					<p class="text-xs text-zinc-700 dark:text-zinc-300">{item.description}</p>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+
+	<div class="flex items-center justify-end pt-3 border-t border-zinc-100 dark:border-zinc-800">
+		<button
+			type="button"
+			class="px-4 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-xs font-medium text-zinc-800 dark:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+			onclick={() => (accessPlugin = null)}
+		>
+			Acknowledge & Close
+		</button>
+	</div>
 </section>
 {/if}
 	</main>
@@ -1064,6 +1152,44 @@ This plugin requests no access. It runs in isolation and cannot read storage, th
 							{/if}
 						</div>
 				{/if}
+
+				<!-- Network allow-list. The sandbox default is no network; this is the
+				     only way to grant a binary/stdio plugin outbound access, because
+				     such a plugin has no manifest to declare it. -->
+				{#if formTransport === 'binary' || formTransport === 'stdio'}
+					<div class="mt-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-950/40 p-3 space-y-1.5">
+						<div class="flex items-center gap-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-300">
+							<Globe class="h-3.5 w-3.5 text-sky-500" />
+							<span>Outbound Network Allow-list</span>
+						</div>
+						<input
+							id="mcp-network-allow"
+							type="text"
+							bind:value={formNetworkAllow}
+							placeholder="api.telegram.org, *.example.com, 10.0.0.0/8"
+							class="w-full rounded-lg border border-zinc-200 dark:border-zinc-750 bg-white dark:bg-zinc-950 px-2.5 py-1.5 text-xs font-mono text-zinc-900 dark:text-white focus:outline-none focus:border-sky-500"
+						/>
+						<p class="text-[11px] text-zinc-500 dark:text-zinc-400">
+							Leave empty for <span class="font-medium">no network</span> (the default). Comma-separated hostnames,
+							{'*.suffix'} wildcards, IPs or CIDRs; <code class="font-mono">*</code> means unrestricted. Enforced by a
+							host-side CONNECT proxy bound into the sandbox.
+						</p>
+					</div>
+				{/if}
+
+				<!-- Read-only: the sandbox default is a host policy, not a per-plugin toggle. -->
+				<div class="mt-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-950/40 p-3">
+					<div class="flex items-center gap-1.5 text-xs font-medium text-emerald-500 dark:text-emerald-400">
+						<ShieldCheck class="h-3.5 w-3.5" />
+						<span>Sandboxed by Default</span>
+					</div>
+					<p class="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+						Sandboxed: runs in an isolated bubblewrap sandbox with no host filesystem access. Outbound network is denied unless you grant it above.
+					</p>
+					<p class="mt-1 text-[11px] text-zinc-400 dark:text-zinc-500">
+						The allow-list is saved as this plugin's consent decision; it can narrow, but never widen, what the manifest declared.
+					</p>
+				</div>
 
 				<div class="mt-6 flex justify-end gap-2 border-t border-zinc-100 dark:border-zinc-800 pt-3">
 					<button

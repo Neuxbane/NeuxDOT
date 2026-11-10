@@ -113,7 +113,9 @@ impl McpClientSession {
             }
         });
 
-        self.transport.send_request("initialize", Some(init_params)).await
+        self.transport
+            .send_request("initialize", Some(init_params))
+            .await
     }
 
     pub async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
@@ -131,6 +133,8 @@ impl McpClientSession {
             "name": name,
             "arguments": arguments
         });
-        self.transport.send_request("tools/call", Some(params)).await
+        self.transport
+            .send_request("tools/call", Some(params))
+            .await
     }
 }

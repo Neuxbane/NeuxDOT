@@ -1,8 +1,10 @@
 pub mod repos;
 pub mod schema;
+pub mod seed;
 
 pub use repos::Database;
 pub use schema::*;
+pub use seed::{ensure_control_plugin, ensure_control_plugins, control_plugin_id};
 
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use std::path::Path;
@@ -39,9 +41,11 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE agents ADD COLUMN output_text_error_message TEXT DEFAULT 'Output Text is not allowed, consider use correct tool or sleep.'")
         .execute(&pool)
         .await;
-    let _ = sqlx::query("ALTER TABLE agents ADD COLUMN max_running_history_chars INTEGER DEFAULT 300000")
-        .execute(&pool)
-        .await;
+    let _ = sqlx::query(
+        "ALTER TABLE agents ADD COLUMN max_running_history_chars INTEGER DEFAULT 300000",
+    )
+    .execute(&pool)
+    .await;
     let _ = sqlx::query("ALTER TABLE agents ADD COLUMN response_hooks_json TEXT DEFAULT '[]'")
         .execute(&pool)
         .await;
@@ -81,9 +85,10 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await;
-    let _ = sqlx::query("ALTER TABLE agent_pushed_messages ADD COLUMN is_consumed BOOLEAN DEFAULT 0")
-        .execute(&pool)
-        .await;
+    let _ =
+        sqlx::query("ALTER TABLE agent_pushed_messages ADD COLUMN is_consumed BOOLEAN DEFAULT 0")
+            .execute(&pool)
+            .await;
     let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN headers_or_env TEXT DEFAULT NULL")
         .execute(&pool)
         .await;
@@ -115,9 +120,11 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN storage_bytes INTEGER DEFAULT 0")
         .execute(&pool)
         .await;
-    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
-        .execute(&pool)
-        .await;
+    let _ = sqlx::query(
+        "ALTER TABLE mcp_servers ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    )
+    .execute(&pool)
+    .await;
 
     // Base system rows remember the template that produced them so a changed
     // system prompt / instruction preset can be detected (see
@@ -142,14 +149,19 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("UPDATE accounts SET role = 'root' WHERE username = 'root'")
         .execute(&pool)
         .await;
+    // Per-agent MCP configuration override
+    let _ = sqlx::query("ALTER TABLE agent_mcp ADD COLUMN config_override TEXT DEFAULT NULL")
+        .execute(&pool)
+        .await;
 
     // Model hyperparameters and context window separation
     let _ = sqlx::query("ALTER TABLE provider_models ADD COLUMN params_json TEXT DEFAULT NULL")
         .execute(&pool)
         .await;
-    let _ = sqlx::query("ALTER TABLE provider_models ADD COLUMN context_window INTEGER DEFAULT NULL")
-        .execute(&pool)
-        .await;
+    let _ =
+        sqlx::query("ALTER TABLE provider_models ADD COLUMN context_window INTEGER DEFAULT NULL")
+            .execute(&pool)
+            .await;
     let _ = sqlx::query(
         "UPDATE provider_models SET context_window = CAST(json_extract(config_json, '$.context_window') AS INTEGER) WHERE context_window IS NULL AND config_json IS NOT NULL AND json_valid(config_json) = 1 AND json_extract(config_json, '$.context_window') IS NOT NULL"
     )

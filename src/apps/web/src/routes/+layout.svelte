@@ -6,6 +6,7 @@
 	import { authState } from '$lib/stores/auth.svelte';
 	import { themeStore } from '$lib/stores/theme.svelte';
 	import { navState } from '$lib/stores/nav.svelte';
+	import { agentsState } from '$lib/stores/agents.svelte';
 	import Avatar from '$lib/components/Avatar.svelte';
 	import {
 		Plus,
@@ -29,7 +30,6 @@
 	// Mobile drill-down, level 1: selecting an agent or nav item hides this and
 	// shows the next screen. The back control on that screen returns here.
 	const sidebarOpen = $derived(navState.level1);
-	let agents = $state<Agent[]>([]);
 	let isNewAgentModalOpen = $state(false);
 	let newAgentName = $state('');
 	let isCreating = $state(false);
@@ -79,7 +79,7 @@
 
 	$effect(() => {
 		if (!agentScope) {
-			agents = [];
+			agentsState.setList([]);
 			return;
 		}
 		loadAgents();
@@ -95,16 +95,16 @@
 		try {
 			const list = await api.agents.list();
 			if (requestId !== agentsRequestId || scope !== agentScope) return;
-			agents = list;
+			agentsState.setList(list);
 		} catch (e) {
 			if (requestId !== agentsRequestId) return;
 			console.error('Failed to load agents:', e);
-			agents = [];
+			agentsState.setList([]);
 		}
 	}
 
 	const filteredAgents = $derived(
-		agents.filter((a) => a.name.toLowerCase().includes(searchQuery.toLowerCase()))
+		agentsState.list.filter((a) => a.name.toLowerCase().includes(searchQuery.toLowerCase()))
 	);
 
 	async function toggleAgentActive(agent: Agent, event?: MouseEvent) {
@@ -114,7 +114,7 @@
 		}
 		try {
 			const updated = await api.agents.patch(agent.id, { is_active: !agent.is_active });
-			agents = agents.map((a) => (a.id === agent.id ? updated : a));
+			agentsState.updateAgent(updated);
 		} catch (e) {
 			console.error('Failed to toggle agent:', e);
 		}
@@ -130,7 +130,7 @@
 		}
 		try {
 			await api.agents.delete(agent.id);
-			agents = agents.filter((a) => a.id !== agent.id);
+			agentsState.removeAgent(agent.id);
 			const currentAgentId = page.url.searchParams.get('agent_id');
 			if (currentAgentId === agent.id) {
 				window.location.href = '/';
@@ -150,7 +150,7 @@
 				strategy: 'fallback',
 				system_prompt: 'You are {{name}}, an autonomous AI assistant.\nAvailable tools: {{tools-preset}}'
 			});
-			agents = [...agents, created];
+			agentsState.addAgent(created);
 			newAgentName = '';
 			isNewAgentModalOpen = false;
 			window.location.href = `/?agent_id=${created.id}`;

@@ -46,23 +46,14 @@ async fn test_db_migration_backfills_params_and_context_window() {
     // Create an agent and bind this model, then get agent models
     let agent = db
         .create_agent(
-            &acc.id,
-            "Agent 1",
-            None,
-            None,
-            None,
-            "fallback",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &acc.id, "Agent 1", None, None, None, "fallback", None, None, None, None, None, None,
         )
         .await
         .unwrap();
 
-    db.set_agent_models(&agent.id, &[model.id.clone()]).await.unwrap();
+    db.set_agent_models(&agent.id, &[model.id.clone()])
+        .await
+        .unwrap();
     let targets = db.get_agent_models(&agent.id).await.unwrap();
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].context_window, Some(128000));
@@ -137,9 +128,7 @@ async fn test_router_does_not_forward_unknown_metadata_key_to_provider() {
     let router = ProviderRouter::new(vec![target], "fallback");
     let messages = vec![json!({"role": "user", "content": "Hello world"})];
 
-    let result = router
-        .execute_chat_completion(messages, None, |_| {})
-        .await;
+    let result = router.execute_chat_completion(messages, None, |_| {}).await;
 
     assert!(result.is_ok(), "Chat completion must succeed");
 
@@ -176,30 +165,31 @@ async fn test_set_provider_models_with_explicit_params_json() {
     let (acc, _) = db.get_or_init_root_account().await.unwrap();
 
     let provider = db
-        .create_provider(
-            &acc.id,
-            "Provider B",
-            "https://api.openai.com/v1",
-            None,
-        )
+        .create_provider(&acc.id, "Provider B", "https://api.openai.com/v1", None)
         .await
         .unwrap();
 
-    let models_input = vec![
-        ModelConfigInput {
-            model_id: "model-explicit".to_string(),
-            name: Some("Explicit Model".to_string()),
-            config_json: Some(r#"{"supports_thinking": true}"#.to_string()),
-            params_json: Some(r#"{"temperature": 0.8}"#.to_string()),
-            context_window: Some(65536),
-        },
-    ];
+    let models_input = vec![ModelConfigInput {
+        model_id: "model-explicit".to_string(),
+        name: Some("Explicit Model".to_string()),
+        config_json: Some(r#"{"supports_thinking": true}"#.to_string()),
+        params_json: Some(r#"{"temperature": 0.8}"#.to_string()),
+        context_window: Some(65536),
+    }];
 
-    db.set_provider_models(&provider.id, &models_input).await.unwrap();
+    db.set_provider_models(&provider.id, &models_input)
+        .await
+        .unwrap();
 
     let models = db.list_provider_models(&provider.id).await.unwrap();
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].context_window, Some(65536));
-    assert_eq!(models[0].params_json.as_deref(), Some(r#"{"temperature": 0.8}"#));
-    assert_eq!(models[0].config_json.as_deref(), Some(r#"{"supports_thinking": true}"#));
+    assert_eq!(
+        models[0].params_json.as_deref(),
+        Some(r#"{"temperature": 0.8}"#)
+    );
+    assert_eq!(
+        models[0].config_json.as_deref(),
+        Some(r#"{"supports_thinking": true}"#)
+    );
 }

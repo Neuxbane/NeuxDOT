@@ -21,7 +21,13 @@ struct TestApp {
     token_b: String,
 }
 
-async fn request(app: &Router, method: &str, uri: &str, token: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn request(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
     if !token.is_empty() {
         builder = builder.header("authorization", format!("Bearer {}", token));
@@ -35,7 +41,9 @@ async fn request(app: &Router, method: &str, uri: &str, token: &str, body: Optio
     };
     let response = app.clone().call(builder.body(body).unwrap()).await.unwrap();
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let value = if bytes.is_empty() {
         Value::Null
     } else {
@@ -56,7 +64,14 @@ async fn setup() -> TestApp {
     let b = db.create_account("bob", &hash).await.unwrap();
 
     let (event_tx, _rx) = tokio::sync::broadcast::channel(16);
-    let app = build_router(AppState { db, event_tx });
+    let app = build_router(AppState {
+        subscriptions: neuxdot_server::subscriptions::SubscriptionHub::new(
+            db.clone(),
+            event_tx.clone(),
+        ),
+        db,
+        event_tx,
+    });
 
     TestApp {
         app,
@@ -106,7 +121,14 @@ async fn preset_crud_roundtrip() {
     assert_eq!(updated["content"], "You are {{agent.name}}.");
 
     // Delete.
-    let (status, _) = request(&t.app, "DELETE", &format!("/api/instruction-presets/{}", id), &t.token_a, None).await;
+    let (status, _) = request(
+        &t.app,
+        "DELETE",
+        &format!("/api/instruction-presets/{}", id),
+        &t.token_a,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (_, list) = request(&t.app, "GET", "/api/instruction-presets", &t.token_a, None).await;
     assert_eq!(list.as_array().unwrap().len(), 0);
@@ -129,14 +151,31 @@ async fn presets_are_isolated_per_account() {
     // B must not see it.
     let (status, list) = request(&t.app, "GET", "/api/instruction-presets", &t.token_b, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list.as_array().unwrap().len(), 0, "B must not see A's presets");
+    assert_eq!(
+        list.as_array().unwrap().len(),
+        0,
+        "B must not see A's presets"
+    );
 
     // B cannot read, update or delete it (404, not 403, to avoid leaking existence).
-    let (status, _) = request(&t.app, "PATCH", &format!("/api/instruction-presets/{}", id), &t.token_b,
-        Some(json!({ "name": "hijacked" }))).await;
+    let (status, _) = request(
+        &t.app,
+        "PATCH",
+        &format!("/api/instruction-presets/{}", id),
+        &t.token_b,
+        Some(json!({ "name": "hijacked" })),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    let (status, _) = request(&t.app, "DELETE", &format!("/api/instruction-presets/{}", id), &t.token_b, None).await;
+    let (status, _) = request(
+        &t.app,
+        "DELETE",
+        &format!("/api/instruction-presets/{}", id),
+        &t.token_b,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Still intact and unchanged for A.
@@ -149,15 +188,33 @@ async fn presets_are_isolated_per_account() {
 async fn invalid_presets_are_rejected() {
     let t = setup().await;
 
-    let (status, _) = request(&t.app, "POST", "/api/instruction-presets", &t.token_a,
-        Some(json!({ "name": "   ", "content": "x" }))).await;
+    let (status, _) = request(
+        &t.app,
+        "POST",
+        "/api/instruction-presets",
+        &t.token_a,
+        Some(json!({ "name": "   ", "content": "x" })),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "blank name");
 
-    let (status, _) = request(&t.app, "POST", "/api/instruction-presets", &t.token_a,
-        Some(json!({ "name": "ok", "content": "  " }))).await;
+    let (status, _) = request(
+        &t.app,
+        "POST",
+        "/api/instruction-presets",
+        &t.token_a,
+        Some(json!({ "name": "ok", "content": "  " })),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "blank content");
 
-    let (status, _) = request(&t.app, "PATCH", "/api/instruction-presets/does-not-exist", &t.token_a,
-        Some(json!({ "name": "x" }))).await;
+    let (status, _) = request(
+        &t.app,
+        "PATCH",
+        "/api/instruction-presets/does-not-exist",
+        &t.token_a,
+        Some(json!({ "name": "x" })),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

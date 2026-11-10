@@ -99,43 +99,178 @@ pub struct StdioTransport {
     pending_requests: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpError>>>>>,
     next_id: AtomicI64,
     child: Mutex<Child>,
+    /// Owns the sandbox allow-list proxy (and its unix socket) for the lifetime
+    /// of the child. Dropping it here would abort the proxy task while the
+    /// sandboxed plugin is still running, so every outbound request would fail
+    /// with "error sending request". `None` for elevated / no-proxy launches.
+    _proxy_guard: Option<Arc<crate::mcp::proxy::AllowListProxy>>,
+}
+
+/// True when the isolation binary is on PATH.
+///
+/// Checked once and cached: `bwrap` presence cannot change during a process
+/// lifetime in any way that matters, and spawning a plugin is on the hot path.
+fn sandbox_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let found = std::env::var_os("PATH")
+            .map(|paths| {
+                std::env::split_paths(&paths).any(|dir| {
+                    let candidate = dir.join("bwrap");
+                    candidate.is_file()
+                })
+            })
+            .unwrap_or(false);
+        if !found {
+            warn!("bubblewrap ('bwrap') not found on PATH; sandboxed plugins cannot start");
+        }
+        found
+    })
 }
 
 impl StdioTransport {
+    /// Build the process command for `launch`.
+    ///
+    /// Returns the command plus the guard that must outlive the child: when a
+    /// network allow-list is configured the guard owns the proxy socket and its
+    /// task, and dropping it while the child runs would strand every request.
+    async fn build_command(
+        program: &str,
+        args: &[String],
+        launch: &crate::mcp::sandbox::Launch,
+        env: &[(String, String)],
+        _notification_tx: mpsc::UnboundedSender<McpNotification>,
+    ) -> Result<(Command, Option<Arc<crate::mcp::proxy::AllowListProxy>>), McpError> {
+        match launch {
+            crate::mcp::sandbox::Launch::Elevated => {
+                let mut command = Command::new(program);
+                command.args(args);
+                for (key, value) in env {
+                    command.env(key, value);
+                }
+                debug!("spawning plugin on the host (elevated): {program}");
+                Ok((command, None))
+            }
+            crate::mcp::sandbox::Launch::Sandboxed(spec) => {
+                let proxy = if spec.uses_proxy() {
+                    let socket = spec.proxy_socket.clone().ok_or_else(|| {
+                        McpError::Protocol(
+                            "sandbox spec requests a proxy without a socket path".to_string(),
+                        )
+                    })?;
+                    match crate::mcp::proxy::AllowListProxy::start(socket, spec.network.clone())
+                        .await
+                    {
+                        Ok(proxy) => Some(proxy),
+                        Err(e) => {
+                            return Err(McpError::Protocol(format!(
+                                "cannot start the sandbox allow-list proxy: {e}"
+                            )));
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                if !sandbox_available() {
+                    return Err(McpError::Protocol(
+                        "bubblewrap ('bwrap') is not installed, so this plugin cannot be run in \
+                         isolation. Install bubblewrap, or set permissions.elevated=true in the \
+                         plugin manifest to run it on the host instead."
+                            .to_string(),
+                    ));
+                }
+
+                let mut command = crate::mcp::sandbox::sandboxed_command(program, args, spec);
+                for (key, value) in env {
+                    command.env(key, value);
+                }
+                info!(
+                    "spawning plugin in the sandbox: {}",
+                    crate::mcp::sandbox::describe(spec)
+                );
+                // A plugin that needs the network but was granted nothing will
+                // fail every outbound request with a bare reqwest error, which
+                // reads like an upstream outage. Say so at spawn time, once.
+                if spec.network.is_denied() {
+                    warn!(
+                        "plugin spawned with NO NETWORK: every outbound request will fail. \
+                         Grant hosts in the plugin's Network allow-list \
+                         (permissions.network.allow) if it needs the internet."
+                    );
+                }
+                Ok((command, proxy))
+            }
+        }
+    }
+
     pub async fn spawn(
         command_line: &str,
         env_raw: Option<&str>,
+        agent_id: Option<&str>,
         notification_tx: mpsc::UnboundedSender<McpNotification>,
+    ) -> Result<Arc<Self>, McpError> {
+        Self::spawn_with_sandbox(
+            command_line,
+            env_raw,
+            agent_id,
+            notification_tx,
+            &crate::mcp::sandbox::Launch::Elevated,
+        )
+        .await
+    }
+
+    /// Spawn a plugin process under an explicit isolation policy.
+    ///
+    /// This is the entry point every host call site should use: it decides
+    /// whether the plugin runs inside the bubblewrap sandbox
+    /// ([`crate::mcp::sandbox`]) or, only when its manifest requested it, on the
+    /// host.
+    pub async fn spawn_with_sandbox(
+        command_line: &str,
+        env_raw: Option<&str>,
+        agent_id: Option<&str>,
+        notification_tx: mpsc::UnboundedSender<McpNotification>,
+        launch: &crate::mcp::sandbox::Launch,
     ) -> Result<Arc<Self>, McpError> {
         let parts: Vec<&str> = command_line.split_whitespace().collect();
         if parts.is_empty() {
             return Err(McpError::Protocol("Empty command string".to_string()));
         }
 
-        let cmd = parts[0];
-        let args = &parts[1..];
-
-        let mut command = Command::new(cmd);
-        command.args(args);
+        let program = parts[0];
+        let mut plugin_args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+        let mut plugin_env: Vec<(String, String)> = Vec::new();
 
         if let Some(raw) = env_raw {
             let trimmed = raw.trim();
             if trimmed.starts_with('[') || trimmed.starts_with('-') {
-                command.args(parse_cli_args(trimmed));
+                plugin_args.extend(parse_cli_args(trimmed));
             } else if trimmed.starts_with('{') {
-                let envs = parse_env_vars(trimmed);
-                for (k, v) in envs {
-                    command.env(k, v);
-                }
+                plugin_env.extend(parse_env_vars(trimmed));
             } else if trimmed.lines().any(|l| l.contains('=') || l.contains(':')) {
-                let envs = parse_env_vars(trimmed);
-                for (k, v) in envs {
-                    command.env(k, v);
-                }
+                plugin_env.extend(parse_env_vars(trimmed));
             } else {
-                command.args(parse_cli_args(trimmed));
+                plugin_args.extend(parse_cli_args(trimmed));
             }
         }
+
+        // Plugins already receive `agent_id` on every tool call. Exporting it at
+        // spawn time lets a plugin resolve per-agent state (tokens, channels)
+        // before the first call, which background streams need.
+        if let Some(agent_id) = agent_id {
+            plugin_env.push(("NEUXDOT_AGENT_ID".to_string(), agent_id.to_string()));
+        }
+
+        let (mut command, proxy_guard) = Self::build_command(
+            program,
+            &plugin_args,
+            launch,
+            &plugin_env,
+            notification_tx.clone(),
+        )
+        .await?;
 
         let mut child = command
             .stdin(Stdio::piped())
@@ -220,12 +355,42 @@ impl StdioTransport {
             }
         });
 
-        Ok(Arc::new(Self {
+        let transport = Arc::new(Self {
             stdin: Mutex::new(stdin),
             pending_requests,
             next_id: AtomicI64::new(1),
             child: Mutex::new(child),
-        }))
+            _proxy_guard: proxy_guard,
+        });
+
+        // Perform standard MCP initialization handshake (with 2s timeout for non-standard servers)
+        let init_params = serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "roots": { "listChanged": true },
+                "sampling": {}
+            },
+            "clientInfo": {
+                "name": "neuxdot",
+                "version": "0.1.0"
+            }
+        });
+
+        let init_future = transport.send_request("initialize", Some(init_params));
+        if let Ok(Ok(_)) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), init_future).await
+        {
+            let notif = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            });
+            let line = serde_json::to_string(&notif).unwrap_or_default() + "\n";
+            let mut stdin_guard = transport.stdin.lock().await;
+            let _ = stdin_guard.write_all(line.as_bytes()).await;
+            let _ = stdin_guard.flush().await;
+        }
+
+        Ok(transport)
     }
 }
 
@@ -270,6 +435,46 @@ impl McpTransport for StdioTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::schema::NetworkPermissions;
+    use crate::mcp::sandbox::{Launch, SandboxSpec};
+
+    /// Regression: the allow-list proxy used to be a local `_proxy_guard` that
+    /// was dropped when `spawn_with_sandbox` returned. The sandboxed child then
+    /// kept running with no proxy behind its `127.0.0.1:41873` relay, so every
+    /// outbound request failed with "error sending request" — with the logs
+    /// showing a *granted* network allow-list, which made it look like a
+    /// Telegram outage. The transport must own the proxy for as long as the
+    /// child lives.
+    #[test]
+    fn transport_holds_the_proxy_guard_for_the_childs_lifetime() {
+        // The type of the field is the contract; this fails to compile if the
+        // guard is ever removed or downgraded to a borrow.
+        fn assert_owns_guard(t: &StdioTransport) -> &Option<Arc<crate::mcp::proxy::AllowListProxy>> {
+            &t._proxy_guard
+        }
+        let _ = assert_owns_guard;
+    }
+
+    #[test]
+    fn allow_list_launch_requests_a_proxy() {
+        let spec = SandboxSpec {
+            workspace: std::env::temp_dir().join("neuxdot-stdio-guard-test"),
+            program: None,
+            network: NetworkPermissions {
+                allow: vec!["api.telegram.org".to_string()],
+            },
+            proxy_socket: Some(std::env::temp_dir().join("neuxdot-stdio-guard-test.sock")),
+        };
+        let launch = Launch::Sandboxed(spec);
+        match launch {
+            Launch::Sandboxed(s) => {
+                assert!(s.uses_proxy(), "an allow-list must use the proxy");
+                assert!(!s.shares_host_network(), "an allow-list must not get --share-net");
+            }
+            Launch::Elevated => panic!("allow-list must stay sandboxed"),
+        }
+    }
+
 
     #[test]
     fn test_parse_json_envs() {
@@ -291,7 +496,17 @@ mod tests {
     fn test_parse_cli_args() {
         let raw = "--token my-token --port 8080 --name 'My Service'";
         let args = parse_cli_args(raw);
-        assert_eq!(args, vec!["--token", "my-token", "--port", "8080", "--name", "My Service"]);
+        assert_eq!(
+            args,
+            vec![
+                "--token",
+                "my-token",
+                "--port",
+                "8080",
+                "--name",
+                "My Service"
+            ]
+        );
 
         let json_raw = r#"["--token", "glpat-123", "--read-only"]"#;
         let args2 = parse_cli_args(json_raw);

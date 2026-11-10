@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GitLab Configuration — MCP App</title>
+<style>
+  :root {
+    --bg: #09090b;
+    --surface: #121215;
+    --surface-hover: #18181c;
+    --border: #27272a;
+    --border-subtle: #1e1e24;
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --primary: #fc6d26;
+    --primary-hover: #e24329;
+    --accent: #6b4fbb;
+    --success: #10b981;
+    --success-bg: rgba(16, 185, 129, 0.1);
+    --error: #ef4444;
+    --error-bg: rgba(239, 68, 68, 0.1);
+    --warning: #f59e0b;
+    --warning-bg: rgba(245, 158, 11, 0.1);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fafafa;
+      --surface: #ffffff;
+      --surface-hover: #f4f4f5;
+      --border: #e4e4e7;
+      --border-subtle: #f4f4f5;
+      --text: #09090b;
+      --muted: #71717a;
+    }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 20px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .container {
+    max-width: 640px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+  }
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .gitlab-logo {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+  }
+  .title-group h1 {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .title-group p {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .agent-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .agent-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #6366f1;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .status-badge-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .badge-override {
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+  .badge-global {
+    background: rgba(99, 102, 241, 0.1);
+    color: #818cf8;
+    border: 1px solid rgba(99, 102, 241, 0.3);
+  }
+
+  .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .hint {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  input[type="text"], input[type="password"] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.15s ease;
+    font-family: inherit;
+  }
+  input[type="text"]:focus, input[type="password"]:focus {
+    border-color: var(--primary);
+  }
+  .toggle-pwd {
+    position: absolute;
+    right: 8px;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 4px 6px;
+  }
+  .toggle-pwd:hover {
+    color: var(--text);
+  }
+
+  .chips {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
+  .chip {
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .chip:hover {
+    color: var(--text);
+    border-color: var(--primary);
+  }
+
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .checkbox-row input {
+    cursor: pointer;
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .action-group {
+    display: flex;
+    gap: 8px;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 8px 14px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border: none;
+  }
+  .btn-primary {
+    background: var(--primary);
+    color: #ffffff;
+  }
+  .btn-primary:hover {
+    background: var(--primary-hover);
+  }
+  .btn-secondary {
+    background: var(--surface-hover);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover {
+    border-color: var(--muted);
+  }
+  .btn-danger-text {
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    padding: 6px 8px;
+  }
+  .btn-danger-text:hover {
+    color: var(--error);
+    text-decoration: underline;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .alert {
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 11px;
+    display: none;
+  }
+  .alert-success {
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+  .alert-error {
+    background: var(--error-bg);
+    color: var(--error);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+
+  .test-result-card {
+    display: none;
+    align-items: center;
+    gap: 12px;
+    background: var(--success-bg);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    border-radius: 12px;
+    padding: 10px 14px;
+  }
+  .user-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--border);
+  }
+  .user-info {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .user-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .user-meta {
+    font-size: 11px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <svg class="gitlab-logo" viewBox="0 0 24 24" fill="none">
+        <path d="M22.65 14.39L20.06 6.47a.82.82 0 0 0-1.57 0l-2.4 7.37H7.91L5.51 6.47a.82.82 0 0 0-1.57 0L1.35 14.39a1.64 1.64 0 0 0 .59 1.83l10.06 7.3a1.64 1.64 0 0 0 1.94 0l10.06-7.3a1.64 1.64 0 0 0 .65-1.83z" fill="#E24329"/>
+        <path d="M12 23.52l10.65-9.13a1.64 1.64 0 0 0 .65-1.83l-1.24-3.83L12 23.52z" fill="#FC6D26"/>
+        <path d="M12 23.52L1.35 14.39a1.64 1.64 0 0 1-.59-1.83l1.24-3.83L12 23.52z" fill="#FCA326"/>
+      </svg>
+      <div class="title-group">
+        <h1>GitLab Settings</h1>
+        <p>Configure credentials and instance for this agent</p>
+      </div>
+    </div>
+    <div class="agent-pill">
+      <span class="agent-dot" id="agent-dot"></span>
+      <span id="agent-name">Loading agent...</span>
+    </div>
+  </header>
+
+  <!-- Configuration Card -->
+  <main class="card">
+    <div class="status-badge-row">
+      <span class="hint">Scope of this configuration:</span>
+      <span class="badge badge-global" id="scope-badge">Inheriting Global Settings</span>
+    </div>
+
+    <!-- Alert Banner -->
+    <div class="alert" id="alert-banner"></div>
+
+    <!-- Test Result Card -->
+    <div class="test-result-card" id="test-result-card">
+      <img id="user-avatar" class="user-avatar" src="" alt="Avatar" />
+      <div class="user-info">
+        <span class="user-name" id="user-display-name">Authenticated User</span>
+        <span class="user-meta" id="user-meta">@username • GitLab</span>
+      </div>
+    </div>
+
+    <!-- Form: Instance Domain -->
+    <div class="form-group">
+      <label for="gitlab-domain">GitLab Instance Domain / URL</label>
+      <input type="text" id="gitlab-domain" placeholder="https://gitlab.com" />
+      <div class="chips">
+        <span class="chip" onclick="setDomain('https://gitlab.com')">https://gitlab.com</span>
+        <span class="chip" onclick="setDomain('https://gitlab.gnome.org')">GNOME GitLab</span>
+      </div>
+      <span class="hint">The URL of your GitLab instance (cloud or self-hosted).</span>
+    </div>
+
+    <!-- Form: Personal Access Token -->
+    <div class="form-group">
+      <label for="gitlab-token">Personal Access Token</label>
+      <div class="input-wrapper">
+        <input type="password" id="gitlab-token" placeholder="glpat-..." autocomplete="off" />
+        <button type="button" class="toggle-pwd" id="toggle-pwd" onclick="togglePasswordVisibility()">Show</button>
+      </div>
+      <span class="hint">Create a token with <code>api</code> or <code>read_api</code> scope in your GitLab User Settings &rarr; Access Tokens.</span>
+    </div>
+
+    <!-- Form: Default Project -->
+    <div class="form-group">
+      <label for="gitlab-project">Default Project ID or Path (Optional)</label>
+      <input type="text" id="gitlab-project" placeholder="e.g. username/my-repo or 12345678" />
+      <span class="hint">Automatically applied when tools are invoked without specifying a project.</span>
+    </div>
+
+    <!-- Form: Read-Only Toggle -->
+    <div class="form-group">
+      <label class="checkbox-row">
+        <input type="checkbox" id="gitlab-readonly" />
+        <span>Enforce Read-Only Mode for this agent</span>
+      </label>
+      <span class="hint">Prevents the bot from creating issues, merge requests, or modifying repository code.</span>
+    </div>
+
+    <!-- Actions -->
+    <div class="actions">
+      <div>
+        <button type="button" class="btn-danger-text" id="btn-revert" onclick="revertToGlobal()" style="display: none;">
+          Revert to Global Settings
+        </button>
+      </div>
+      <div class="action-group">
+        <button type="button" class="btn-secondary" id="btn-test" onclick="testConnection()">
+          Test Connection
+        </button>
+        <button type="button" class="btn-primary" id="btn-save" onclick="saveConfig()">
+          Save for Agent
+        </button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  let rpcId = 1;
+  const pending = new Map();
+  let currentAgentId = '';
+  let hasOverride = false;
+
+  function rpc(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = rpcId++;
+      pending.set(id, { resolve, reject });
+      window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+    });
+  }
+
+  window.addEventListener('message', (event) => {
+    const data = event.data;
+    if (!data || data.jsonrpc !== '2.0') return;
+
+    if (data.id && pending.has(data.id)) {
+      const { resolve, reject } = pending.get(data.id);
+      pending.delete(data.id);
+      if (data.error) {
+        reject(data.error);
+      } else {
+        resolve(data.result);
+      }
+      return;
+    }
+
+    if (data.method === 'ui/context' && data.params) {
+      applyContext(data.params);
+    }
+  });
+
+  function mcpTool(name, args) {
+    return rpc('tools/call', { name, arguments: args || {} });
+  }
+
+  function setDomain(url) {
+    document.getElementById('gitlab-domain').value = url;
+  }
+
+  function togglePasswordVisibility() {
+    const pwd = document.getElementById('gitlab-token');
+    const btn = document.getElementById('toggle-pwd');
+    if (pwd.type === 'password') {
+      pwd.type = 'text';
+      btn.textContent = 'Hide';
+    } else {
+      pwd.type = 'password';
+      btn.textContent = 'Show';
+    }
+  }
+
+  function showAlert(msg, isSuccess) {
+    const b = document.getElementById('alert-banner');
+    b.className = 'alert ' + (isSuccess ? 'alert-success' : 'alert-error');
+    b.textContent = msg;
+    b.style.display = 'block';
+  }
+
+  function hideAlert() {
+    document.getElementById('alert-banner').style.display = 'none';
+  }
+
+  function applyContext(ctx) {
+    if (ctx?.agent?.id) {
+      currentAgentId = ctx.agent.id;
+      document.getElementById('agent-name').textContent = ctx.agent.name || ctx.agent.id.slice(0, 8);
+      if (ctx.agent.avatar?.color) {
+        document.getElementById('agent-dot').style.background = ctx.agent.avatar.color;
+      }
+      loadConfig();
+    }
+  }
+
+  async function loadConfig() {
+    if (!currentAgentId) return;
+    hideAlert();
+    try {
+      const res = await mcpTool('gitlab_get_config', { agent_id: currentAgentId });
+      const raw = res?.content?.[0]?.text;
+      const cfg = raw ? JSON.parse(raw) : {};
+
+      hasOverride = Boolean(cfg.has_override);
+      updateScopeBadge(hasOverride);
+
+      document.getElementById('gitlab-domain').value = cfg.domain || 'https://gitlab.com';
+      document.getElementById('gitlab-token').value = cfg.token || '';
+      document.getElementById('gitlab-project').value = cfg.default_project_id || '';
+      document.getElementById('gitlab-readonly').checked = Boolean(cfg.read_only);
+
+      document.getElementById('btn-revert').style.display = hasOverride ? 'inline-block' : 'none';
+    } catch (e) {
+      console.error('Failed to load agent GitLab config:', e);
+    }
+  }
+
+  function updateScopeBadge(isOverride) {
+    const badge = document.getElementById('scope-badge');
+    if (isOverride) {
+      badge.className = 'badge badge-override';
+      badge.textContent = 'Custom Agent Override Active';
+    } else {
+      badge.className = 'badge badge-global';
+      badge.textContent = 'Inheriting Global Settings';
+    }
+  }
+
+  async function testConnection() {
+    hideAlert();
+    const resultCard = document.getElementById('test-result-card');
+    resultCard.style.display = 'none';
+
+    const domain = document.getElementById('gitlab-domain').value.trim() || 'https://gitlab.com';
+    const token = document.getElementById('gitlab-token').value.trim();
+
+    if (!token) {
+      showAlert('Please enter a Personal Access Token to test.', false);
+      return;
+    }
+
+    const btn = document.getElementById('btn-test');
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+
+    try {
+      const res = await mcpTool('gitlab_test_connection', { domain, token });
+      const raw = res?.content?.[0]?.text;
+      const data = raw ? JSON.parse(raw) : {};
+
+      if (data.ok) {
+        const u = data.user || {};
+        document.getElementById('user-display-name').textContent = u.name || u.username || 'GitLab User';
+        document.getElementById('user-meta').textContent = `@${u.username || 'user'} • ${domain}${data.version ? ` (v${data.version})` : ''}`;
+        const avatar = document.getElementById('user-avatar');
+        if (u.avatar_url) {
+          avatar.src = u.avatar_url;
+          avatar.style.display = 'block';
+        } else {
+          avatar.style.display = 'none';
+        }
+        resultCard.style.display = 'flex';
+        showAlert('Connection successful! Authenticated with GitLab API.', true);
+      } else {
+        showAlert(data.error || 'Connection failed: Check token and domain.', false);
+      }
+    } catch (e) {
+      showAlert('Connection test error: ' + (e?.message || e), false);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Test Connection';
+    }
+  }
+
+  async function saveConfig() {
+    if (!currentAgentId) {
+      showAlert('Cannot save: Agent ID not resolved.', false);
+      return;
+    }
+
+    const domain = document.getElementById('gitlab-domain').value.trim() || 'https://gitlab.com';
+    const token = document.getElementById('gitlab-token').value.trim();
+    const defaultProject = document.getElementById('gitlab-project').value.trim();
+    const readOnly = document.getElementById('gitlab-readonly').checked;
+
+    if (!token) {
+      showAlert('Personal Access Token cannot be empty.', false);
+      return;
+    }
+
+    const btn = document.getElementById('btn-save');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    try {
+      const res = await mcpTool('gitlab_set_config', {
+        agent_id: currentAgentId,
+        domain,
+        token,
+        default_project_id: defaultProject || null,
+        read_only: readOnly,
+        reset: false
+      });
+
+      hasOverride = true;
+      updateScopeBadge(true);
+      document.getElementById('btn-revert').style.display = 'inline-block';
+      showAlert('GitLab configuration saved specifically for this agent!', true);
+    } catch (e) {
+      showAlert('Failed to save configuration: ' + (e?.message || e), false);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save for Agent';
+    }
+  }
+
+  async function revertToGlobal() {
+    if (!currentAgentId) return;
+    if (!confirm('Revert this agent to global GitLab settings?')) return;
+
+    try {
+      await mcpTool('gitlab_set_config', {
+        agent_id: currentAgentId,
+        reset: true
+      });
+      hasOverride = false;
+      document.getElementById('test-result-card').style.display = 'none';
+      await loadConfig();
+      showAlert('Reverted to global configuration.', true);
+    } catch (e) {
+      showAlert('Failed to revert: ' + (e?.message || e), false);
+    }
+  }
+
+  // Initialize on mount
+  rpc('ui/initialize', {}).then((ctx) => {
+    applyContext(ctx);
+  }).catch((e) => {
+    console.error('ui/initialize error:', e);
+  });
+</script>
+</body>
+</html>

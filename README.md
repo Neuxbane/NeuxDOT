@@ -1,36 +1,38 @@
 <div align="center">
 
-<img src="assets/banner.svg" alt="NeuxDOT - Cache-Invariant Zero-Trust MCP Agent Runtime &amp; Desktop" width="100%" />
+<img src="assets/banner.svg" alt="NeuxDOT — an MCP-native agent runtime" width="100%" />
 
 <br/>
 
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-F97316.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-24C8DB.svg?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app/)
-[![Svelte](https://img.shields.io/badge/SvelteKit-5%20(Runes)-FF3E00.svg?style=for-the-badge&logo=svelte&logoColor=white)](https://svelte.dev/)
-[![Wasmtime](https://img.shields.io/badge/Wasmtime-WASM%20Sandbox-8B5CF6.svg?style=for-the-badge&logo=webassembly&logoColor=white)](https://wasmtime.dev/)
-[![SQLite](https://img.shields.io/badge/SQLite-WAL%20Mode-003B57.svg?style=for-the-badge&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![MCP](https://img.shields.io/badge/MCP-Native%20Stdio%2FSSE-EC4899.svg?style=for-the-badge&logo=sparkles&logoColor=white)](https://modelcontextprotocol.io/)
+[![SvelteKit](https://img.shields.io/badge/SvelteKit-5%20(runes)-FF3E00.svg?style=for-the-badge&logo=svelte&logoColor=white)](https://svelte.dev/)
+[![SQLite](https://img.shields.io/badge/SQLite-single--file-003B57.svg?style=for-the-badge&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![MCP](https://img.shields.io/badge/MCP-stdio%20%7C%20HTTP%2BSSE-EC4899.svg?style=for-the-badge)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-MIT-10B981.svg?style=for-the-badge)](LICENSE)
-[![Kawaii](https://img.shields.io/badge/Kawaii-100%25%20Inside-F43F5E.svg?style=for-the-badge&logo=heart&logoColor=white)](#-the-neuxdot-paradigm)
+[![Mascot](https://img.shields.io/badge/Mascot-100%25%20chibi-F43F5E.svg?style=for-the-badge&logo=heart&logoColor=white)](#-the-philosophy)
 
 <br/>
 
-> ### 🌸 (｡•̀ᴗ-)✧ *“Zero-trust determinism never looked so cute!”*
-> **NeuxDOT** is an ultra-fast, cache-invariant, zero-trust MCP-native agent runtime & desktop platform. Built for developers who demand **100% deterministic prompt prefix caching**, surgical **invariant meta-tools**, sandboxed **Wasmtime WebAssembly extensions**, and real-time **unprompted event streaming**.
+> ### (｡•̀ᴗ-)✧ *The prompt prefix stays still. Everything else moves.*
+>
+> NeuxDOT is a single-binary agent runtime: one Rust server, one SQLite file,
+> every external capability behind MCP. The agent talks to the world through a
+> **fixed 18-tool surface** so the cached prompt prefix survives; the world
+> changes underneath it. Plugins are sandboxed by default, permissions are
+> per-plugin and per-agent, and nothing is silently discarded.
 
 <br/>
 
-**[ 🌸 The Paradigm ](#-the-neuxdot-paradigm)** &nbsp;•&nbsp;
-**[ 🏛️ Architecture ](#-system-architecture)** &nbsp;•&nbsp;
-**[ 🖼️ Screenshots ](#-screenshots)** &nbsp;•&nbsp;
-**[ ✨ 11 Meta-Tools ](#1--11-invariant-meta-tools-cache-stability-guarantee)** &nbsp;•&nbsp;
-**[ 🧩 Unified Plugins ](#2--unified-plugin-system)** &nbsp;•&nbsp;
-**[ 🧠 Instruction Presets ](#3--agent-instruction-presets)** &nbsp;•&nbsp;
-**[ 🛡️ Multi-Account & Roles ](#4--multi-account--role-based-access)** &nbsp;•&nbsp;
-**[ 🧩 WASM Sandbox ](#5--sandboxed-webassembly-wasm-extensions)** &nbsp;•&nbsp;
-**[ 🪝 Response Hooks ](#6--transparent-response-hooks--handlebars)** &nbsp;•&nbsp;
-**[ 🚀 Quick Start ](#-quick-start)** &nbsp;•&nbsp;
-**[ 🛠️ Extension Guide ](#-building-wasm-extensions)**
+**[ Philosophy ](#-the-philosophy)** &nbsp;•&nbsp;
+**[ Architecture ](#-architecture)** &nbsp;•&nbsp;
+**[ The 18 Tools ](#-the-18-tools)** &nbsp;•&nbsp;
+**[ Plugins ](#-plugins)** &nbsp;•&nbsp;
+**[ Memory ](#-two-memories-deliberately)** &nbsp;•&nbsp;
+**[ Security ](#-security-model)** &nbsp;•&nbsp;
+**[ Quick Start ](#-quick-start)** &nbsp;•&nbsp;
+**[ Status ](#-status-honest-section)** &nbsp;•&nbsp;
+**[ Authoring ](#-authoring-a-plugin)**
 
 <br/>
 
@@ -38,417 +40,437 @@
 
 ---
 
-## ⚡ The NeuxDOT Paradigm
+## 🧭 The Philosophy
 
-Traditional agent architectures dump volatile tool JSON schemas, dynamic server updates, and unformatted state directly into the system prompt. Every turn breaks LLM prefix caches, ballooning token bills and injecting multi-second latency penalties.
+Most agent frameworks fail in the same place: they put **volatile things in a
+stable place**. Tool schemas, server status, the memory blob, a new preset —
+all shoved into the system prompt. Every change invalidates the LLM's prefix
+cache, so every turn re-processes the whole prompt. You pay for the same tokens
+twice, then three times, and latency climbs.
 
-```
-Traditional Framework:
-[ Volatile System Prompt (Tool Schemas + Server State) ] ➔ 💥 Cache Miss Every Turn!
+NeuxDOT is built on four rules. They are not slogans; each one maps to code you
+can read.
 
-NeuxDOT Architecture:
-[ ❄️ Invariant Static Prompt + 11 Meta-Tools ] ➔ ⚡ 100% Cache Hit Across All Turns!
-```
+### 1. The prompt is a cache key. Treat it like one.
 
-NeuxDOT eliminates this flaw at the runtime kernel layer:
+The system prompt contains exactly three things: the agent's instruction text,
+its memory block, and the list of enabled tool *names*. External tool schemas
+never appear — the model calls `search_tools` → `get_tool_schema` → `call_tool`
+to fetch them on demand. Adding a plugin does not change the prompt.
 
-* ⚡ **100% Cache-Invariance**: System prompts and tool signatures never change across turns. The model pulls external schemas dynamically on-demand using invariant meta-tools.
-* 🛡️ **Zero-Trust Tool Discovery**: External MCP endpoints and tools disabled by policy are completely masked from the LLM. Zero prompt leakage.
-* 🌸 **Unprompted Event Push Streams**: True asynchronous MCP push notifications (`notifications/resources/updated`) stream live updates directly into context without busy-wait polling.
-* 🧩 **Sandboxed WASM Extensibility**: Isolated WebAssembly extensions running inside Wasmtime with host-managed Key-Value stores and seamless data migration between versions.
-* ⏳ **Single-Timer Deterministic Sleeping**: Native `sleep(duration)` with timer supersedence, cancellation guarantees, and instant wake-up on push events.
-* 🎀 **Pure Handlebars Templating**: No hardcoded system prompt injections. Complete user control over prompt structure and memory formatting.
-* 🪝 **Transparent Response Hooks**: Custom message telemetry evaluated with `{{time}}` and `{{context_remaining}}` injected into every tool execution event.
+What *does* change it, and is therefore an explicit, rare event:
 
----
+| Change | When the cached prefix is invalidated |
+| :--- | :--- |
+| Instruction text / preset changed | next turn (row 0 is re-rendered in place) |
+| `instructionsWrite` / `instructionsEdit` | **at the next `compact`**, not immediately |
+| Plugin enabled/disabled | next turn (the `{{tools.preset}}` list changes) |
+| Nothing else | never |
 
-## 🖼️ Screenshots
+That last row is the useful part. Conversations are *not* mutated to reflect a
+new instruction mid-flight; `compact` is the designated rebuild point, so a
+running agent keeps a warm cache until it is genuinely time to rebuild.
 
-The dashboard ships with a full **bright / dark** theme pair. Every screen below is the real
-SvelteKit UI, not a mockup.
+> **Honest caveat:** the memory block is embedded in the system prompt, so
+> editing it *does* eventually invalidate the prefix. NeuxDOT's claim is
+> "stable across an ordinary turn", not "memory is free". `memoryNode*` exists
+> partly so you can record facts without touching the block.
 
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <a href="assets/multi_servers_multi_accounts_bright.png">
-        <img src="assets/multi_servers_multi_accounts_bright.png" alt="Server Accounts — multi-server, multi-account with roles and password change" width="100%" />
-      </a>
-      <sub><b>☀️ Multi-Server / Multi-Account</b> — root &amp; member roles, connected server profiles, and password change scoped to the signed-in account.</sub>
-    </td>
-    <td width="50%" valign="top">
-      <a href="assets/account_server_profile_bright.png">
-        <img src="assets/account_server_profile_bright.png" alt="Server Profile — display name, cropped avatar, fallback color and shape" width="100%" />
-      </a>
-      <sub><b>☀️ Server Profile</b> — display name, cropped &amp; compressed profile picture, URL fallback, and colored-initials preview.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <a href="assets/agent_setting_dark.png">
-        <img src="assets/agent_setting_dark.png" alt="Agent settings — granular tool permissions and push MCP subscriptions" width="100%" />
-      </a>
-      <sub><b>🌙 Agent Settings &amp; Tool Permissions</b> — zero-trust per-tool toggles and unprompted push subscriptions, grouped under a live plugin panel.</sub>
-    </td>
-    <td width="50%" valign="top">
-      <a href="assets/costom_mcp_dark.png">
-        <img src="assets/costom_mcp_dark.png" alt="Add Plugin — WASM, stdio, HTTP/SSE or custom cURL tools with live test runner" width="100%" />
-      </a>
-      <sub><b>🌙 Add Plugin (Custom cURL)</b> — paste a cURL command; arguments, schema and captures are parsed automatically, with a live test runner.</sub>
-    </td>
-  </tr>
-</table>
-
----
-
-## 🏛️ System Architecture
-
-```mermaid
-erDiagram
-    %% ── NeuxDOT system map: layers as entities, behaviour as operations ──
-
-    WEB_UI ||--o{ API : "REST + WebSocket"
-    API ||--|| AUTH : "verifies JWT, resolves role from DB"
-    API ||--o{ EXECUTOR : "POST /api/agents/:id/run"
-    AUTH }o--|| SQLITE : "accounts, profiles"
-
-    EXECUTOR ||--|| ROUTER : "delegates completion"
-    EXECUTOR ||--|| META_TOOLS : "exposes 11 tools"
-    EXECUTOR ||--|| TIMER : "single active sleep"
-    EXECUTOR ||--|| HOOKS : "appends telemetry"
-    EXECUTOR ||--|| TRUNCATION : "head/body/tail"
-    ROUTER }o--|| LLM : "fallback / round-robin / random"
-
-    EXECUTOR ||--o{ HISTORY : "working context"
-    EXECUTOR ||--o{ TRANSCRIPT : "append-only"
-    TRANSCRIPT ||--|| HISTORY : "inspect recovers pruned text"
-    EXECUTOR ||--o{ PLUGIN : "tool discovery + calls"
-    PLUGIN ||--o{ WASM_ABI : "env imports"
-
-    PLUGIN }o--|| SQLITE : "persist"
-    HISTORY }o--|| SQLITE : "persist"
-    TRANSCRIPT }o--|| SQLITE : "persist"
-
-    WEB_UI {
-        string engine "SvelteKit 5 runes + Tauri"
-    }
-    API {
-        string role "Axum router"
-        string routes "auth, accounts, agents, mcp, plugins, extensions, profile, instruction-presets, ws"
-    }
-    AUTH {
-        string role "root | member"
-        string guards "require_root, resolve_identity"
-        string token "JWT 30d, DB-authoritative"
-    }
-    EXECUTOR {
-        string role "core runtime kernel"
-        string run_turn "one agent turn, max 8 iterations"
-        string setup_mcp_sessions "spawns transports + push listeners"
-        string sanitize_chat_messages "group repair + dedupe"
-        string normalize_history_transcript "one-time history repair"
-        string truncate_for_context "budgeted head body tail"
-    }
-    ROUTER {
-        string strategy "fallback | round-robin | random"
-    }
-    META_TOOLS {
-        string search "search_tools, get_tool_schema, call_tool, list_servers"
-        string memory "setMemory, editMemory, readMemory"
-        string context "compact, sleep"
-        string archive "history_search, history_inspect"
-    }
-    TIMER {
-        string sleep "interruptible by MCP push"
-    }
-    HOOKS {
-        string variables "agent.name, agent.memory, tools.preset, time, context_remaining"
-    }
-    TRUNCATION {
-        string marker "truncated_from_to"
-        string header "UTC timestamp + ctx percent"
-        string overrides "call_tool head body tail"
-    }
-    LLM {
-        string providers "OpenAI, Ollama, Anthropic, proxies"
-    }
-    HISTORY {
-        string role "working context - mutated"
-        string agent_history "role, content, tool_calls_json, tool_call_id"
-        string ops "prune groups, compact"
-    }
-    TRANSCRIPT {
-        string role "append-only archive - never deleted"
-        string agent_transcript "seq, role, origin, turn, full content"
-        string ops "append_transcript, search_transcript, inspect_transcript"
-    }
-    PLUGIN {
-        string wasm "WasmStdioTransport + Wasmtime sandbox"
-        string stdio "StdioTransport - MCP over stdio"
-        string http "HttpTransport - MCP SSE/HTTP"
-        string custom "CustomToolsTransport - declarative HTTP + captures"
-        string ui "MCP Apps: sandboxed iframe"
-        string permissions "ui, storage, process, network, agent_control, identity"
-    }
-    WASM_ABI {
-        string kv "host_kv_get, host_kv_set, host_kv_delete"
-        string fs "host_fs_read, host_fs_write"
-        string agents "host_agent_run, host_agent_run_background"
-        string misc "host_log, host_get_time_str"
-    }
-    SQLITE {
-        string mode "WAL"
-        string tables "17 tables, see ERD"
-    }
-```
-
-
-
-### 💡 Data Plane: Working Context vs. Append-Only Transcript
-
-NeuxDOT keeps two deliberately separate views of an agent's history:
+### 2. History has two speeds. Keep both.
 
 | | `agent_history` | `agent_transcript` |
 | :--- | :--- | :--- |
-| **Purpose** | The live working context sent to the LLM | Immutable long-horizon record |
-| **Mutation** | Pruned and compacted | Append-only, never deleted |
-| **Content** | Head/body/tail truncated | Full fidelity |
-| **Ordering** | `created_at, rowid` | `seq` (monotonic per agent) |
-| **Extra** | — | `origin`, `turn`, `metadata_json` |
+| Purpose | the live context sent to the LLM | immutable long-horizon record |
+| Mutation | pruned + compacted | append-only; no delete/update path exists |
+| Fidelity | head/body/tail truncated | full |
+| Ordering | `created_at`, `rowid` | `seq` (monotonic per agent) |
+| Extra | — | `origin`, `turn`, `metadata_json` |
 
-The transcript is the source of truth for distillation and for `history_search` / `history_inspect`, so nothing a model can no longer see is ever lost.
+Nothing a model can no longer see is lost: every truncated payload can be paged
+back with `history_inspect`, and searched with `history_search`. Truncation is
+self-describing (`<<truncated:FROM-TO>>`) and carries a continuation handle, so
+"the output was cut" is never ambiguous.
 
----
+Pruning removes **whole tool-call groups**. An assistant message with
+`tool_calls` always keeps one `tool` reply per id, because a half-group is
+rejected by every provider.
 
-## 🎯 Sparkling Features
+### 3. Deny by default, then make consent legible.
 
-### 1. 🛡️ 11 Invariant Meta-Tools (Cache-Stability Guarantee)
-
-NeuxDOT never inlines sprawling JSON schemas. The model communicates with the world through 11 immutable meta-tools:
-
-| 🎀 Meta-Tool | 📋 Purpose | ⚡ Invariant Guarantee |
-| :--- | :--- | :--- |
-| `search_tools` | Search external MCP tools by keyword or tag | Filtered by zero-trust agent permissions |
-| `get_tool_schema` | Pull parameter specifications on-demand | Dynamically pulled only when needed |
-| `call_tool` | Execute verified external MCP tools | Strict JSON schema parameter validation |
-| `list_servers` | Inspect connected MCP servers and statuses | Real-time connectivity inspection |
-| `setMemory` | Overwrite persistent agent memory with SHA-256 check | Optimistic concurrency locking |
-| `editMemory` | Surgical search-and-replace update to memory | Protected by hash matching |
-| `readMemory` | Retrieve current untruncated memory content and hash | Integrity-safe memory inspection |
-| `compact` | Rebuild the working context and re-install a freshly rendered system instruction | Cache-safe: applies changed presets/memory at a context-rebuild point |
-| `sleep` | Pause execution for human durations (`10s`, `1m`, `2h`) | Interruptible via incoming push events |
-| `history_search` | Regex search across the full append-only transcript | Recovers text lost to truncation or compaction |
-| `history_inspect` | Read an exact character range of one transcript entry | Pairs with the `<<truncated:from-to>>` markers |
-
-Every tool response and event is prefixed with a context header (`2026-11-02T07:49:33.124Z ctx:30%`) reporting the UTC timestamp and live context pressure.
-
-Large tool results are rendered as a **head / body / tail** view with explicit `<<truncated:from-to>>` markers; the full payload always lives in the append-only transcript and can be paged back with `history_inspect`. `call_tool` accepts optional `head`/`body`/`tail` overrides per call.
-
----
-
-### 2. 🧩 Unified Plugin System
-
-MCP servers, WASM extensions and plain HTTP tools are all *plugins* behind one transport
-abstraction, so an agent never needs to know how a capability is implemented:
-
-| Transport | Description | Default Permissions |
-| :--- | :--- | :--- |
-| `wasm` / `wasm_stdio` | Wasmtime-sandboxed extension served over an MCP shim | ui, storage, agent_control |
-| `stdio` | Classic MCP server over stdio | ui, process, agent_control |
-| `http` | Remote MCP server over SSE / HTTP | ui, network, agent_control |
-| `custom_tools` / `curl` | Declarative HTTP tools with session captures | network, storage |
-
-* **MCP Apps** — WASM plugins can ship UI as a sandboxed `<iframe>`, mounted inside the agent workspace via an `app://` resource URI.
-* **Custom HTTP Tools** — define a request (method, URL, headers, body) plus *captures* that persist `Set-Cookie` headers or JSON fields into session variables (`TOKEN`, `COOKIES`) for later calls.
-* **Per-plugin permissions** (`ui`, `storage`, `process`, `network`, `agent_control`, `identity`) are declared per transport and enforced by the host.
-* `/api/plugins` is the canonical endpoint; `/api/mcp` and `/api/extensions` remain as aliases for compatibility.
-
----
-
-### 3. 🧠 Agent Instruction Presets
-
-System prompts can be reused across agents without duplicating text:
-
-* Presets live in `agent_instruction_presets` and are **strictly per-account** — every query filters by `account_id`, and another account's preset returns `404`, never `403`, so existence is not leaked.
-* An agent points at a preset via `instruction_preset_id`; `NULL` means **Custom (default)** and restores the free-text editor.
-* Variables (`{{agent.name}}`, `{{agent.memory}}`, `{{tools.preset}}`) work exactly as in a custom prompt.
-* Deleting a preset **detaches** agents but keeps their current instruction text, so nothing silently breaks.
-
-> **Cache-safety contract.** Selecting a preset only writes `agents.system_prompt`. A running conversation is never mutated mid-flight — the new instruction is installed when the agent **compacts** (the designated context-rebuild point), so the prompt prefix cache stays warm until then.
-
----
-
-### 4. 🛡️ Multi-Account & Role-Based Access
-
-* Accounts carry a `role` of `root` or `member`, embedded in the JWT and enforced via `require_root()` on account management.
-* **Authority is resolved from the database on every request**, not trusted from the 30-day token — a demoted or deleted account loses access immediately.
-* Guardrails: the **last remaining root** cannot be demoted or deleted, and no one may delete their own account.
-* Password changes take `old_password` / `new_password` / `confirm_password` (wrong current password → `401`, mismatch → `400`, weak → `400`).
-* Profiles support a display name plus a cropped, compressed avatar (`avatar_url`).
-
----
-
-### 5. 🧩 Sandboxed WebAssembly (WASM) Extensions
-
-Extend agent capabilities safely with pre-compiled WebAssembly:
-* **Isolated Host-Managed Storage**: Each extension gets a dedicated Key-Value namespace and isolated filesystem sandbox in `data/<wasm_hash>/`.
-* **Zero-Downtime Data Migration**: Updating an extension automatically migrates existing storage files to the new build and removes stale directories.
-* **Manifest Inspection Modal**: Preview incoming tool definitions, UI panels, and storage requirements before committing updates.
+A plugin declares what it needs in its manifest. A stored per-account decision
+can **narrow** it and never widen it. `elevated` (run on the host, no sandbox)
+can only come from the manifest, and is shown with an amber warning at install.
 
 ```
-┌────────────────────────────────────────────────────────┐
-│  🧩 WASM Sandbox (Wasmtime)                            │
-│  ├── 📦 Isolated Storage: data/<hash>/                  │
-│  ├── 🔑 Host-Managed KV: extension_kv table             │
-│  ├── 🛡️ Safe Host ABI: Memory-bounded syscalls         │
-│  └── 🌸 Background Dispatch: host_agent_run_background │
-└────────────────────────────────────────────────────────┘
+manifest declares  ──►  account consent narrows  ──►  effective grants
+   (what it wants)        (what you allow)            (what it gets)
 ```
+
+The same shape drives three surfaces: the consent editor, the sandbox launcher,
+and the MCP-App UI bridge. One permission object, one deserializer, one meaning.
+
+### 4. Silent degradation is a bug, not a fallback.
+
+The codebase has an explicit rule: **never report success for a write that did
+not happen.** `setMemory` propagates a DB error instead of returning
+`{"success": true}` over a discarded result. `search_tools` reports
+`plugins_unavailable` instead of an empty list when a plugin failed to answer.
+`compact` reports the memory hash it actually installed. Truncation always
+leaves a marker. Where the system cannot be certain, it says so.
 
 ---
 
-### 6. 🪝 Transparent Response Hooks & Handlebars
+## 🏛️ Architecture
 
-System prompt variables are structured with zero hidden magic:
+One server process. One SQLite file. Three crate boundaries.
 
-* `{{agent.name}}`: The agent's configured display name.
-* `{{agent.id}}`: Unique Agent UUID.
-* `{{agent.memory}}` / `{{agent.memory.content}}`: Current persistent memory string.
-* `{{agent.memory.hash}}`: SHA-256 integrity hash of memory.
-* `{{tools.preset}}`: Comma-separated list of enabled tool names.
-* `{{time}}`: Current formatted local timestamp (e.g. `4:15 PM`).
-* `{{context_remaining}}`: Estimated remaining characters before buffer capacity.
-
-#### Transparent Response Hooks Example
-Extensions or users can register hooks that automatically append contextual telemetry to every tool execution response:
-
-```json
-{"content":[{"text":"Message posted to chat console.","type":"text"}]}
+```mermaid
+flowchart TB
+    UI["SvelteKit 5 + Tauri<br/>desktop / web"] -->|REST + WebSocket| API
+    API["Axum API<br/>JWT, DB-resolved role"] --> EXEC
+    EXEC["AgentExecutor<br/>one turn = ≤ 8 iterations"] --> ROUTER
+    EXEC --> META["18 invariant meta-tools"]
+    EXEC --> HIST["agent_history<br/>pruned, truncated"]
+    EXEC --> TRAN["agent_transcript<br/>append-only"]
+    ROUTER["Router<br/>fallback | round-robin | random"] --> LLM["LLM provider"]
+    EXEC --> SESS["MCP sessions<br/>stdio | http"]
+    SESS --> SBX["bubblewrap sandbox<br/>no net unless allow-listed"]
+    SESS --> PROXY["CONNECT allow-list proxy<br/>host-side, unix socket"]
+    API --> HUB["SubscriptionHub<br/>one long-lived session<br/>per agent/plugin"]
+    HUB --> PUSH["push notifications<br/>→ pushed messages → wake turn"]
 ```
-```text
-[Response Hook]
-Current time: 4:15 PM | Buffer remaining: 294,820 chars
+
 ```
+src/core/neuxdot-core/     runtime kernel
+  db/                      schema.rs (types) · repos.rs (all SQL) · seed.rs
+  runtime/                 executor.rs · meta_tools.rs · router.rs · timer_manager.rs
+  mcp/                     stdio · http · custom_tools · sandbox · proxy
+  auth/                    JWT (30d) + Argon2
+src/core/neuxdot-server/   Axum routes, middleware, subscriptions
+src/apps/web/              SvelteKit 5 (runes) + Tailwind
+src/apps/desktop/          Tauri v2 shell
+built-in-plugin/           chat · computer · gitlab · telegram · discord
+docs/                      PLUGIN_CONTRACT.md · HOST_BRIDGE.md
+```
+
+**Request path, in one line:** `POST /api/agents/:id/run` → `AgentExecutor::run_turn`
+→ load history → spawn MCP sessions → loop { call model → dispatch meta-tools →
+repeat } → persist to working history *and* transcript.
+
+### The data plane
+
+20 tables. The load-bearing ones:
+
+| Table | Role |
+| :--- | :--- |
+| `agents`, `agent_providers` | identity, model bindings |
+| `agent_history` | working context (mutated) |
+| `agent_transcript` | append-only archive (`seq`, `origin`, `turn`) |
+| `agent_memories` | the single instructions block (≤ 5,000 chars, hash-guarded) |
+| `agent_memory_nodes` / `agent_memory_links` | keyed wikilink graph + edges |
+| `mcp_servers`, `agent_mcp` | plugins and per-agent bindings/overrides |
+| `agent_tool_permissions` | per-tool enable/disable |
+| `agent_subscriptions`, `agent_pushed_messages` | push streams and their queue |
+| `agent_shares` | owner / edit / manage-shares / view |
+| `accounts`, `profiles` | auth and display data |
 
 ---
 
-### 7. 📜 Running History Buffer, Truncation & Compaction
+## 🎀 The 18 Tools
 
-* Configurable `max_running_history_chars` per agent (defaults to **300,000** characters), with live progress in the agent dashboard.
-* Pruning removes **whole tool-call groups**, never a half-group, so an `assistant` message with `tool_calls` is always followed by one `tool` reply per id — otherwise providers reject the request.
-* An interrupted or corrupted transcript is repaired once on load (`normalize_history_transcript`): unanswered calls get a synthetic reply, misplaced replies become context rather than dangling rows.
-* `compact` clears the working context, reinstalls a freshly rendered system instruction, and leaves the append-only transcript untouched.
+The model's entire permanent surface. Everything else is fetched on demand.
+
+**Discovery (4)** — the cache-stability trick
+
+| Tool | Does |
+| :--- | :--- |
+| `search_tools` | substring match over name/description; reports `plugins_unavailable` when a plugin failed |
+| `get_tool_schema` | full JSON Schema *only* for the tool you asked about |
+| `call_tool` | executes; optional per-call `head`/`body`/`tail` budget |
+| `list_servers` | plugin list with live `active` status |
+
+**Instructions block (3)** — one text blob, re-injected into the prompt
+
+| Tool | Does |
+| :--- | :--- |
+| `instructionsWrite` | replace the ≤ 5,000-char block; needs `currentHash` |
+| `instructionsEdit` | search-and-replace; needs `currentHash` |
+| `instructionsRead` | full text + hash |
+
+**Memory graph (5)** — keyed nodes linked with `[[wikilinks]]`
+
+| Tool | Does |
+| :--- | :--- |
+| `memoryNodeWrite` | create/replace a node (`entity · decision · preference · event · file · concept · skill`) |
+| `memoryNodeRead` | one node + outbound links + backlinks |
+| `memoryNodeSearch` | key matches first, then description, then value |
+| `memoryNodeList` | cheap graph overview with degree |
+| `memoryNodeDelete` | retract a stale fact (hash-guarded) |
+
+**Skills (2)** — reusable procedures stored as `type: "skill"` nodes
+
+`skillWrite`, `skillList`
+
+**Context control (1)**
+
+| Tool | Does |
+| :--- | :--- |
+| `compact` | rebuild working context, re-render the system instruction, keep the transcript. The only place a changed preset goes live. |
+
+**Time (1)**
+
+| Tool | Does |
+| :--- | :--- |
+| `sleep` | `30s`/`1m`/`1h30m`/`1d`, no hard cap. **Blocks inside the turn** until the duration elapses; interruptible by a new turn or a push event. The timer registry is process-local, so a restart drops a pending wake. |
+
+**Archive (2)** — for text the model can no longer see
+
+`history_search` (regex over transcript) · `history_inspect` (exact character
+range of one entry)
+
+> **Two memories, deliberately.** `instructions*` is one hash-guarded blob
+> re-injected every turn — an editable second instruction set. `memoryNode*` is
+> an Obsidian-style graph where each node is independently versioned. Their
+> hashes are unrelated: a hash from one is never valid for the other.
+
+Every tool result is prefixed with a context header
+(`2026-11-02T07:49:33.124Z ctx:30%`), and every truncation carries
+`<<truncated:FROM-TO>>` plus a `history_inspect(id=…)` handle.
+
+---
+
+## 🧩 Plugins
+
+One abstraction, five transports. The agent never knows which one it is.
+
+| Transport | Runs | Process | Network default |
+| :--- | :--- | :--- | :--- |
+| `stdio` | native MCP server over stdin/stdout | yes, **bubblewrap-sandboxed** | **denied** |
+| `binary` | same, installed under `data/binaries/` | yes, sandboxed | **denied** |
+| `http` | remote MCP server (+ SSE push stream) | no | unrestricted (endpoint-scoped) |
+| `custom_tools` / `curl` | declarative HTTP tools evaluated in-process | no | unrestricted |
+| `wasm` | *reserved, see [Status](#-status-honest-section)* | — | — |
+
+### What the sandbox actually is
+
+`bwrap --unshare-all`: user, pid, net, ipc, uts, cgroup and mount namespaces.
+
+| Resource | Visible? |
+| :--- | :--- |
+| `/usr` | read-only (carries `/bin`, `/lib`, `/lib64`) |
+| `/etc` | only `ssl`, `ca-certificates`, `resolv.conf`, `hosts`, `nsswitch.conf`, `passwd`, `group`, `ld.so.cache` |
+| `/home`, `/root` | **no** |
+| `/tmp` | private tmpfs |
+| `/workspace` | the **only** writable path (`$HOME`, cwd) |
+| Network | **nothing**, unless granted |
+
+When `network.allow` is a non-empty list, the host starts a CONNECT proxy on a
+unix socket, binds it into the sandbox, and a `socat` relay listens on
+`127.0.0.1:41873`; the plugin gets `HTTP(S)_PROXY`/`ALL_PROXY` pointing at it.
+The proxy is the only route out. It refuses unlisted hosts with `403` and a
+named reason. `localhost`/IP literals/CIDRs are matched by the same
+`NetworkPermissions::allows_host` used by the consent UI.
+
+### Server Control — installed, not configured by you
+
+The server ships an MCP endpoint that lets an agent drive NeuxDOT itself
+(`POST /api/control/mcp`, JSON-RPC over HTTP, HTTP Basic auth). On boot the
+server seeds a **Server Control** plugin per account, pinned to its own
+loopback URL, bound to that account's agents.
+
+Its row carries **no credential**. The `Authorization: Basic …` header is set
+**per agent** through the plugin's Auth/Config button, so each bot acts as its
+own account and a least-privilege account can be issued per agent. Without an
+override the endpoint answers `missing Authorization header` — inert by default.
+
+22 tools, namespaced `server_*`, gated per resource by `permissions.control`
+(`agents_read/write`, `shares`, `plugins_read/write`, `providers_read/write`,
+and `accounts`, which is **root-only and off by default**). Two gates apply:
+the credential's own account + sharing rules, then the declared scopes. Secrets
+are never returned: `api_key` becomes `has_api_key: true`, and plugin
+`headers_or_env` is never echoed.
+
+---
+
+## 🧠 Two memories, deliberately
+
+The distinction that caused a real agent to file a false bug report, so it gets
+its own section.
+
+```
+instructionsWrite/Edit/Read          memoryNodeWrite/Read/Search/List/Delete
+─────────────────────────────        ──────────────────────────────────────
+one text block, ≤ 5,000 chars        any number of keyed nodes
+re-injected into the prompt          never inlined; read on demand
+SHA-256 of the whole block           a hash per node
+changes the prompt prefix            changes nothing until you read it
+"standing orders"                    "what I know"
+```
+
+`compact` reports the **block** hash. Feeding that hash to `memoryNodeWrite`
+is the mistake the names were designed to make impossible.
+
+The graph is rendered in the UI as a force-directed view
+(`MemoryGraph.svelte`): type-coloured (`skill`, `entity`, `person`, `project`,
+`note`, `preference`), capped at 120 rendered nodes so it stays readable,
+clickable for value + outbound + backlinks. `GET /api/agents/:id/memory/graph`
+returns edges including dangling targets.
+
+---
+
+## 🛡️ Security model
+
+* **Authorization is DB-authoritative.** The role is resolved from `accounts` on
+  every request; the 30-day JWT is never trusted for privilege. A demoted user
+  loses root immediately.
+* **Sharing is first-class.** Capability checks go through
+  `load_agent_with_access` → `require_edit` / `require_manage_shares`. Never
+  `account_id == owner_id`.
+* **Guardrails:** the last root cannot be demoted or deleted; nobody may delete
+  their own account.
+* **Plugin consent** is the grouped `PluginPermissions` object, deny-by-default.
+  A stored override can narrow, never widen; `elevated` is manifest-only.
+* **MCP-App UIs** run in `<iframe sandbox="allow-scripts">` — an opaque origin.
+  Messages are authenticated by `event.source`, never `event.origin`. Ungranted
+  identity fields are **omitted**, not blanked.
+* **Secrets stay server-side.** Provider keys are redacted to `has_api_key`;
+  plugin env is never echoed; `control_*`/`server_*` reads never reveal tokens.
+
+Two known sharp edges, stated plainly:
+
+1. A per-agent control credential is stored in `agent_mcp.config_override` in
+   plaintext. Use a dedicated account, not `root`.
+2. A provider's effective `api_key` is redacted in `server_list_plugins` /
+   provider tools, but the value still lives in `providers.api_key` on disk.
+   Protect the SQLite file.
 
 ---
 
 ## 🚀 Quick Start
 
-### Prerequisites
-* 🦀 **Rust** 1.80+ ([Install Rust](https://www.rust-lang.org/tools/install))
-* 📦 **Node.js** 20+ & **pnpm** ([Install pnpm](https://pnpm.io/))
-* 🗄️ **SQLite3**
-
-### 1. Clone & Install
 ```bash
-git clone https://github.com/NeuxDOT/NeuxDOT.git
+# prerequisites: Rust 1.80+, Node 20+ / pnpm, SQLite3, bubblewrap, socat
+git clone https://github.com/Neuxbane/NeuxDOT.git
 cd NeuxDOT
 pnpm install
 ```
 
-### 2. Run the Full Stack in Development
+**Web mode** — two terminals:
 
-#### Option A: Web Mode (Server + SvelteKit Frontend)
 ```bash
-# Terminal 1: Start the Rust backend server (port 8000)
-cargo run -p neuxdot-server
-
-# Terminal 2: Start the modern SvelteKit web client
-pnpm --filter web dev
+cargo run -p neuxdot-server          # API on :8000, prints the root password once
+pnpm --filter web dev                # UI on :5173
 ```
-Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-#### Option B: Native Desktop App (Tauri v2)
+**Desktop:**
+
 ```bash
 pnpm --filter web tauri dev
 ```
 
----
-
-## 🛠️ Building WASM Extensions
-
-NeuxDOT extensions compile directly to `wasm32-unknown-unknown` without heavy runtime dependencies.
-
-See the included **Agent Chat Console** extension in [`examples/chat-extension/`](examples/chat-extension/):
+**Release build:**
 
 ```bash
-# Compile the example extension
-cargo build --release --target wasm32-unknown-unknown \
-  --manifest-path examples/chat-extension/Cargo.toml
-
-# Upload the resulting binary via the NeuxDOT Settings UI:
-# target/wasm32-unknown-unknown/release/chat_extension.wasm
+./compile.sh --server --linux --plugins   # -> release/
 ```
 
-### Extension Host ABI Interface
-Extensions declare safe host imports for logging, isolated storage, and unprompted background execution:
-```rust
-#[link(wasm_import_module = "env")]
-extern "C" {
-    fn host_log(msg_ptr: *const u8, msg_len: usize);
-    fn host_kv_get(key_ptr: *const u8, key_len: usize, out_ptr: *mut u8, max_out: usize) -> i32;
-    fn host_kv_set(key_ptr: *const u8, key_len: usize, val_ptr: *const u8, val_len: usize) -> i32;
-    fn host_fs_write(path_ptr: *const u8, path_len: usize, data_ptr: *const u8, data_len: usize) -> i32;
-    fn host_agent_run_background(agent_id_ptr: *const u8, agent_id_len: usize, input_ptr: *const u8, input_len: usize) -> i32;
-    fn host_get_time_str(out_ptr: *mut u8, max_out: usize) -> i32;
+The server reads `DATABASE_URL` (default `sqlite:data/neuxdot.sqlite?mode=rwc`)
+and `PORT` (default `8000`). On first boot it prints a generated root password
+— save it, it is derived once and not shown again.
+
+---
+
+## 📊 Status (honest section)
+
+What is real today, and what is a placeholder. This section exists so the rest
+of the README can be trusted.
+
+| Area | State |
+| :--- | :--- |
+| 18 meta-tools, dual history, truncation + inspect | **implemented** |
+| Keyed memory graph + wikilink edges + UI view | **implemented** |
+| sandbox + allow-list proxy + per-agent control | **implemented** |
+| stdio / binary / http / custom_tools transports | **implemented** |
+| 5 built-in plugins (chat, computer, gitlab, telegram, discord) | **implemented** |
+| per-plugin consent, MCP-App host bridge, storage KV | **implemented** |
+| **WASM / Wasmtime extensions** | **not implemented** — the `extensions` table, `wasm_binary` column and `wasm` transport name exist as scaffolding only. No Wasmtime dependency, no host ABI, no runner. Do not rely on it. |
+| `sleep` persistence | **process-local** — a restart drops pending wakes |
+| automatic compaction | silent group prune; no model-written summary |
+| agent-to-agent messaging | **absent** — `server_*` can configure an agent, not converse with it |
+
+Test footprint: **175 tests** across core + server (`cargo test --workspace`).
+
+---
+
+## 🛠️ Authoring a plugin
+
+The full contract is [`docs/PLUGIN_CONTRACT.md`](docs/PLUGIN_CONTRACT.md). The
+short version: implement MCP over stdio or HTTP.
+
+```
+initialize            → protocolVersion "2024-11-05"
+tools/list            → [{ name, description, inputSchema }]
+tools/call            → { content: [{ type:"text", text }], isError }
+resources/list        → [{ uri, name, mimeType }]     (optional)
+resources/subscribe   → push notifications/resources/updated
+```
+
+Host conventions that will bite you if you skip them:
+
+* **stdout is the protocol.** Logs go to stderr. One JSON-RPC message per line.
+* **Tool names are namespaced** as `<alias>.<tool>`, and a redundant `<alias>_`
+  prefix is stripped: alias `telegram` + tool `telegram_send_message` renders as
+  `telegram.send_message`.
+* **`_sender_account_id` / `_sender_username`** are stamped onto every
+  `tools/call`. Trust them for attribution; never treat them as a grant.
+* **Persist under `/workspace`**, not `/tmp` (tmpfs, wiped) and not `/home`
+  (does not exist).
+* **Honour `HTTP(S)_PROXY`.** A client that opens raw TCP reaches nothing —
+  the sandbox has no route except loopback.
+
+Ship a manifest with the minimum grants; the consent UI shows exactly what you
+asked for.
+
+```json
+{
+  "name": "My Plugin",
+  "permissions": {
+    "network": { "allow": ["api.example.com"] },
+    "ui": { "enabled": true, "resources": ["ui://my-app"] },
+    "storage": { "get": true, "set": true, "delete": false, "keys": ["myapp."] }
+  }
 }
 ```
 
+MCP-App UIs follow [`docs/HOST_BRIDGE.md`](docs/HOST_BRIDGE.md): `ui/initialize`,
+`host/call` with a capability, `tools/call` forwarded to the plugin, and an
+omission rule for ungranted identity.
+
 ---
 
-## 🧪 Testing & Verification
-
-NeuxDOT includes an extensive integration test suite covering meta-tools, prompt interpolation, memory hashing, WASM runners, timer invariants, and zero-trust permissions:
+## 🧪 Testing
 
 ```bash
-# Run all workspace unit and E2E integration tests
-cargo test --workspace
-
-# Validate web client TypeScript and Svelte runes
-pnpm --filter web check
-
-# Verify production frontend bundle
-pnpm --filter web build
+cargo test --workspace          # 175 tests
+pnpm --filter web check         # svelte-check
+pnpm --filter web build         # production bundle
 ```
+
+The suite pins invariants that have failed before: tool-set shape and order,
+sandbox argv (no `/home`, no `--share-net` unless granted), proxy allow/deny,
+history repair, prompt-prefix preservation across compaction, and that a
+network grant actually reaches `SandboxSpec::launch_for`.
 
 ---
 
-## 📂 Repository Structure
+## 🤝 Contributing
 
-```
-.
-├── apps/
-│   └── web/                # SvelteKit 5 (Runes) frontend + Tailwind CSS
-├── assets/
-│   ├── banner.svg          # Stylized hero banner & typography
-│   └── logo.svg            # Chibi mascot SVG logo
-├── crates/
-│   ├── neuxdot-core/       # Core runtime engine, MCP client, WASM runner, memory
-│   └── neuxdot-server/     # Axum REST & WebSocket streaming server
-├── examples/
-│   ├── chat-extension/     # Reference WASM extension (Chat Console & unprompted turns)
-│   └── computer-mcp/       # Reference headless MCP server (terminal / file / desktop tools)
-├── src-tauri/              # Tauri v2 desktop shell
-├── Cargo.toml              # Cargo workspace manifest
-├── pnpm-workspace.yaml     # PNPM monorepo workspace configuration
-└── .gitignore              # Security-first ignore rules (zero-data leakage)
-```
+[`AGENTS.md`](AGENTS.md) is the working contract for humans and AI agents alike.
+Two rules from it worth repeating:
 
----
-
-## 🔒 Security & Privacy
-
-* **Zero-Leakage Guarantee**: `.sqlite` files, runtime chat logs, extension storage caches, and `.env` credentials are strictly excluded from version control.
-* **Sandboxed Execution**: WASM extensions have no direct access to system memory, sockets, or host files outside their provisioned `data/<hash>/` directory.
-* **Zero-Trust Tool Discovery**: Tools cannot be called unless explicitly authorized on an agent level.
+1. **Never invent an API.** If a route, repo method or column does not exist,
+   say so — do not add a speculative stub.
+2. **Verify, don't assume.** "Should work" is not a result.
 
 ---
 
@@ -458,12 +480,10 @@ pnpm --filter web build
 ✧･ﾟ: *✧･ﾟ:* 🌸 *:･ﾟ✧*:･ﾟ✧ ─── ･ ｡ﾟ☆: *.☽ .* :☆ﾟ. ─── ✧･ﾟ: *✧･ﾟ:* 🌸 *:･ﾟ✧*:･ﾟ✧
 ```
 
-<img src="assets/logo.svg" alt="NeuxDOT Mascot" width="120" />
+<img src="assets/logo.svg" alt="NeuxDOT mascot" width="110" />
 
-### (◕‿◕✿) Stay deterministic, stay kawaii!
+### (◕‿◕✿) Stay deterministic, stay kawaii.
 
-Crafted with 💖, 🌸, and lots of green tea.
-
-Licensed under the [MIT License](LICENSE).
+MIT licensed.
 
 </div>

@@ -10,20 +10,49 @@ async fn compact_installs_new_instruction_and_keeps_running_history_intact_befor
     //              system_prompt, allow_output_text, output_text_error_message,
     //              max_running_history_chars, response_hooks_json)
     let agent = db
-        .create_agent(&acc.id, "A", None, None, None, "fallback", Some("OLD INSTRUCTION"), None, None, None, None, None)
+        .create_agent(
+            &acc.id,
+            "A",
+            None,
+            None,
+            None,
+            "fallback",
+            Some("OLD INSTRUCTION"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     // Materialise row 0 the way run_turn does.
-    db.append_agent_history(&agent.id, "system", "OLD INSTRUCTION", None, None, None).await.unwrap();
-    db.append_agent_history(&agent.id, "user", "hello", None, None, None).await.unwrap();
+    db.append_agent_history(&agent.id, "system", "OLD INSTRUCTION", None, None, None)
+        .await
+        .unwrap();
+    db.append_agent_history(&agent.id, "user", "hello", None, None, None)
+        .await
+        .unwrap();
 
     // User selects a new instruction preset -> only agents.system_prompt changes.
     // patch_agent(id, name, avatar_color, avatar_shape, avatar_url, strategy,
     //             system_prompt, is_active, allow_output_text,
     //             output_text_error_message, max_running_history_chars, response_hooks_json)
     db.patch_agent(
-        &agent.id, None, None, None, None, None, Some("NEW INSTRUCTION"), None, None, None, None, None, None,
+        &agent.id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("NEW INSTRUCTION"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -36,10 +65,18 @@ async fn compact_installs_new_instruction_and_keeps_running_history_intact_befor
     assert_eq!(before.len(), 2);
 
     // Compact installs the new instruction.
-    db.compact_agent_history(&agent.id, "NEW INSTRUCTION", "summary", None, &[]).await.unwrap();
+    db.compact_agent_history(&agent.id, "NEW INSTRUCTION", "summary", None, &[])
+        .await
+        .unwrap();
     let after = db.get_agent_history(&agent.id).await.unwrap();
     assert_eq!(after[0].role, "system");
     assert_eq!(after[0].content, "NEW INSTRUCTION");
-    assert_eq!(after.iter().filter(|h| h.content == "NEW INSTRUCTION").count(), 1);
+    assert_eq!(
+        after
+            .iter()
+            .filter(|h| h.content == "NEW INSTRUCTION")
+            .count(),
+        1
+    );
     println!("OK: old kept during run, new installed on compact");
 }

@@ -8,6 +8,57 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+
+/// Per-agent GitLab configuration override.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentGitLabConfig {
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub api_url: Option<String>,
+    #[serde(default)]
+    pub default_project_id: Option<String>,
+    #[serde(default)]
+    pub read_only: Option<bool>,
+}
+
+impl AgentGitLabConfig {
+    pub fn file_path(agent_id: &str) -> std::path::PathBuf {
+        let safe_id = agent_id.replace(['/', '\\', ':', '.'], "_");
+        std::path::PathBuf::from("data/gitlab").join(format!("config_{}.json", safe_id))
+    }
+
+    pub fn load(agent_id: &str) -> Option<Self> {
+        let path = Self::file_path(agent_id);
+        if path.exists() {
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(cfg) = serde_json::from_str::<Self>(&raw) {
+                    return Some(cfg);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn save(agent_id: &str, cfg: &Self) -> std::io::Result<()> {
+        let dir = std::path::PathBuf::from("data/gitlab");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = Self::file_path(agent_id);
+        let raw = serde_json::to_string_pretty(cfg)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(&path, raw)
+    }
+
+    pub fn delete(agent_id: &str) -> std::io::Result<()> {
+        let path = Self::file_path(agent_id);
+        if path.exists() {
+            std::fs::remove_file(path)
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// How the access token is presented to GitLab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +120,7 @@ fn env_bool(key: &str, default: bool) -> bool {
 
 /// Turn whatever the user configured into a REST base ending in `/api/v4`,
 /// and a GraphQL base ending in `/api/graphql`.
-fn normalize_urls(raw: &str) -> Result<(String, String)> {
+pub fn normalize_urls(raw: &str) -> Result<(String, String)> {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         bail!("GitLab API URL is empty");

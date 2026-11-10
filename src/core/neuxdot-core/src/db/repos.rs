@@ -1,5 +1,5 @@
-use sqlx::SqlitePool;
-use std::collections::HashSet;
+use sqlx::{FromRow, SqlitePool};
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use super::schema::*;
@@ -9,6 +9,60 @@ fn normalize_avatar_url(avatar_url: Option<&str>) -> Option<&str> {
     match avatar_url {
         Some(url) if url.trim().is_empty() => None,
         other => other,
+    }
+}
+
+/// Merges global MCP plugin configuration with per-agent overrides.
+///
+/// If both are present, agent override values take precedence.
+/// Returns a clean JSON string if keys exist, or None if empty.
+pub fn merge_headers_or_env(global: Option<&str>, agent_override: Option<&str>) -> Option<String> {
+    match (global, agent_override) {
+        (None, None) => None,
+        (Some(g), None) => {
+            let t = g.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        (None, Some(o)) => {
+            let t = o.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        (Some(g), Some(o)) => {
+            let g_trim = g.trim();
+            let o_trim = o.trim();
+            if o_trim.is_empty() {
+                return if g_trim.is_empty() {
+                    None
+                } else {
+                    Some(g_trim.to_string())
+                };
+            }
+            if g_trim.is_empty() {
+                return Some(o_trim.to_string());
+            }
+
+            let mut merged = crate::mcp::stdio::parse_env_vars(g_trim);
+            let overrides = crate::mcp::stdio::parse_env_vars(o_trim);
+            for (k, v) in overrides {
+                if !v.trim().is_empty() {
+                    merged.insert(k, v);
+                }
+            }
+
+            if merged.is_empty() {
+                None
+            } else {
+                serde_json::to_string(&merged).ok()
+            }
+        }
     }
 }
 
@@ -45,15 +99,13 @@ impl Database {
         role: &str,
     ) -> Result<Account, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO accounts (id, username, password_hash, role) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(username)
-        .bind(password_hash)
-        .bind(role)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("INSERT INTO accounts (id, username, password_hash, role) VALUES (?, ?, ?, ?)")
+            .bind(&id)
+            .bind(username)
+            .bind(password_hash)
+            .bind(role)
+            .execute(&self.pool)
+            .await?;
 
         // Also create a default profile
         let _ = sqlx::query(
@@ -190,7 +242,7 @@ impl Database {
             }
 
             let created_at_str = sqlx::query_scalar::<_, String>(
-                "SELECT datetime(created_at) FROM accounts WHERE id = ?"
+                "SELECT datetime(created_at) FROM accounts WHERE id = ?",
             )
             .bind(&acc.id)
             .fetch_optional(&self.pool)
@@ -229,7 +281,8 @@ impl Database {
             .execute(&self.pool)
             .await;
 
-            let acc = self.get_account_by_id(&id)
+            let acc = self
+                .get_account_by_id(&id)
                 .await?
                 .ok_or(sqlx::Error::RowNotFound)?;
 
@@ -405,9 +458,7 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
-        self.get_provider(id)
-            .await?
-            .ok_or(sqlx::Error::RowNotFound)
+        self.get_provider(id).await?.ok_or(sqlx::Error::RowNotFound)
     }
 
     pub async fn delete_provider(&self, id: &str) -> Result<bool, sqlx::Error> {
@@ -419,7 +470,10 @@ impl Database {
     }
 
     // --- Provider Models ---
-    pub async fn list_provider_models(&self, provider_id: &str) -> Result<Vec<ProviderModel>, sqlx::Error> {
+    pub async fn list_provider_models(
+        &self,
+        provider_id: &str,
+    ) -> Result<Vec<ProviderModel>, sqlx::Error> {
         sqlx::query_as::<_, ProviderModel>(
             "SELECT * FROM provider_models WHERE provider_id = ? ORDER BY model_id ASC",
         )
@@ -428,35 +482,37 @@ impl Database {
         .await
     }
 
-fn split_config_json(
-    config_json: Option<&str>,
-    params_json: Option<&str>,
-    context_window: Option<i64>,
-) -> (Option<String>, Option<i64>) {
-    let mut effective_params = params_json.map(|s| s.to_string());
-    let mut effective_cw = context_window;
+    fn split_config_json(
+        config_json: Option<&str>,
+        params_json: Option<&str>,
+        context_window: Option<i64>,
+    ) -> (Option<String>, Option<i64>) {
+        let mut effective_params = params_json.map(|s| s.to_string());
+        let mut effective_cw = context_window;
 
-    if let Some(raw_cfg) = config_json {
-        if let Ok(serde_json::Value::Object(mut map)) = serde_json::from_str::<serde_json::Value>(raw_cfg) {
-            if effective_cw.is_none() {
-                if let Some(cw_val) = map.remove("context_window") {
-                    effective_cw = cw_val.as_i64();
+        if let Some(raw_cfg) = config_json {
+            if let Ok(serde_json::Value::Object(mut map)) =
+                serde_json::from_str::<serde_json::Value>(raw_cfg)
+            {
+                if effective_cw.is_none() {
+                    if let Some(cw_val) = map.remove("context_window") {
+                        effective_cw = cw_val.as_i64();
+                    }
+                } else {
+                    map.remove("context_window");
                 }
-            } else {
-                map.remove("context_window");
-            }
-            map.remove("name");
+                map.remove("name");
 
-            if effective_params.is_none() {
-                if let Ok(serialized) = serde_json::to_string(&map) {
-                    effective_params = Some(serialized);
+                if effective_params.is_none() {
+                    if let Ok(serialized) = serde_json::to_string(&map) {
+                        effective_params = Some(serialized);
+                    }
                 }
             }
         }
-    }
 
-    (effective_params, effective_cw)
-}
+        (effective_params, effective_cw)
+    }
 
     pub async fn add_provider_model(
         &self,
@@ -468,11 +524,8 @@ fn split_config_json(
         context_window: Option<i64>,
     ) -> Result<ProviderModel, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
-        let (effective_params, effective_cw) = Self::split_config_json(
-            config_json,
-            params_json,
-            context_window,
-        );
+        let (effective_params, effective_cw) =
+            Self::split_config_json(config_json, params_json, context_window);
         sqlx::query(
             r#"
             INSERT INTO provider_models (id, provider_id, model_id, name, config_json, params_json, context_window, is_active)
@@ -652,10 +705,7 @@ fn split_config_json(
         can_edit: Option<bool>,
         can_manage_shares: Option<bool>,
     ) -> Result<Option<AgentShare>, sqlx::Error> {
-        let Some(current) = self
-            .get_agent_share(agent_id, account_id)
-            .await?
-        else {
+        let Some(current) = self.get_agent_share(agent_id, account_id).await? else {
             return Ok(None);
         };
         let final_edit = can_edit.unwrap_or(current.can_edit);
@@ -707,9 +757,16 @@ fn split_config_json(
         &self,
         agent_id: &str,
     ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
-        let rows: Vec<(String, String, Option<String>, Option<String>, bool, bool, Option<chrono::DateTime<chrono::Utc>>)> =
-            sqlx::query_as(
-                r#"
+        let rows: Vec<(
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            bool,
+            bool,
+            Option<chrono::DateTime<chrono::Utc>>,
+        )> = sqlx::query_as(
+            r#"
                 SELECT s.account_id, a.username, p.display_name, p.avatar_url,
                        s.can_edit, s.can_manage_shares, s.created_at
                 FROM agent_shares s
@@ -718,15 +775,23 @@ fn split_config_json(
                 WHERE s.agent_id = ?
                 ORDER BY a.username ASC
                 "#,
-            )
-            .bind(agent_id)
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .bind(agent_id)
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok(rows
             .into_iter()
             .map(
-                |(account_id, username, display_name, avatar_url, can_edit, can_manage_shares, created_at)| {
+                |(
+                    account_id,
+                    username,
+                    display_name,
+                    avatar_url,
+                    can_edit,
+                    can_manage_shares,
+                    created_at,
+                )| {
                     serde_json::json!({
                         "account_id": account_id,
                         "username": username,
@@ -822,8 +887,11 @@ fn split_config_json(
         let final_allow_output_text = allow_output_text.unwrap_or(current.allow_output_text);
         let final_output_text_error_message =
             output_text_error_message.or(current.output_text_error_message.as_deref());
-        let final_max_history = max_running_history_chars.unwrap_or(current.max_running_history_chars);
-        let final_hooks_json = response_hooks_json.or(current.response_hooks_json.as_deref()).unwrap_or("[]");
+        let final_max_history =
+            max_running_history_chars.unwrap_or(current.max_running_history_chars);
+        let final_hooks_json = response_hooks_json
+            .or(current.response_hooks_json.as_deref())
+            .unwrap_or("[]");
         // `None` leaves the selection untouched; an explicitly empty value
         // detaches the agent from its preset (back to Custom).
         let final_preset_id = match instruction_preset_id {
@@ -867,7 +935,10 @@ fn split_config_json(
     }
 
     // --- Agent Provider Model Bindings ---
-    pub async fn get_agent_models(&self, agent_id: &str) -> Result<Vec<ActiveModelTarget>, sqlx::Error> {
+    pub async fn get_agent_models(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<ActiveModelTarget>, sqlx::Error> {
         sqlx::query_as::<_, ActiveModelTarget>(
             r#"
             SELECT 
@@ -893,7 +964,10 @@ fn split_config_json(
         .await
     }
 
-    pub async fn get_agent_provider_model_ids(&self, agent_id: &str) -> Result<Vec<String>, sqlx::Error> {
+    pub async fn get_agent_provider_model_ids(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<String>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String,)>(
             "SELECT provider_model_id FROM agent_providers WHERE agent_id = ? ORDER BY priority ASC",
         )
@@ -1014,13 +1088,24 @@ fn split_config_json(
     }
 
     // --- Agent MCP Bindings ---
+    /// Agent ids that have this plugin bound. Used to re-reconcile the push
+    /// subscription hub after a plugin's config or consent changes.
+    pub async fn list_agent_ids_for_mcp(&self, mcp_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT agent_id FROM agent_mcp WHERE mcp_id = ?")
+                .bind(mcp_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     pub async fn get_agent_mcp_servers(
         &self,
         agent_id: &str,
     ) -> Result<Vec<McpServer>, sqlx::Error> {
-        sqlx::query_as::<_, McpServer>(
+        let rows = sqlx::query(
             r#"
-            SELECT m.* FROM mcp_servers m
+            SELECT m.*, am.config_override AS agent_config_override FROM mcp_servers m
             JOIN agent_mcp am ON am.mcp_id = m.id
             WHERE am.agent_id = ?
             ORDER BY m.name ASC
@@ -1028,7 +1113,95 @@ fn split_config_json(
         )
         .bind(agent_id)
         .fetch_all(&self.pool)
-        .await
+        .await?;
+
+        let mut servers = Vec::with_capacity(rows.len());
+        for row in rows {
+            use sqlx::Row;
+            let mut server = McpServer::from_row(&row)?;
+            let agent_config_override: Option<String> =
+                row.try_get("agent_config_override").ok().flatten();
+            server.headers_or_env = merge_headers_or_env(
+                server.headers_or_env.as_deref(),
+                agent_config_override.as_deref(),
+            );
+            servers.push(server);
+        }
+
+        Ok(servers)
+    }
+
+    pub async fn get_agent_mcp_configs(
+        &self,
+        agent_id: &str,
+    ) -> Result<HashMap<String, String>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT mcp_id, config_override FROM agent_mcp WHERE agent_id = ? AND config_override IS NOT NULL",
+        )
+        .bind(agent_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut map = HashMap::new();
+        for row in rows {
+            use sqlx::Row;
+            if let (Ok(mcp_id), Ok(Some(cfg))) = (
+                row.try_get::<String, _>("mcp_id"),
+                row.try_get::<Option<String>, _>("config_override"),
+            ) {
+                if !cfg.trim().is_empty() {
+                    map.insert(mcp_id, cfg);
+                }
+            }
+        }
+        Ok(map)
+    }
+
+    pub async fn get_agent_mcp_config(
+        &self,
+        agent_id: &str,
+        mcp_id: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row =
+            sqlx::query("SELECT config_override FROM agent_mcp WHERE agent_id = ? AND mcp_id = ?")
+                .bind(agent_id)
+                .bind(mcp_id)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        Ok(row.and_then(|r| {
+            use sqlx::Row;
+            r.try_get::<Option<String>, _>("config_override")
+                .ok()
+                .flatten()
+        }))
+    }
+
+    pub async fn set_agent_mcp_config(
+        &self,
+        agent_id: &str,
+        mcp_id: &str,
+        config_override: Option<&str>,
+    ) -> Result<bool, sqlx::Error> {
+        let clean_override = config_override.map(|s| s.trim()).filter(|s| !s.is_empty());
+
+        // Ensure binding exists
+        let _ = sqlx::query("INSERT OR IGNORE INTO agent_mcp (agent_id, mcp_id) VALUES (?, ?)")
+            .bind(agent_id)
+            .bind(mcp_id)
+            .execute(&self.pool)
+            .await?;
+
+        let res = sqlx::query(
+            "UPDATE agent_mcp SET config_override = ? WHERE agent_id = ? AND mcp_id = ?",
+        )
+        .bind(clean_override)
+        .bind(agent_id)
+        .bind(mcp_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(res.rows_affected() > 0)
     }
 
     pub async fn set_agent_mcp_servers(
@@ -1037,17 +1210,31 @@ fn split_config_json(
         mcp_ids: &[String],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM agent_mcp WHERE agent_id = ?")
-            .bind(agent_id)
-            .execute(&mut *tx)
-            .await?;
-
-        for mid in mcp_ids {
-            sqlx::query("INSERT INTO agent_mcp (agent_id, mcp_id) VALUES (?, ?)")
+        if mcp_ids.is_empty() {
+            sqlx::query("DELETE FROM agent_mcp WHERE agent_id = ?")
                 .bind(agent_id)
-                .bind(mid)
                 .execute(&mut *tx)
                 .await?;
+        } else {
+            // Delete removed bindings while preserving existing ones and their config_override
+            let placeholders = mcp_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let delete_query = format!(
+                "DELETE FROM agent_mcp WHERE agent_id = ? AND mcp_id NOT IN ({})",
+                placeholders
+            );
+            let mut q = sqlx::query(&delete_query).bind(agent_id);
+            for mid in mcp_ids {
+                q = q.bind(mid);
+            }
+            q.execute(&mut *tx).await?;
+
+            for mid in mcp_ids {
+                sqlx::query("INSERT OR IGNORE INTO agent_mcp (agent_id, mcp_id) VALUES (?, ?)")
+                    .bind(agent_id)
+                    .bind(mid)
+                    .execute(&mut *tx)
+                    .await?;
+            }
         }
 
         tx.commit().await?;
@@ -1074,12 +1261,10 @@ fn split_config_json(
         .execute(&self.pool)
         .await?;
 
-        sqlx::query_as::<_, AgentPushedMessage>(
-            "SELECT * FROM agent_pushed_messages WHERE id = ?",
-        )
-        .bind(&id)
-        .fetch_one(&self.pool)
-        .await
+        sqlx::query_as::<_, AgentPushedMessage>("SELECT * FROM agent_pushed_messages WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&self.pool)
+            .await
     }
 
     pub async fn list_pushed_messages(
@@ -1114,11 +1299,13 @@ fn split_config_json(
         ids: &[String],
     ) -> Result<(), sqlx::Error> {
         for id in ids {
-            sqlx::query("UPDATE agent_pushed_messages SET is_consumed = 1 WHERE id = ? AND agent_id = ?")
-                .bind(id)
-                .bind(agent_id)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "UPDATE agent_pushed_messages SET is_consumed = 1 WHERE id = ? AND agent_id = ?",
+            )
+            .bind(id)
+            .bind(agent_id)
+            .execute(&self.pool)
+            .await?;
         }
         Ok(())
     }
@@ -1218,13 +1405,213 @@ fn split_config_json(
     }
 
     // --- Agent Memory ---
-    pub async fn get_agent_memory(&self, agent_id: &str) -> Result<AgentMemory, sqlx::Error> {
-        if let Some(mem) = sqlx::query_as::<_, AgentMemory>(
-            "SELECT * FROM agent_memories WHERE agent_id = ?",
+    // -------------------------------------------------------------------------
+    // Keyed memory graph (Obsidian-style)
+    // -------------------------------------------------------------------------
+
+    /// Every node for an agent, ordered by key.
+    pub async fn list_memory_nodes(&self, agent_id: &str) -> Result<Vec<MemoryNode>, sqlx::Error> {
+        sqlx::query_as::<_, MemoryNode>(
+            "SELECT * FROM agent_memory_nodes WHERE agent_id = ? ORDER BY key ASC",
         )
         .bind(agent_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn get_memory_node(
+        &self,
+        agent_id: &str,
+        key: &str,
+    ) -> Result<Option<MemoryNode>, sqlx::Error> {
+        sqlx::query_as::<_, MemoryNode>(
+            "SELECT * FROM agent_memory_nodes WHERE agent_id = ? AND key = ?",
+        )
+        .bind(agent_id)
+        .bind(key)
         .fetch_optional(&self.pool)
-        .await?
+        .await
+    }
+
+    pub async fn count_memory_nodes(&self, agent_id: &str) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_memory_nodes WHERE agent_id = ?")
+            .bind(agent_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    /// Everything needed to render the graph in one round trip.
+    pub async fn memory_nodes_with_links(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<MemoryNodeView>, sqlx::Error> {
+        let nodes = self.list_memory_nodes(agent_id).await?;
+        let links = sqlx::query_as::<_, MemoryLink>(
+            "SELECT agent_id, src, dst FROM agent_memory_links WHERE agent_id = ?",
+        )
+        .bind(agent_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(nodes
+            .into_iter()
+            .map(|node| {
+                let outbound: Vec<String> = links
+                    .iter()
+                    .filter(|l| l.src == node.key)
+                    .map(|l| l.dst.clone())
+                    .collect();
+                let backlinks: Vec<String> = links
+                    .iter()
+                    .filter(|l| l.dst == node.key)
+                    .map(|l| l.src.clone())
+                    .collect();
+                MemoryNodeView {
+                    key: node.key,
+                    r#type: node.r#type,
+                    description: node.description,
+                    value: node.value,
+                    hash: node.hash,
+                    updated_at: node.updated_at,
+                    outbound,
+                    backlinks,
+                }
+            })
+            .collect())
+    }
+
+    /// Create or replace a node and re-derive its outgoing links atomically.
+    ///
+    /// The link rows for `src` are deleted and re-inserted in the same
+    /// transaction as the value, so the graph can never disagree with the text
+    /// that produced it.
+    pub async fn upsert_memory_node(
+        &self,
+        agent_id: &str,
+        key: &str,
+        value: &str,
+        node_type: &str,
+        description: &str,
+        hash: &str,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO agent_memory_nodes
+                (agent_id, key, value, type, description, hash, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(agent_id, key) DO UPDATE SET
+                value = excluded.value,
+                type = excluded.type,
+                description = excluded.description,
+                hash = excluded.hash,
+                updated_at = CURRENT_TIMESTAMP
+            "#,
+        )
+        .bind(agent_id)
+        .bind(key)
+        .bind(value)
+        .bind(node_type)
+        .bind(description)
+        .bind(hash)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("DELETE FROM agent_memory_links WHERE agent_id = ? AND src = ?")
+            .bind(agent_id)
+            .bind(key)
+            .execute(&mut *tx)
+            .await?;
+
+        for target in extract_wikilinks(value) {
+            // A self-link is meaningless and would create a self-loop in the UI.
+            if target == key {
+                continue;
+            }
+            sqlx::query(
+                "INSERT OR IGNORE INTO agent_memory_links (agent_id, src, dst) VALUES (?, ?, ?)",
+            )
+            .bind(agent_id)
+            .bind(key)
+            .bind(&target)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await
+    }
+
+    /// Delete a node and every edge touching it, in one transaction.
+    ///
+    /// Links *to* the deleted key are removed too: a dangling edge would make
+    /// the graph show a node that no longer exists.
+    pub async fn delete_memory_node(&self, agent_id: &str, key: &str) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+
+        let result = sqlx::query("DELETE FROM agent_memory_nodes WHERE agent_id = ? AND key = ?")
+            .bind(agent_id)
+            .bind(key)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM agent_memory_links WHERE agent_id = ? AND (src = ? OR dst = ?)")
+            .bind(agent_id)
+            .bind(key)
+            .bind(key)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Case-insensitive substring search over keys, descriptions and values.
+    ///
+    /// Ranked: key matches first (the node is *about* the query), then
+    /// description, then value only.
+    pub async fn search_memory_nodes(
+        &self,
+        agent_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryNode>, sqlx::Error> {
+        let lowered = query.trim().to_lowercase();
+        if lowered.is_empty() {
+            return Ok(Vec::new());
+        }
+        let all = self.list_memory_nodes(agent_id).await?;
+        let mut scored: Vec<(u8, MemoryNode)> = all
+            .into_iter()
+            .filter_map(|node| {
+                let key_hit = node.key.to_lowercase().contains(&lowered);
+                let desc_hit = node.description.to_lowercase().contains(&lowered);
+                let value_hit = node.value.to_lowercase().contains(&lowered);
+                if key_hit {
+                    Some((0, node))
+                } else if desc_hit {
+                    Some((1, node))
+                } else if value_hit {
+                    Some((2, node))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key)));
+        Ok(scored
+            .into_iter()
+            .take(limit.clamp(1, 100))
+            .map(|(_, node)| node)
+            .collect())
+    }
+
+    pub async fn get_agent_memory(&self, agent_id: &str) -> Result<AgentMemory, sqlx::Error> {
+        if let Some(mem) =
+            sqlx::query_as::<_, AgentMemory>("SELECT * FROM agent_memories WHERE agent_id = ?")
+                .bind(agent_id)
+                .fetch_optional(&self.pool)
+                .await?
         {
             Ok(mem)
         } else {
@@ -1237,12 +1624,10 @@ fn split_config_json(
             .execute(&self.pool)
             .await;
 
-            sqlx::query_as::<_, AgentMemory>(
-                "SELECT * FROM agent_memories WHERE agent_id = ?",
-            )
-            .bind(agent_id)
-            .fetch_one(&self.pool)
-            .await
+            sqlx::query_as::<_, AgentMemory>("SELECT * FROM agent_memories WHERE agent_id = ?")
+                .bind(agent_id)
+                .fetch_one(&self.pool)
+                .await
         }
     }
 
@@ -1375,14 +1760,13 @@ fn split_config_json(
     ) -> Result<bool, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
-        let affected = sqlx::query(
-            "DELETE FROM agent_instruction_presets WHERE id = ? AND account_id = ?",
-        )
-        .bind(id)
-        .bind(account_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+        let affected =
+            sqlx::query("DELETE FROM agent_instruction_presets WHERE id = ? AND account_id = ?")
+                .bind(id)
+                .bind(account_id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
 
         if affected > 0 {
             let _ = sqlx::query(
@@ -1800,12 +2184,11 @@ fn split_config_json(
         .execute(&mut *tx)
         .await?;
 
-        let item = sqlx::query_as::<_, AgentTranscriptItem>(
-            "SELECT * FROM agent_transcript WHERE id = ?",
-        )
-        .bind(&id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let item =
+            sqlx::query_as::<_, AgentTranscriptItem>("SELECT * FROM agent_transcript WHERE id = ?")
+                .bind(&id)
+                .fetch_one(&mut *tx)
+                .await?;
 
         tx.commit().await?;
         Ok(item)
@@ -1861,14 +2244,15 @@ fn split_config_json(
         limit: usize,
     ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
         let rows = self.get_agent_transcript(agent_id).await?;
-        let re = match regex::RegexBuilder::new(pattern)
+        // A pattern that does not compile is a caller error, not "no matches".
+        // Returning an empty hit list here would make a broken search
+        // indistinguishable from a search that genuinely found nothing, which
+        // is precisely the silent degradation this codebase forbids.
+        let re = regex::RegexBuilder::new(pattern)
             .case_insensitive(true)
             .size_limit(1 << 20)
             .build()
-        {
-            Ok(re) => re,
-            Err(_) => return Ok(Vec::new()),
-        };
+            .map_err(|e| sqlx::Error::Protocol(format!("invalid regular expression: {e}")))?;
 
         let limit = limit.clamp(1, 100);
         let mut hits = Vec::new();
@@ -1891,10 +2275,7 @@ fn split_config_json(
                 preview
             };
 
-            let time = row
-                .created_at
-                .map(|t| t.timestamp())
-                .unwrap_or_default();
+            let time = row.created_at.map(|t| t.timestamp()).unwrap_or_default();
 
             hits.push(serde_json::json!({
                 "id": row.id,
@@ -1923,13 +2304,12 @@ fn split_config_json(
         from: usize,
         to: usize,
     ) -> Result<Option<(usize, String)>, sqlx::Error> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT content FROM agent_transcript WHERE agent_id = ? AND id = ?",
-        )
-        .bind(agent_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT content FROM agent_transcript WHERE agent_id = ? AND id = ?")
+                .bind(agent_id)
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(row.map(|(content,)| {
             let total = content.chars().count();
@@ -1942,12 +2322,10 @@ fn split_config_json(
 
     /// Current turn counter for an agent (max turn recorded in transcript).
     pub async fn get_agent_turn_counter(&self, agent_id: &str) -> Result<i64, sqlx::Error> {
-        sqlx::query_scalar(
-            "SELECT COALESCE(MAX(turn), 0) FROM agent_transcript WHERE agent_id = ?",
-        )
-        .bind(agent_id)
-        .fetch_one(&self.pool)
-        .await
+        sqlx::query_scalar("SELECT COALESCE(MAX(turn), 0) FROM agent_transcript WHERE agent_id = ?")
+            .bind(agent_id)
+            .fetch_one(&self.pool)
+            .await
     }
 
     /// Atomically folds unconsumed pushed messages into running history.
@@ -2058,11 +2436,12 @@ fn split_config_json(
         extension_id: &str,
         key: &str,
     ) -> Result<Option<String>, sqlx::Error> {
-        let row: Option<(String,)> = sqlx::query_as("SELECT value FROM extension_kv WHERE extension_id = ? AND key = ?")
-            .bind(extension_id)
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM extension_kv WHERE extension_id = ? AND key = ?")
+                .bind(extension_id)
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.map(|r| r.0))
     }
 
@@ -2079,7 +2458,7 @@ fn split_config_json(
             ON CONFLICT(extension_id, key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = CURRENT_TIMESTAMP
-            "#
+            "#,
         )
         .bind(extension_id)
         .bind(key)
@@ -2100,5 +2479,196 @@ fn split_config_json(
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected() > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merge_headers_or_env() {
+        assert_eq!(merge_headers_or_env(None, None), None);
+        assert_eq!(merge_headers_or_env(Some(""), None), None);
+        assert_eq!(merge_headers_or_env(None, Some("")), None);
+
+        // Global only
+        let g = r#"{"TOKEN": "global_tok", "HOST": "https://api.example.com"}"#;
+        let merged_g = merge_headers_or_env(Some(g), None).unwrap();
+        let parsed: HashMap<String, String> = serde_json::from_str(&merged_g).unwrap();
+        assert_eq!(parsed.get("TOKEN").unwrap(), "global_tok");
+        assert_eq!(parsed.get("HOST").unwrap(), "https://api.example.com");
+
+        // Agent override only
+        let o = r#"{"TOKEN": "agent_tok"}"#;
+        let merged_o = merge_headers_or_env(None, Some(o)).unwrap();
+        let parsed_o: HashMap<String, String> = serde_json::from_str(&merged_o).unwrap();
+        assert_eq!(parsed_o.get("TOKEN").unwrap(), "agent_tok");
+
+        // Merge: agent override takes precedence over global key, retains non-overridden global keys
+        let merged_both = merge_headers_or_env(Some(g), Some(o)).unwrap();
+        let parsed_both: HashMap<String, String> = serde_json::from_str(&merged_both).unwrap();
+        assert_eq!(parsed_both.get("TOKEN").unwrap(), "agent_tok");
+        assert_eq!(parsed_both.get("HOST").unwrap(), "https://api.example.com");
+
+        // Line-based format input
+        let g_lines = "API_KEY=key_g\nDEBUG=0";
+        let o_lines = "API_KEY=key_agent";
+        let merged_lines = merge_headers_or_env(Some(g_lines), Some(o_lines)).unwrap();
+        let parsed_lines: HashMap<String, String> = serde_json::from_str(&merged_lines).unwrap();
+        assert_eq!(parsed_lines.get("API_KEY").unwrap(), "key_agent");
+        assert_eq!(parsed_lines.get("DEBUG").unwrap(), "0");
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Wikilink extraction
+// -----------------------------------------------------------------------------
+
+/// Longest key accepted, in characters. Keys are canonical noun phrases, not
+/// sentences; a longer string is almost certainly a mistaken link.
+pub const MEMORY_KEY_MAX_CHARS: usize = 100;
+
+/// Longest node value accepted, in characters.
+pub const MEMORY_VALUE_MAX_CHARS: usize = 10_000;
+
+/// Extract unique `[[targets]]` from `text`.
+///
+/// Rules, each of which exists because the naive version produced garbage:
+///
+/// * `[[Target|alias]]` yields `Target` (the pipe alias is display-only).
+/// * Links inside fenced code blocks (\`\`\`) and inline code spans are ignored:
+///   documentation about wikilinks is not a wikilink.
+/// * Surrounding whitespace is trimmed, runs of internal whitespace collapse to
+///   one space, and the result is lowercased — so `[[Alice]]`, `[[ alice ]]` and
+///   `[[Alice]]` all point at the same node.
+/// * Empty targets and targets containing a newline, `[`, `]` or `|` are
+///   rejected rather than stored as broken keys.
+/// * Order of first appearance is preserved and duplicates are removed.
+pub fn extract_wikilinks(text: &str) -> Vec<String> {
+    let stripped = strip_code(text);
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = stripped.as_str();
+
+    while let Some(start) = rest.find("[[") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("]]") else {
+            break;
+        };
+        let inner = &after[..end];
+        rest = &after[end + 2..];
+
+        let target = inner.split('|').next().unwrap_or("");
+        if let Some(key) = normalize_memory_key(target) {
+            if !out.contains(&key) {
+                out.push(key);
+            }
+        }
+    }
+    out
+}
+
+/// Normalize a candidate node key, or `None` when it cannot be a key.
+pub fn normalize_memory_key(raw: &str) -> Option<String> {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > MEMORY_KEY_MAX_CHARS {
+        return None;
+    }
+    if trimmed.contains(['[', ']', '|', '\n', '\r', '\t']) {
+        return None;
+    }
+    Some(trimmed.to_lowercase())
+}
+
+/// Remove fenced code blocks and inline code spans so their contents are not
+/// scanned for links.
+fn strip_code(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_fence = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    strip_inline_code(&out)
+}
+
+/// Drop `` `...` `` spans, leaving the rest untouched.
+fn strip_inline_code(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_code = false;
+    for ch in text.chars() {
+        if ch == '`' {
+            in_code = !in_code;
+            continue;
+        }
+        if !in_code {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod wikilink_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_simple_links_in_order_without_duplicates() {
+        assert_eq!(
+            extract_wikilinks("Uses [[Postgres]] and [[Redis]], also [[Postgres]]."),
+            vec!["postgres".to_string(), "redis".to_string()]
+        );
+    }
+
+    #[test]
+    fn pipe_alias_links_to_the_target_not_the_alias() {
+        assert_eq!(
+            extract_wikilinks("See [[auth service|the auth thing]]."),
+            vec!["auth service".to_string()]
+        );
+    }
+
+    #[test]
+    fn ignores_code_blocks_and_inline_code() {
+        let text = "Real [[Link]].\n```\n[[NotALink]]\n```\nInline `[[AlsoNot]]` done.";
+        assert_eq!(extract_wikilinks(text), vec!["link".to_string()]);
+    }
+
+    #[test]
+    fn normalizes_whitespace_and_case() {
+        assert_eq!(
+            extract_wikilinks("[[  Alice   Smith  ]] [[ALICE SMITH]]"),
+            vec!["alice smith".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_junk_targets() {
+        assert!(extract_wikilinks("[[]]").is_empty());
+        assert!(extract_wikilinks("[[   ]]").is_empty());
+        assert!(extract_wikilinks("[[a[[b]]").is_empty());
+        // Unterminated link is not a link.
+        assert!(extract_wikilinks("[[unclosed").is_empty());
+        // Too long to be a key.
+        let long = "x".repeat(MEMORY_KEY_MAX_CHARS + 1);
+        assert!(extract_wikilinks(&format!("[[{long}]]")).is_empty());
+    }
+
+    #[test]
+    fn normalize_memory_key_trims_and_lowercases() {
+        assert_eq!(
+            normalize_memory_key("  Postgres   Primary  ").as_deref(),
+            Some("postgres primary")
+        );
+        assert_eq!(normalize_memory_key("   "), None);
+        assert_eq!(normalize_memory_key("has|pipe"), None);
     }
 }

@@ -19,15 +19,24 @@ use crate::state::AppState;
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
 fn internal_error(e: impl std::fmt::Display) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": e.to_string() })),
+    )
 }
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 fn not_found() -> ApiError {
-    (StatusCode::NOT_FOUND, Json(json!({ "error": "Instruction preset not found" })))
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "Instruction preset not found" })),
+    )
 }
 
 #[derive(Deserialize)]

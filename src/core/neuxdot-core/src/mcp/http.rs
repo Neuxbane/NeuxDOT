@@ -112,7 +112,9 @@ impl HttpTransport {
                             for line in text.lines() {
                                 if let Some(stripped) = line.strip_prefix("data: ") {
                                     if let Ok(val) = serde_json::from_str::<Value>(stripped) {
-                                        if let Some(method) = val.get("method").and_then(|m| m.as_str()) {
+                                        if let Some(method) =
+                                            val.get("method").and_then(|m| m.as_str())
+                                        {
                                             info!("MCP HTTP/SSE Server pushed: {}", method);
                                             let _ = notification_tx.send(McpNotification {
                                                 method: method.to_string(),

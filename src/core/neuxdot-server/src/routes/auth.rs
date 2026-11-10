@@ -81,16 +81,12 @@ pub async fn me_handler(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let profile = state
-        .db
-        .get_profile(&auth.account_id)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-        })?;
+    let profile = state.db.get_profile(&auth.account_id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
 
     Ok(Json(json!({
         "account_id": auth.account_id,

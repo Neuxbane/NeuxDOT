@@ -51,6 +51,10 @@ async fn setup() -> TestApp {
 
     let (event_tx, _rx) = tokio::sync::broadcast::channel(16);
     let app = build_router(AppState {
+        subscriptions: neuxdot_server::subscriptions::SubscriptionHub::new(
+            db.clone(),
+            event_tx.clone(),
+        ),
         db: db.clone(),
         event_tx,
     });
@@ -87,12 +91,7 @@ impl TestApp {
 
         let request = builder.body(body).expect("request");
 
-        let response = self
-            .app
-            .clone()
-            .call(request)
-            .await
-            .expect("infallible");
+        let response = self.app.clone().call(request).await.expect("infallible");
 
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
@@ -127,7 +126,11 @@ async fn member_is_rejected_from_account_management() {
     let (status, _) = t
         .request("GET", "/api/accounts", &t.member_token, None)
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "member must not list accounts");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "member must not list accounts"
+    );
 
     let (status, _) = t
         .request(
@@ -137,7 +140,11 @@ async fn member_is_rejected_from_account_management() {
             Some(json!({ "username": "mallory", "password": "MalloryPassw0rd" })),
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "member must not create accounts");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "member must not create accounts"
+    );
 
     let (status, _) = t
         .request(
@@ -147,7 +154,11 @@ async fn member_is_rejected_from_account_management() {
             Some(json!({ "role": "member" })),
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "member must not edit accounts");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "member must not edit accounts"
+    );
 
     let (status, _) = t
         .request(
@@ -157,7 +168,11 @@ async fn member_is_rejected_from_account_management() {
             None,
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "member must not delete accounts");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "member must not delete accounts"
+    );
 
     // A member may change their own password (self-service path stays open).
     let (status, body) = t
@@ -172,7 +187,12 @@ async fn member_is_rejected_from_account_management() {
             })),
         )
         .await;
-    assert_eq!(status, StatusCode::OK, "member self password change: {:?}", body);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "member self password change: {:?}",
+        body
+    );
 
     // ...but not somebody else's.
     let (status, _) = t
@@ -187,7 +207,11 @@ async fn member_is_rejected_from_account_management() {
             })),
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "member must not reset root password");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "member must not reset root password"
+    );
 }
 
 #[tokio::test]
@@ -202,7 +226,12 @@ async fn last_root_cannot_be_demoted_or_deleted() {
             Some(json!({ "role": "member" })),
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "last root demotion: {:?}", body);
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "last root demotion: {:?}",
+        body
+    );
 
     let (status, body) = t
         .request(
@@ -215,7 +244,10 @@ async fn last_root_cannot_be_demoted_or_deleted() {
     assert_eq!(status, StatusCode::FORBIDDEN, "self deletion: {:?}", body);
 
     // Still exactly one root.
-    let root_count = t.db.count_accounts_with_role(ROLE_ROOT).await.expect("count");
+    let root_count =
+        t.db.count_accounts_with_role(ROLE_ROOT)
+            .await
+            .expect("count");
     assert_eq!(root_count, 1);
 
     // A second root may be demoted while the first root remains...
@@ -273,7 +305,9 @@ async fn last_root_cannot_be_demoted_or_deleted() {
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(
-        t.db.count_accounts_with_role(ROLE_ROOT).await.expect("count"),
+        t.db.count_accounts_with_role(ROLE_ROOT)
+            .await
+            .expect("count"),
         1
     );
 }
@@ -296,7 +330,12 @@ async fn password_change_validation_and_effects() {
             })),
         )
         .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "wrong old password: {:?}", body);
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "wrong old password: {:?}",
+        body
+    );
 
     // Mismatched confirmation -> 400
     let (status, body) = t
@@ -343,12 +382,11 @@ async fn password_change_validation_and_effects() {
         .await;
     assert_eq!(status, StatusCode::OK, "successful change: {:?}", body);
 
-    let account = t
-        .db
-        .get_account_by_id(&t.member_id)
-        .await
-        .expect("lookup")
-        .expect("account");
+    let account =
+        t.db.get_account_by_id(&t.member_id)
+            .await
+            .expect("lookup")
+            .expect("account");
     assert!(verify_password("NewMemberPassw0rd", &account.password_hash));
     assert!(!verify_password(MEMBER_PASSWORD, &account.password_hash));
 
@@ -361,7 +399,11 @@ async fn password_change_validation_and_effects() {
             Some(json!({ "username": "alice", "password": MEMBER_PASSWORD })),
         )
         .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "old password must stop working");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "old password must stop working"
+    );
     let (status, _) = t
         .request(
             "POST",
@@ -385,12 +427,11 @@ async fn password_change_validation_and_effects() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "root admin reset: {:?}", body);
-    let account = t
-        .db
-        .get_account_by_id(&t.member_id)
-        .await
-        .expect("lookup")
-        .expect("account");
+    let account =
+        t.db.get_account_by_id(&t.member_id)
+            .await
+            .expect("lookup")
+            .expect("account");
     assert!(verify_password("RootResetPassw0rd", &account.password_hash));
 }
 
@@ -457,7 +498,12 @@ async fn root_can_create_edit_and_delete_member() {
         "avatar_url",
         "created_at",
     ] {
-        assert!(entry.get(key).is_some(), "missing key {} in {:?}", key, entry);
+        assert!(
+            entry.get(key).is_some(),
+            "missing key {} in {:?}",
+            key,
+            entry
+        );
     }
 
     // Edit username / display name / avatar
@@ -547,7 +593,9 @@ async fn profile_update_accepts_avatar_url() {
     assert_eq!(body["display_name"], "Alice A.");
     assert_eq!(body["avatar_url"], "https://example.com/alice.png");
 
-    let (status, me) = t.request("GET", "/api/auth/me", &t.member_token, None).await;
+    let (status, me) = t
+        .request("GET", "/api/auth/me", &t.member_token, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(me["role"], "member");
     assert_eq!(me["profile"]["avatar_url"], "https://example.com/alice.png");
@@ -606,7 +654,9 @@ async fn demoted_root_loses_admin_rights_immediately() {
     let app = setup().await;
 
     // Sanity: the root token works while the account is root.
-    let (status, _) = app.request("GET", "/api/accounts", &app.root_token, None).await;
+    let (status, _) = app
+        .request("GET", "/api/accounts", &app.root_token, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
 
     // Create a second root so the first one may legally be demoted.
@@ -629,7 +679,9 @@ async fn demoted_root_loses_admin_rights_immediately() {
 
     // The OLD token still carries role="root" in its claims, but the account is
     // now a member: admin access must be refused.
-    let (status, body) = app.request("GET", "/api/accounts", &app.root_token, None).await;
+    let (status, body) = app
+        .request("GET", "/api/accounts", &app.root_token, None)
+        .await;
     assert_eq!(
         status,
         StatusCode::FORBIDDEN,
@@ -644,7 +696,9 @@ async fn deleted_account_token_is_rejected() {
     let app = setup().await;
 
     // Member can reach their own profile while they exist.
-    let (status, _) = app.request("GET", "/api/profile", &app.member_token, None).await;
+    let (status, _) = app
+        .request("GET", "/api/profile", &app.member_token, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
 
     app.db
@@ -652,6 +706,12 @@ async fn deleted_account_token_is_rejected() {
         .await
         .expect("delete member");
 
-    let (status, _) = app.request("GET", "/api/profile", &app.member_token, None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "deleted account token must be rejected");
+    let (status, _) = app
+        .request("GET", "/api/profile", &app.member_token, None)
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "deleted account token must be rejected"
+    );
 }

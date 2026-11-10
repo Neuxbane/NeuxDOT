@@ -11,6 +11,7 @@ use crate::config::{AuthKind, Config};
 
 tokio::task_local! {
     pub static CURRENT_GITLAB_TOKEN: Option<String>;
+    pub static CURRENT_GITLAB_URL: Option<String>;
 }
 
 /// A GitLab response reduced to what the tool layer needs.
@@ -70,7 +71,8 @@ impl GitLabClient {
     }
 
     fn apply_auth(&self, mut req: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::RequestBuilder {
-        let tok = token.or(self.default_token.as_deref());
+        let task_tok = CURRENT_GITLAB_TOKEN.try_with(|t| t.clone()).ok().flatten();
+        let tok = token.or(task_tok.as_deref()).or(self.default_token.as_deref());
         if let Some(t) = tok {
             let t = t.trim();
             if !t.is_empty() {
@@ -116,7 +118,13 @@ impl GitLabClient {
         body: Option<&Value>,
         token: Option<&str>,
     ) -> Result<ApiResponse, ApiError> {
-        let url = format!("{}{}", self.api_url, path);
+        let base_api_url = CURRENT_GITLAB_URL
+            .try_with(|u| u.clone())
+            .ok()
+            .flatten()
+            .and_then(|raw| crate::config::normalize_urls(&raw).ok().map(|(rest, _)| rest))
+            .unwrap_or_else(|| self.api_url.clone());
+        let url = format!("{}{}", base_api_url, path);
         let mut req = self.http.request(method, &url);
         req = self.apply_auth(req, token);
         if !query.is_empty() {
@@ -144,9 +152,15 @@ impl GitLabClient {
         variables: Value,
         token: Option<&str>,
     ) -> Result<ApiResponse, ApiError> {
+        let base_graphql_url = CURRENT_GITLAB_URL
+            .try_with(|u| u.clone())
+            .ok()
+            .flatten()
+            .and_then(|raw| crate::config::normalize_urls(&raw).ok().map(|(_, gql)| gql))
+            .unwrap_or_else(|| self.graphql_url.clone());
         let req = self
             .http
-            .post(&self.graphql_url)
+            .post(&base_graphql_url)
             .json(&json!({ "query": query, "variables": variables }));
         let req = self.apply_auth(req, token);
         let resp = req

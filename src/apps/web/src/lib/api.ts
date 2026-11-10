@@ -183,9 +183,32 @@ export interface AgentDetail {
 	model_ids: string[];
 	models?: ActiveModelTarget[];
 	mcp_ids: string[];
+	mcp_configs?: Record<string, string>;
 	is_owner?: boolean;
 	can_edit?: boolean;
 	can_manage_shares?: boolean;
+}
+
+export interface MemoryGraphNode {
+	key: string;
+	type: string;
+	description: string;
+	value: string;
+	hash: string;
+	updated_at?: string;
+	outbound: string[];
+	backlinks: string[];
+}
+
+export interface AgentMcpConfigResponse {
+	agent_id: string;
+	mcp_id: string;
+	plugin_name: string;
+	manifest_json?: string;
+	global_config?: string | null;
+	config_override?: string | null;
+	effective_config?: string | null;
+	has_override: boolean;
 }
 
 /**
@@ -223,7 +246,34 @@ identity: {
 'user.profile_picture': boolean;
 };
 process: boolean;
-network: boolean;
+/**
+ * `allow` is an allow-list of hosts / IPs / CIDRs.
+ * `[]` = no network at all, `["*"]` = unrestricted.
+ */
+network: { allow: string[] };
+/**
+ * Runs on the **host** with no sandbox. Never inferred — only an explicit
+ * manifest declaration can grant it.
+ */
+elevated: boolean;
+/**
+ * Grants against the server control surface (`/api/control/mcp`). Every flag
+ * defaults to denied and is never inferred from a transport. The credential's
+ * own account role remains the outer gate.
+ */
+control: ControlPermissions;
+}
+
+/** One flag per resource the control MCP exposes. */
+export interface ControlPermissions {
+agents_read: boolean;
+agents_write: boolean;
+shares: boolean;
+plugins_read: boolean;
+plugins_write: boolean;
+providers_read: boolean;
+providers_write: boolean;
+accounts: boolean;
 }
 
 /** Avatar descriptor as returned by the host. Never assembled browser-side. */
@@ -236,7 +286,7 @@ shape?: string;
 /** Identity block of the bridge bootstrap (§6). Absent = not granted (§3 omission rule). */
 export interface HostBridgeIdentity {
 agent?: { id: string; name?: string; avatar?: HostBridgeAvatar };
-user?: { name?: string; avatar?: HostBridgeAvatar };
+user?: { id?: string; name?: string; avatar?: HostBridgeAvatar };
 }
 
 /** Payload returned by `GET /api/host/session` and pushed on `ui/context` (§3). */
@@ -592,6 +642,11 @@ class ApiClient {
 				updated_at?: string;
 			}>(`/api/agents/${id}/memory`),
 
+		getMemoryGraph: (id: string) =>
+			this.request<{ agent_id: string; nodes: MemoryGraphNode[] }>(
+				`/api/agents/${id}/memory/graph`
+			),
+
 		getHistory: (id: string) =>
 			this.request<AgentHistoryItem[]>(`/api/agents/${id}/history`),
 
@@ -615,6 +670,18 @@ class ApiClient {
 				method: 'PUT',
 				body: JSON.stringify({ subscriptions })
 			}),
+
+		getMcpConfig: (agentId: string, mcpId: string) =>
+			this.request<AgentMcpConfigResponse>(`/api/agents/${agentId}/mcp/${mcpId}/config`),
+
+		setMcpConfig: (agentId: string, mcpId: string, config_override: string | null) =>
+			this.request<{ success: boolean; config_override: string | null }>(
+				`/api/agents/${agentId}/mcp/${mcpId}/config`,
+				{
+					method: 'PUT',
+					body: JSON.stringify({ config_override })
+				}
+			),
 	};
 
 	/** Non-privileged account search, used by the share picker. */

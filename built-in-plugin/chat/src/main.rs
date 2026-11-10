@@ -1,10 +1,12 @@
+mod sandbox_fs;
+
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
@@ -196,6 +198,90 @@ fn get_tool_definitions() -> Value {
                     "visibility": ["app"]
                 }
             }
+        },
+        {
+            "name": "chat_upload_file",
+            "description": "Store a file in this agent's sandbox workspace and return where it landed. Base64-encode the bytes; the model never needs to hold file contents in its context twice. The file is then reachable from chat_exec at the returned path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Destination path inside /workspace, e.g. notes/report.md. Parent directories are created."
+                    },
+                    "content_base64": {
+                        "type": "string",
+                        "description": "File bytes, standard base64. Mutually exclusive with 'content'."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "File bytes as UTF-8 text, for text files. Mutually exclusive with 'content_base64'."
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": "Replace an existing file (default: false, which returns an error instead)"
+                    }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "chat_list_files",
+            "description": "List files and directories inside this agent's sandbox workspace, with sizes and modification times.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to list, relative to /workspace (default: the workspace root)"
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "Walk subdirectories (default: false, which lists one level)"
+                    }
+                }
+            }
+        },
+        {
+            "name": "chat_read_file",
+            "description": "Read a file from this agent's sandbox workspace. Text is returned directly; binary content is returned as base64 when 'encoding' is 'base64'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to /workspace"
+                    },
+                    "encoding": {
+                        "type": "string",
+                        "enum": ["text", "base64"],
+                        "description": "How to return the bytes (default: text)"
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": "Read at most this many bytes (default 262144, capped at 8388608)"
+                    }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "chat_exec",
+            "description": "Run a bash command inside the sandboxed workspace. No network, read-only /usr, and only /workspace is writable. Output is captured and truncated with an explicit marker rather than silently cut.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Bash command to run; starts in /workspace"
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Wall-clock limit (default 30, max 300)"
+                    }
+                },
+                "required": ["command"]
+            }
         }
     ])
 }
@@ -381,6 +467,300 @@ async fn tool_chat_clear(state: &Arc<AppState>, args: &Value) -> Result<Value, S
 }
 
 // -----------------------------------------------------------------------------
+// Sandboxed workspace tools
+// -----------------------------------------------------------------------------
+
+/// The agent's workspace root inside the plugin's own data directory.
+///
+/// This directory is bind-mounted read-write into the plugin's bubblewrap
+/// sandbox as `/workspace` and nowhere else, so a path resolved here can never
+/// address the host.
+fn agent_workspace(state: &AppState, agent_id: &str) -> PathBuf {
+    let safe: String = agent_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    state.storage_dir.join("agents").join(safe).join("workspace")
+}
+
+async fn resolve_agent_id(state: &Arc<AppState>, args: &Value) -> String {
+    if let Some(id) = args.get("agent_id").and_then(|v| v.as_str()) {
+        let trimmed = id.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let active = state.active_agent_id.lock().await;
+    active.clone().unwrap_or_else(|| "default".to_string())
+}
+
+async fn tool_chat_upload_file(state: &Arc<AppState>, args: &Value) -> Result<Value, String> {
+    let agent_id = resolve_agent_id(state, args).await;
+    let root = agent_workspace(state, &agent_id);
+    let raw_path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required 'path' parameter".to_string())?;
+    let target = sandbox_fs::resolve_in_root(&root, raw_path)?;
+
+    let bytes: Vec<u8> = match (
+        args.get("content_base64").and_then(|v| v.as_str()),
+        args.get("content").and_then(|v| v.as_str()),
+    ) {
+        (Some(b64), None) => sandbox_fs::decode_base64(b64)?,
+        (None, Some(text)) => text.as_bytes().to_vec(),
+        (Some(_), Some(_)) => {
+            return Err(
+                "Pass either 'content_base64' or 'content', not both".to_string()
+            );
+        }
+        (None, None) => {
+            return Err("One of 'content' or 'content_base64' is required".to_string());
+        }
+    };
+
+    if bytes.len() > sandbox_fs::MAX_UPLOAD_BYTES {
+        return Err(format!(
+            "File is {} bytes; the limit is {} bytes",
+            bytes.len(),
+            sandbox_fs::MAX_UPLOAD_BYTES
+        ));
+    }
+
+    let overwrite = args
+        .get("overwrite")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if target.exists() && !overwrite {
+        return Err(format!(
+            "'{raw_path}' already exists. Pass overwrite=true to replace it."
+        ));
+    }
+
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Cannot create the parent directory: {e}"))?;
+    }
+    tokio::fs::write(&target, &bytes)
+        .await
+        .map_err(|e| format!("Cannot write '{raw_path}': {e}"))?;
+
+    let mount_path = target
+        .strip_prefix(&root)
+        .map(|p| format!("/workspace/{}", p.display()))
+        .unwrap_or_else(|_| raw_path.to_string());
+
+    Ok(json!({
+        "success": true,
+        "path": mount_path,
+        "bytes": bytes.len(),
+        "message": format!("Stored {} bytes at {}.", bytes.len(), mount_path)
+    }))
+}
+
+async fn tool_chat_list_files(state: &Arc<AppState>, args: &Value) -> Result<Value, String> {
+    let agent_id = resolve_agent_id(state, args).await;
+    let root = agent_workspace(state, &agent_id);
+    let relative = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let dir = if relative.trim().is_empty() {
+        root.clone()
+    } else {
+        sandbox_fs::resolve_in_root(&root, relative)?
+    };
+
+    let recursive = args
+        .get("recursive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !dir.exists() {
+        return Ok(json!({ "success": true, "path": relative, "entries": [] }));
+    }
+
+    let mut entries = Vec::new();
+    collect_entries(&root, &dir, recursive, 0, &mut entries).await?;
+
+    Ok(json!({
+        "success": true,
+        "path": if relative.trim().is_empty() { "/workspace" } else { relative },
+        "count": entries.len(),
+        "entries": entries
+    }))
+}
+
+/// Walk `dir`, describing each child relative to `root`.
+///
+/// Depth-bounded so a symlink loop cannot hang the plugin; the sandbox already
+/// has no route out, but a plugin must not be able to wedge itself either.
+async fn collect_entries(
+    root: &Path,
+    dir: &Path,
+    recursive: bool,
+    depth: usize,
+    out: &mut Vec<Value>,
+) -> Result<(), String> {
+    const MAX_DEPTH: usize = 16;
+    if depth > MAX_DEPTH {
+        return Ok(());
+    }
+
+    let mut reader = tokio::fs::read_dir(dir)
+        .await
+        .map_err(|e| format!("Cannot read '{}': {e}", dir.display()))?;
+
+    while let Some(entry) = reader
+        .next_entry()
+        .await
+        .map_err(|e| format!("Cannot read '{}': {e}", dir.display()))?
+    {
+        let path = entry.path();
+        let metadata = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let relative = path
+            .strip_prefix(root)
+            .map(|p| format!("/workspace/{}", p.display()))
+            .unwrap_or_else(|_| path.display().to_string());
+        let is_dir = metadata.is_dir();
+        out.push(json!({
+            "path": relative,
+            "name": entry.file_name().to_string_lossy(),
+            "type": if is_dir { "dir" } else if metadata.is_file() { "file" } else { "other" },
+            "bytes": if metadata.is_file() { metadata.len() } else { 0 },
+        }));
+
+        if recursive && is_dir {
+            Box::pin(collect_entries(root, &path, true, depth + 1, out)).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn tool_chat_read_file(state: &Arc<AppState>, args: &Value) -> Result<Value, String> {
+    let agent_id = resolve_agent_id(state, args).await;
+    let root = agent_workspace(state, &agent_id);
+    let raw_path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required 'path' parameter".to_string())?;
+    let target = sandbox_fs::resolve_in_root(&root, raw_path)?;
+
+    let metadata = tokio::fs::metadata(&target)
+        .await
+        .map_err(|e| format!("Cannot stat '{raw_path}': {e}"))?;
+    if metadata.is_dir() {
+        return Err(format!("'{raw_path}' is a directory; use chat_list_files"));
+    }
+
+    let requested = args
+        .get("max_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(262_144)
+        .clamp(1, sandbox_fs::MAX_UPLOAD_BYTES as u64) as usize;
+
+    let bytes = tokio::fs::read(&target)
+        .await
+        .map_err(|e| format!("Cannot read '{raw_path}': {e}"))?;
+    let truncated = bytes.len() > requested;
+    let slice = &bytes[..bytes.len().min(requested)];
+
+    let encoding = args
+        .get("encoding")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+
+    let mut out = json!({
+        "success": true,
+        "path": raw_path,
+        "bytes": bytes.len(),
+        "truncated": truncated,
+    });
+    if encoding.eq_ignore_ascii_case("base64") {
+        out["encoding"] = json!("base64");
+        out["content"] = json!(sandbox_fs::encode_base64(slice));
+    } else {
+        out["encoding"] = json!("text");
+        out["content"] = json!(sandbox_fs::clamp_output(slice));
+    }
+    Ok(out)
+}
+
+async fn tool_chat_exec(state: &Arc<AppState>, args: &Value) -> Result<Value, String> {
+    let agent_id = resolve_agent_id(state, args).await;
+    let workspace = agent_workspace(state, &agent_id);
+    tokio::fs::create_dir_all(&workspace)
+        .await
+        .map_err(|e| format!("Cannot create the workspace: {e}"))?;
+
+    let command = args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required 'command' parameter".to_string())?
+        .trim()
+        .to_string();
+    if command.is_empty() {
+        return Err("'command' cannot be empty".to_string());
+    }
+
+    let timeout_secs = sandbox_fs::clamp_timeout(
+        args.get("timeout_seconds").and_then(|v| v.as_u64()),
+    );
+
+    let mut cmd = tokio::process::Command::new("bash");
+    cmd.arg("-lc")
+        .arg(&command)
+        .current_dir(&workspace)
+        // Inherit the sandbox's environment, which the host already configured,
+        // but never the caller's cwd.
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    let started = std::time::Instant::now();
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("Cannot start the command: {e}"))?;
+
+    let output = match tokio::time::timeout(
+        sandbox_fs::timeout_duration(timeout_secs),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("The command failed to run: {e}")),
+        Err(_) => {
+            return Ok(json!({
+                "success": false,
+                "timed_out": true,
+                "timeout_seconds": timeout_secs,
+                "message": format!("Command exceeded {timeout_secs}s and was killed."),
+            }));
+        }
+    };
+
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(json!({
+        "success": output.status.success(),
+        "exit_code": output.status.code(),
+        "timed_out": false,
+        "duration_ms": elapsed_ms,
+        "cwd": "/workspace",
+        "stdout": sandbox_fs::clamp_output(&output.stdout),
+        "stderr": sandbox_fs::clamp_output(&output.stderr),
+    }))
+}
+
+// -----------------------------------------------------------------------------
 // Request Dispatcher
 // -----------------------------------------------------------------------------
 
@@ -534,6 +914,10 @@ async fn handle_request(state: &Arc<AppState>, req: Value) {
                 "chat_user_message" => tool_chat_user_message(state, &arguments).await,
                 "chat_history" => tool_chat_history(state, &arguments).await,
                 "chat_clear" => tool_chat_clear(state, &arguments).await,
+                "chat_upload_file" => tool_chat_upload_file(state, &arguments).await,
+                "chat_list_files" => tool_chat_list_files(state, &arguments).await,
+                "chat_read_file" => tool_chat_read_file(state, &arguments).await,
+                "chat_exec" => tool_chat_exec(state, &arguments).await,
                 other => Err(format!("Unknown tool: {}", other)),
             };
 
@@ -645,12 +1029,31 @@ mod tests {
     fn test_tool_definitions() {
         let defs = get_tool_definitions();
         let arr = defs.as_array().expect("array of tools");
-        assert_eq!(arr.len(), 4);
-        let names: Vec<&str> = arr.iter().filter_map(|t| t["name"].as_str()).collect();
-        assert!(names.contains(&"chat_send"));
-        assert!(names.contains(&"chat_user_message"));
-        assert!(names.contains(&"chat_history"));
-        assert!(names.contains(&"chat_clear"));
+
+        // The exact tool set is an interface, so it is pinned rather than
+        // counted: a tool silently disappearing would otherwise pass.
+        let mut names: Vec<&str> = arr.iter().filter_map(|t| t["name"].as_str()).collect();
+        names.sort_unstable();
+        let expected = [
+            "chat_clear",
+            "chat_exec",
+            "chat_history",
+            "chat_list_files",
+            "chat_read_file",
+            "chat_send",
+            "chat_upload_file",
+            "chat_user_message",
+        ];
+        assert_eq!(names, expected);
+
+        // Every tool must carry a usable schema, not just a name.
+        for tool in arr {
+            assert!(
+                tool["inputSchema"]["type"] == "object",
+                "tool {:?} has no object inputSchema",
+                tool["name"]
+            );
+        }
     }
 
     #[test]

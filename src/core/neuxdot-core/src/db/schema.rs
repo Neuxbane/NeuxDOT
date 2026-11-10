@@ -264,6 +264,9 @@ fn default_true() -> bool {
 /// normalised. Matches any `ui://` URI.
 pub const UI_RESOURCE_WILDCARD: &str = "*";
 
+/// Marker in `network.allow` meaning "every destination".
+pub const NETWORK_WILDCARD: &str = "*";
+
 /// Canonical capability strings (see `docs/HOST_BRIDGE.md` §1). Only granted
 /// capabilities appear in a host bootstrap payload.
 pub const CAP_UI_CONTEXT_REFRESH: &str = "ui.context.refresh";
@@ -385,9 +388,217 @@ pub struct PluginPermissions {
     /// Process spawning (stdio plugins). Out of scope for the consent editor.
     #[serde(default = "default_true")]
     pub process: bool,
-    /// Outbound network (http plugins). Out of scope for the consent editor.
-    #[serde(default = "default_true")]
-    pub network: bool,
+    /// Outbound network grants. Empty means "no network at all", which is the
+    /// default for a sandboxed plugin.
+    #[serde(default)]
+    pub network: NetworkPermissions,
+    /// Run this plugin **on the host**, without the bubblewrap sandbox.
+    ///
+    /// Deny-by-default and never inferred from the transport: a plugin that
+    /// can reach the host filesystem, the host network stack and the host
+    /// credentials has to say so in its manifest and be shown as such in the
+    /// consent UI. `transport == "stdio"` only grants `process`, not this.
+    #[serde(default)]
+    pub elevated: bool,
+    /// Server control grants. Deny-by-default; see [`ControlPermissions`].
+    #[serde(default)]
+    pub control: ControlPermissions,
+}
+
+/// Grants to drive the NeuxDOT server's own control API.
+///
+/// A plugin holding these can read and mutate the host's agents, plugins,
+/// providers, shares and (when the credential's account is `root`) accounts.
+/// Every flag defaults to **false**: this is the most privileged surface a
+/// plugin can reach, so it is never inferred from a transport, from `process`,
+/// or from network access. The manifest must ask for each resource separately.
+///
+/// The credential's own role is still the outer gate — a `member` credential
+/// cannot act as `root` no matter what these flags say. The flags only control
+/// which *tools* the plugin is allowed to call.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ControlPermissions {
+    /// List/read agents, including shared ones the credential can view.
+    #[serde(default)]
+    pub agents_read: bool,
+    /// Create, edit, delete agents and rebind their models/plugins.
+    #[serde(default)]
+    pub agents_write: bool,
+    /// Grant, change and revoke agent shares.
+    #[serde(default)]
+    pub shares: bool,
+    /// List/read plugins.
+    #[serde(default)]
+    pub plugins_read: bool,
+    /// Install, edit, enable/disable and delete plugins.
+    #[serde(default)]
+    pub plugins_write: bool,
+    /// List/read providers and their models.
+    #[serde(default)]
+    pub providers_read: bool,
+    /// Create, edit and delete providers.
+    #[serde(default)]
+    pub providers_write: bool,
+    /// Account administration. Only reachable with a `root` credential.
+    #[serde(default)]
+    pub accounts: bool,
+}
+
+impl ControlPermissions {
+    /// True when at least one control grant is present.
+    pub fn any(&self) -> bool {
+        self.agents_read
+            || self.agents_write
+            || self.shares
+            || self.plugins_read
+            || self.plugins_write
+            || self.providers_read
+            || self.providers_write
+            || self.accounts
+    }
+
+    /// Human-readable list of the granted resources, for the consent UI.
+    pub fn granted(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.agents_read {
+            out.push("agents_read");
+        }
+        if self.agents_write {
+            out.push("agents_write");
+        }
+        if self.shares {
+            out.push("shares");
+        }
+        if self.plugins_read {
+            out.push("plugins_read");
+        }
+        if self.plugins_write {
+            out.push("plugins_write");
+        }
+        if self.providers_read {
+            out.push("providers_read");
+        }
+        if self.providers_write {
+            out.push("providers_write");
+        }
+        if self.accounts {
+            out.push("accounts");
+        }
+        out
+    }
+}
+
+/// Outbound network grants for a plugin.
+///
+/// The canonical wire format is grouped (`{"allow": [...]}`), but the loader is
+/// liberal: a legacy flat `true`/`false` still deserialises, because stored
+/// `permissions_json` rows predate the allow-list.
+///
+/// * `allow: []` — no network at all. This is the default.
+/// * `allow: ["*"]` — unrestricted.
+/// * otherwise — a list of hostnames, `*.suffix` wildcards, IP literals or
+///   CIDR blocks.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NetworkPermissions {
+    pub allow: Vec<String>,
+}
+
+impl Default for NetworkPermissions {
+    fn default() -> Self {
+        Self { allow: Vec::new() }
+    }
+}
+
+/// Accept `{"allow": [...]}`, a bare array, or the legacy boolean.
+///
+/// Hand-written rather than derived because the legacy wire format put a
+/// boolean where the struct now sits, and `#[serde(untagged)]` on the struct
+/// itself would also swallow malformed grouped objects silently.
+impl<'de> Deserialize<'de> for NetworkPermissions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Grouped { allow: Vec<String> },
+            List(Vec<String>),
+            Bool(bool),
+            Text(String),
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        let allow = match raw {
+            Raw::Bool(true) => vec![NETWORK_WILDCARD.to_string()],
+            Raw::Bool(false) => Vec::new(),
+            Raw::Grouped { allow } | Raw::List(allow) => allow
+                .into_iter()
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty())
+                .collect(),
+            Raw::Text(text) => {
+                let trimmed = text.trim().to_string();
+                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+                    Vec::new()
+                } else {
+                    vec![trimmed]
+                }
+            }
+        };
+        Ok(NetworkPermissions { allow })
+    }
+}
+
+impl NetworkPermissions {
+    /// Every granted destination marker.
+    pub fn allow_list(&self) -> &[String] {
+        &self.allow
+    }
+
+    /// No destination is reachable.
+    pub fn is_denied(&self) -> bool {
+        self.allow.is_empty()
+    }
+
+    /// `["*"]` — every destination is reachable.
+    pub fn is_unrestricted(&self) -> bool {
+        self.allow.iter().any(|entry| entry == NETWORK_WILDCARD)
+    }
+
+    /// True when `host` is reachable: exact match, a `*.suffix` wildcard, an IP
+    /// literal, or membership of a CIDR block.
+    ///
+    /// Hostnames are compared case-insensitively. A leading `.` or `*.` in an
+    /// entry means "this domain and every subdomain".
+    pub fn allows_host(&self, host: &str) -> bool {
+        if self.is_denied() {
+            return false;
+        }
+        if self.is_unrestricted() {
+            return true;
+        }
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if host.is_empty() {
+            return false;
+        }
+        self.allow.iter().any(|entry| {
+            let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
+            if entry.is_empty() {
+                return false;
+            }
+            if let Some(suffix) = entry.strip_prefix("*.") {
+                return host == suffix || host.ends_with(&format!(".{suffix}"));
+            }
+            if let Some(suffix) = entry.strip_prefix('.') {
+                return host == suffix || host.ends_with(&format!(".{suffix}"));
+            }
+            if entry.contains('/') {
+                return cidr_contains(&entry, &host);
+            }
+            entry == host
+        })
+    }
 }
 
 impl Default for PluginPermissions {
@@ -399,7 +610,10 @@ impl Default for PluginPermissions {
             // Privacy by default: identity grants must be asked for explicitly.
             identity: IdentityPermissions::default(),
             process: true,
-            network: true,
+            // No network and no elevated host access unless asked for.
+            network: NetworkPermissions::default(),
+            elevated: false,
+            control: ControlPermissions::default(),
         }
     }
 }
@@ -409,12 +623,25 @@ impl PluginPermissions {
     /// A permission object where every capability is denied.
     pub fn deny_all() -> Self {
         Self {
-            ui: UiPermissions { enabled: false, resources: Vec::new() },
-            storage: StoragePermissions { get: false, set: false, delete: false, keys: Some(Vec::new()) },
-            agent: AgentPermissions { trigger: false, tools: false },
+            ui: UiPermissions {
+                enabled: false,
+                resources: Vec::new(),
+            },
+            storage: StoragePermissions {
+                get: false,
+                set: false,
+                delete: false,
+                keys: Some(Vec::new()),
+            },
+            agent: AgentPermissions {
+                trigger: false,
+                tools: false,
+            },
             identity: IdentityPermissions::default(),
             process: false,
-            network: false,
+            network: NetworkPermissions::default(),
+            elevated: false,
+            control: ControlPermissions::default(),
         }
     }
 }
@@ -491,10 +718,23 @@ impl PluginPermissions {
         match &self.storage.keys {
             None => true,
             Some(prefixes) if prefixes.is_empty() => true,
-            Some(prefixes) => prefixes
-                .iter()
-                .any(|p| !p.is_empty() && (key.starts_with(p.as_str()) || p.as_str() == UI_RESOURCE_WILDCARD)),
+            Some(prefixes) => prefixes.iter().any(|p| {
+                !p.is_empty() && (key.starts_with(p.as_str()) || p.as_str() == UI_RESOURCE_WILDCARD)
+            }),
         }
+    }
+
+    /// True when this plugin must run inside the isolation sandbox.
+    ///
+    /// Everything process-spawning is sandboxed unless the manifest explicitly
+    /// requested elevated host access. `process` alone does not escape it.
+    pub fn requires_sandbox(&self) -> bool {
+        self.process && !self.elevated
+    }
+
+    /// True when `host` may be reached from inside the sandbox.
+    pub fn network_allows_host(&self, host: &str) -> bool {
+        self.network.allows_host(host)
     }
 
     /// The effective capability name for a storage verb (`storage.get`,
@@ -518,9 +758,62 @@ impl PluginPermissions {
             return Err(format!("capability '{}' is not granted", cap));
         }
         if !self.storage_allows_key(key) {
-            return Err(format!("key '{}' is outside the allowed storage prefixes", key));
+            return Err(format!(
+                "key '{}' is outside the allowed storage prefixes",
+                key
+            ));
         }
         Ok(())
+    }
+}
+
+/// True when `host` (an IP literal) falls inside `cidr` (`10.0.0.0/8`).
+///
+/// Only IPv4 and IPv6 literals are matched; a hostname never matches a CIDR.
+fn cidr_contains(cidr: &str, host: &str) -> bool {
+    let Ok(host_ip) = host.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    let Ok(network) = cidr.parse::<std::net::IpAddr>() else {
+        // `10.0.0.0/8` splits into an address and a prefix length.
+        let Some((addr, prefix)) = cidr.split_once('/') else {
+            return false;
+        };
+        let (Ok(addr), Ok(prefix)) = (addr.parse::<std::net::IpAddr>(), prefix.parse::<u8>())
+        else {
+            return false;
+        };
+        return ip_in_network(host_ip, addr, prefix);
+    };
+    // A bare address matches only itself.
+    host_ip == network
+}
+
+fn ip_in_network(host: std::net::IpAddr, network: std::net::IpAddr, prefix: u8) -> bool {
+    match (host, network) {
+        (std::net::IpAddr::V4(host), std::net::IpAddr::V4(net)) => {
+            if prefix > 32 {
+                return false;
+            }
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
+            (u32::from(host) & mask) == (u32::from(net) & mask)
+        }
+        (std::net::IpAddr::V6(host), std::net::IpAddr::V6(net)) => {
+            if prefix > 128 {
+                return false;
+            }
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - prefix)
+            };
+            (u128::from(host) & mask) == (u128::from(net) & mask)
+        }
+        _ => false,
     }
 }
 
@@ -540,7 +833,11 @@ struct GroupedPluginPermissions {
     #[serde(default)]
     process: Option<bool>,
     #[serde(default)]
-    network: Option<bool>,
+    network: Option<NetworkPermissions>,
+    #[serde(default)]
+    elevated: Option<bool>,
+    #[serde(default)]
+    control: Option<ControlPermissions>,
 }
 
 impl From<GroupedPluginPermissions> for PluginPermissions {
@@ -559,7 +856,9 @@ impl From<GroupedPluginPermissions> for PluginPermissions {
             perms.identity = identity;
         }
         perms.process = g.process.unwrap_or(false);
-        perms.network = g.network.unwrap_or(false);
+        perms.network = g.network.unwrap_or_default();
+        perms.elevated = g.elevated.unwrap_or(false);
+        perms.control = g.control.unwrap_or_default();
         perms
     }
 }
@@ -674,11 +973,19 @@ impl McpServer {
                 // has no grouped section: treating it as a decision would deny
                 // everything and hide the plugin's apps, so ignore it and fall
                 // back to what the plugin declared.
-                let is_grouped = ["ui", "storage", "agent", "identity"]
+                // A grouped section marks a real consent decision. `control`
+                // and `network` are included because a stored decision may
+                // consist *only* of those (e.g. a plugin granted nothing but a
+                // control scope); omitting them would silently fall back to the
+                // manifest and ignore the operator's decision.
+                let is_grouped = ["ui", "storage", "agent", "identity", "control", "network"]
                     .iter()
                     .any(|k| val.get(*k).map(|v| v.is_object()).unwrap_or(false));
                 if is_grouped {
-                    if let Ok(perms) = serde_json::from_value::<PluginPermissions>(val) {
+                    if let Ok(mut perms) = serde_json::from_value::<PluginPermissions>(val) {
+                        if self.transport == "stdio" || self.transport == "binary" {
+                            perms.process = true;
+                        }
                         return perms;
                     }
                 }
@@ -697,12 +1004,20 @@ impl McpServer {
                     return Self::permissions_from_manifest_block(p);
                 }
                 let has_ui = Self::manifest_has_ui_resources(&val);
-                let has_network = val
+                // A legacy manifest declares reachable hosts as
+                // `network.hosts`; those map straight onto the allow-list.
+                let network_hosts: Vec<String> = val
                     .get("network")
                     .and_then(|n| n.get("hosts"))
                     .and_then(|h| h.as_array())
-                    .map(|a| !a.is_empty())
-                    .unwrap_or(false);
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|h| h.as_str())
+                            .map(|h| h.trim().to_string())
+                            .filter(|h| !h.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let has_tools = val
                     .get("mcp")
                     .and_then(|m| m.get("tools"))
@@ -725,7 +1040,13 @@ impl McpServer {
                     },
                     identity: IdentityPermissions::default(),
                     process: self.transport == "stdio" || self.transport == "binary",
-                    network: has_network,
+                    network: NetworkPermissions {
+                        allow: network_hosts,
+                    },
+                    // Never inferred: a plugin must ask for host access, and
+                    // control grants are only ever explicit.
+                    elevated: false,
+                    control: ControlPermissions::default(),
                 };
             }
         }
@@ -746,12 +1067,19 @@ impl McpServer {
 
         if self.transport == "custom_tools" || self.transport == "curl" {
             return PluginPermissions {
-                ui: UiPermissions { enabled: false, resources: Vec::new() },
+                ui: UiPermissions {
+                    enabled: false,
+                    resources: Vec::new(),
+                },
                 storage: StoragePermissions::default(),
                 agent: AgentPermissions::default(),
                 identity: IdentityPermissions::default(),
                 process: false,
-                network: true,
+                network: NetworkPermissions {
+                    allow: vec![NETWORK_WILDCARD.to_string()],
+                },
+                elevated: false,
+                control: ControlPermissions::default(),
             };
         }
 
@@ -765,7 +1093,10 @@ impl McpServer {
             },
             identity: IdentityPermissions::default(),
             process: false,
-            network: true,
+            network: NetworkPermissions {
+                allow: vec![NETWORK_WILDCARD.to_string()],
+            },
+            elevated: false,
             ..PluginPermissions::default()
         }
     }
@@ -870,6 +1201,52 @@ pub struct AgentMemory {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+/// One node of the Obsidian-style memory graph.
+///
+/// `key` is the node's identity and is what `[[wikilinks]]` point at. Unlike the
+/// legacy single-blob memory ([`AgentMemory`]) each node is written and versioned
+/// independently, so an agent can update one fact without rewriting everything,
+/// and can retract a stale fact by deleting its node.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct MemoryNode {
+    pub agent_id: String,
+    pub key: String,
+    pub value: String,
+    /// `entity | decision | preference | event | file | concept | skill`.
+    /// Advisory: it drives grouping and the graph rendering, not access.
+    #[serde(default)]
+    pub r#type: String,
+    /// A recall-oriented description, phrased as the question this node answers.
+    #[serde(default)]
+    pub description: String,
+    pub hash: String,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// A directed `src -> dst` edge extracted from a `[[dst]]` reference in `src`.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct MemoryLink {
+    pub agent_id: String,
+    pub src: String,
+    pub dst: String,
+}
+
+/// A node plus its graph neighbourhood, for rendering and for `memory_get`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryNodeView {
+    pub key: String,
+    pub r#type: String,
+    pub description: String,
+    pub value: String,
+    pub hash: String,
+    pub updated_at: Option<DateTime<Utc>>,
+    /// Nodes this one points at (`[[link]]` inside its value).
+    pub outbound: Vec<String>,
+    /// Nodes pointing at this one.
+    pub backlinks: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct AgentHistoryItem {
     pub id: String,
@@ -916,7 +1293,10 @@ mod tests {
     fn test_slugify_alias() {
         assert_eq!(slugify_alias("Telegram"), "telegram");
         assert_eq!(slugify_alias("Discord Bot"), "discord_bot");
-        assert_eq!(slugify_alias("[WASM] Agent Chat Console"), "agent_chat_console");
+        assert_eq!(
+            slugify_alias("[WASM] Agent Chat Console"),
+            "agent_chat_console"
+        );
         assert_eq!(slugify_alias("Filesystem-MCP 1.0"), "filesystem_mcp_1_0");
         assert_eq!(slugify_alias(""), "mcp");
     }
@@ -1032,12 +1412,16 @@ mod tests {
             "process": false,
             "network": false
         });
-        let perms: PluginPermissions = serde_json::from_value(json.clone()).expect("grouped parses");
+        let perms: PluginPermissions =
+            serde_json::from_value(json.clone()).expect("grouped parses");
         assert!(perms.ui.enabled);
         assert_eq!(perms.ui.resources, vec!["ui://chat-console".to_string()]);
         assert!(perms.storage.get);
         assert!(!perms.storage.delete);
-        assert_eq!(perms.storage.keys.as_deref(), Some(&["chat.".to_string()][..]));
+        assert_eq!(
+            perms.storage.keys.as_deref(),
+            Some(&["chat.".to_string()][..])
+        );
         assert!(perms.agent.trigger);
         assert!(!perms.agent.tools);
         assert!(!perms.identity.agent_name);
@@ -1047,10 +1431,92 @@ mod tests {
 
         // Serialises back to the same canonical shape (dotted identity keys).
         let out = serde_json::to_value(&perms).expect("serialises");
-        assert_eq!(out["identity"]["agent.profile_picture"], serde_json::json!(true));
+        assert_eq!(
+            out["identity"]["agent.profile_picture"],
+            serde_json::json!(true)
+        );
         assert_eq!(out["identity"]["agent.name"], serde_json::json!(false));
         assert_eq!(out["storage"]["keys"], serde_json::json!(["chat."]));
-        assert_eq!(out["ui"]["resources"], serde_json::json!(["ui://chat-console"]));
+        assert_eq!(
+            out["ui"]["resources"],
+            serde_json::json!(["ui://chat-console"])
+        );
+    }
+
+    #[test]
+    fn network_allow_list_matches_hosts_wildcards_and_cidrs() {
+        let denied = NetworkPermissions::default();
+        assert!(denied.is_denied());
+        assert!(!denied.allows_host("api.example.com"));
+        assert!(!denied.allows_host("1.1.1.1"));
+
+        let unrestricted = NetworkPermissions {
+            allow: vec![NETWORK_WILDCARD.to_string()],
+        };
+        assert!(unrestricted.is_unrestricted());
+        assert!(unrestricted.allows_host("anything.example"));
+
+        let listed = NetworkPermissions {
+            allow: vec![
+                "api.example.com".into(),
+                "*.trusted.test".into(),
+                "10.0.0.0/8".into(),
+                "1.1.1.1".into(),
+            ],
+        };
+        assert!(listed.allows_host("api.example.com"));
+        assert!(listed.allows_host("API.Example.COM"));
+        assert!(!listed.allows_host("api.example.com.evil.test"));
+        assert!(listed.allows_host("trusted.test"));
+        assert!(listed.allows_host("deep.sub.trusted.test"));
+        assert!(!listed.allows_host("nottrusted.test"));
+        assert!(listed.allows_host("10.1.2.3"));
+        assert!(!listed.allows_host("11.1.2.3"));
+        assert!(listed.allows_host("1.1.1.1"));
+        assert!(!listed.allows_host("1.1.1.2"));
+        // A hostname never matches a CIDR entry.
+        assert!(!listed.allows_host("example.com"));
+    }
+
+    #[test]
+    fn legacy_boolean_network_flag_still_deserialises() {
+        let enabled: PluginPermissions =
+            serde_json::from_value(serde_json::json!({ "process": true, "network": true }))
+                .expect("parses");
+        assert!(enabled.network.is_unrestricted());
+
+        let disabled: PluginPermissions =
+            serde_json::from_value(serde_json::json!({ "process": true, "network": false }))
+                .expect("parses");
+        assert!(disabled.network.is_denied());
+
+        // The canonical grouped shape is unchanged.
+        let grouped: PluginPermissions = serde_json::from_value(serde_json::json!({
+            "process": true,
+            "network": { "allow": ["api.example.com"] }
+        }))
+        .expect("parses");
+        assert_eq!(grouped.network.allow, vec!["api.example.com".to_string()]);
+        assert!(!grouped.elevated);
+    }
+
+    #[test]
+    fn elevated_is_never_inferred_from_the_transport() {
+        let binary = manifest_server(serde_json::json!({ "id": "x" }));
+        let mut server = binary;
+        server.transport = "binary".to_string();
+        let perms = server.get_permissions();
+        assert!(perms.process);
+        assert!(!perms.elevated);
+        assert!(perms.requires_sandbox());
+
+        // Only an explicit opt-in escapes the sandbox.
+        let elevated = PluginPermissions {
+            process: true,
+            elevated: true,
+            ..PluginPermissions::deny_all()
+        };
+        assert!(!elevated.requires_sandbox());
     }
 
     #[test]
@@ -1077,12 +1543,28 @@ mod tests {
     #[test]
     fn allows_and_capabilities_per_namespace() {
         let perms = PluginPermissions {
-            ui: UiPermissions { enabled: true, resources: vec!["ui://a".into()] },
-            storage: StoragePermissions { get: true, set: false, delete: false, keys: Some(vec!["k.".into()]) },
-            agent: AgentPermissions { trigger: true, tools: false },
-            identity: IdentityPermissions { agent_name: true, ..Default::default() },
+            ui: UiPermissions {
+                enabled: true,
+                resources: vec!["ui://a".into()],
+            },
+            storage: StoragePermissions {
+                get: true,
+                set: false,
+                delete: false,
+                keys: Some(vec!["k.".into()]),
+            },
+            agent: AgentPermissions {
+                trigger: true,
+                tools: false,
+            },
+            identity: IdentityPermissions {
+                agent_name: true,
+                ..Default::default()
+            },
             process: true,
-            network: false,
+            network: NetworkPermissions::default(),
+            elevated: false,
+            control: ControlPermissions::default(),
         };
 
         assert!(perms.allows("ui.context.refresh"));
@@ -1110,29 +1592,39 @@ mod tests {
             ]
         );
 
-        // process/network stay flat booleans.
+        // process stays a flat boolean; network is an allow-list.
         assert!(perms.process);
-        assert!(!perms.network);
+        assert!(perms.network.is_denied());
+        assert!(!perms.elevated);
     }
 
     #[test]
     fn allows_ui_resource_honours_wildcard_and_allow_list() {
         let wildcard = PluginPermissions {
-            ui: UiPermissions { enabled: true, resources: vec![UI_RESOURCE_WILDCARD.to_string()] },
+            ui: UiPermissions {
+                enabled: true,
+                resources: vec![UI_RESOURCE_WILDCARD.to_string()],
+            },
             ..PluginPermissions::deny_all()
         };
         assert!(wildcard.allows_ui_resource("ui://anything"));
         assert!(!wildcard.allows_ui_resource("http://example.com"));
 
         let listed = PluginPermissions {
-            ui: UiPermissions { enabled: true, resources: vec!["ui://a".into()] },
+            ui: UiPermissions {
+                enabled: true,
+                resources: vec!["ui://a".into()],
+            },
             ..PluginPermissions::deny_all()
         };
         assert!(listed.allows_ui_resource("ui://a"));
         assert!(!listed.allows_ui_resource("ui://b"));
 
         let disabled = PluginPermissions {
-            ui: UiPermissions { enabled: false, resources: vec![UI_RESOURCE_WILDCARD.to_string()] },
+            ui: UiPermissions {
+                enabled: false,
+                resources: vec![UI_RESOURCE_WILDCARD.to_string()],
+            },
             ..PluginPermissions::deny_all()
         };
         assert!(!disabled.allows_ui_resource("ui://a"));
@@ -1161,7 +1653,12 @@ mod tests {
 
         // `keys: None` means every key.
         let all = PluginPermissions {
-            storage: StoragePermissions { get: true, set: true, delete: true, keys: None },
+            storage: StoragePermissions {
+                get: true,
+                set: true,
+                delete: true,
+                keys: None,
+            },
             ..PluginPermissions::deny_all()
         };
         assert!(all.storage_allows_key("anything"));
@@ -1170,7 +1667,12 @@ mod tests {
         // `keys: None` means every key, and an explicit `[]` must not lock the
         // plugin out of its own isolated storage either.
         let empty = PluginPermissions {
-            storage: StoragePermissions { get: true, set: false, delete: false, keys: Some(vec![]) },
+            storage: StoragePermissions {
+                get: true,
+                set: false,
+                delete: false,
+                keys: Some(vec![]),
+            },
             ..PluginPermissions::deny_all()
         };
         assert!(empty.storage_allows_key("anything"));
@@ -1220,11 +1722,15 @@ mod tests {
                 "ui": { "enabled": true, "resources": ["ui://chat-console"] }
             }
         }));
-        server.permissions_json =
-            Some(serde_json::json!({"ui": true, "storage": true, "agent_control": true}).to_string());
+        server.permissions_json = Some(
+            serde_json::json!({"ui": true, "storage": true, "agent_control": true}).to_string(),
+        );
 
         let perms = server.get_permissions();
-        assert!(perms.ui.enabled, "declared UI grant must survive an unusable override");
+        assert!(
+            perms.ui.enabled,
+            "declared UI grant must survive an unusable override"
+        );
         assert!(perms.allows_ui_resource("ui://chat-console"));
 
         // A real grouped override is still authoritative.
@@ -1261,11 +1767,20 @@ mod tests {
         );
         let perms = server.get_permissions();
         assert!(perms.allows("identity.user.name"));
-        assert!(!perms.allows("identity.agent.name"), "unapproved agent name leaked");
-        assert!(!perms.allows("agent.trigger"), "unapproved agent trigger leaked");
+        assert!(
+            !perms.allows("identity.agent.name"),
+            "unapproved agent name leaked"
+        );
+        assert!(
+            !perms.allows("agent.trigger"),
+            "unapproved agent trigger leaked"
+        );
         assert!(!perms.storage.set);
         assert!(perms.storage.get);
-        assert_eq!(perms.storage.keys.as_deref(), Some(&["chat.".to_string()][..]));
+        assert_eq!(
+            perms.storage.keys.as_deref(),
+            Some(&["chat.".to_string()][..])
+        );
 
         // An empty/garbage store falls back to what the manifest declared.
         server.permissions_json = Some("{}".to_string());
@@ -1287,8 +1802,14 @@ mod tests {
         assert!(perms.ui.enabled);
         assert!(perms.allows_ui_resource("ui://chat-console"));
         assert!(!perms.allows_ui_resource("ui://something-else"));
-        assert!(perms.network);
-        assert!(perms.capabilities().iter().all(|c| !c.starts_with("identity.")));
+        // `network.hosts` from a legacy manifest becomes the allow-list.
+        assert_eq!(perms.network.allow, vec!["api.example.com".to_string()]);
+        assert!(perms.network.allows_host("api.example.com"));
+        assert!(!perms.network.allows_host("evil.example.com"));
+        assert!(perms
+            .capabilities()
+            .iter()
+            .all(|c| !c.starts_with("identity.")));
 
         // A grouped manifest block is honoured verbatim.
         let grouped = manifest_server(serde_json::json!({
@@ -1320,6 +1841,9 @@ mod tests {
         server.url_or_command = "./release/plugins/computer".to_string();
         assert_eq!(server.transport, "binary");
         let perms = server.get_permissions();
-        assert!(perms.process, "Binary transport must have process permission enabled");
+        assert!(
+            perms.process,
+            "Binary transport must have process permission enabled"
+        );
     }
 }

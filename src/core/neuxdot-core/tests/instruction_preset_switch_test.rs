@@ -28,15 +28,30 @@ async fn base_system_prompt_refreshes_when_the_template_changes() {
     // Agent starts on the default instruction.
     let agent = db
         .create_agent(
-            &acc.id, "A", None, None, None, "fallback",
-            Some("DEFAULT INSTRUCTION"), None, None, None, None, None,
+            &acc.id,
+            "A",
+            None,
+            None,
+            None,
+            "fallback",
+            Some("DEFAULT INSTRUCTION"),
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
 
     // Row 0 is materialised from the default template, recording that template.
     db.append_agent_history(
-        &agent.id, "system", "DEFAULT INSTRUCTION", None, None, Some("DEFAULT INSTRUCTION"),
+        &agent.id,
+        "system",
+        "DEFAULT INSTRUCTION",
+        None,
+        None,
+        Some("DEFAULT INSTRUCTION"),
     )
     .await
     .unwrap();
@@ -44,12 +59,26 @@ async fn base_system_prompt_refreshes_when_the_template_changes() {
         .await
         .unwrap();
 
-    assert_eq!(base_instruction(&db, &agent.id).await, "DEFAULT INSTRUCTION");
+    assert_eq!(
+        base_instruction(&db, &agent.id).await,
+        "DEFAULT INSTRUCTION"
+    );
 
     // User picks a preset: `agents.system_prompt` becomes the preset content.
     db.patch_agent(
-        &agent.id, None, None, None, None, None,
-        Some("PRESET INSTRUCTION"), None, None, None, None, None, None,
+        &agent.id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("PRESET INSTRUCTION"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -101,15 +130,32 @@ async fn rows_without_a_template_are_left_alone() {
     let (acc, _) = db.get_or_init_root_account().await.unwrap();
     let agent = db
         .create_agent(
-            &acc.id, "A", None, None, None, "fallback",
-            Some("SOMETHING"), None, None, None, None, None,
+            &acc.id,
+            "A",
+            None,
+            None,
+            None,
+            "fallback",
+            Some("SOMETHING"),
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
 
-    db.append_agent_history(&agent.id, "system", "### [Compaction Summary]\nold", None, None, None)
-        .await
-        .unwrap();
+    db.append_agent_history(
+        &agent.id,
+        "system",
+        "### [Compaction Summary]\nold",
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let hist = db.get_agent_history(&agent.id).await.unwrap();
     assert_eq!(hist[0].source_template, None);

@@ -81,9 +81,18 @@ async fn profile_avatar_url_roundtrip() -> Result<(), Box<dyn std::error::Error>
     assert!(profile.avatar_url.is_none());
 
     let updated = db
-        .update_profile(&account.id, None, None, None, Some("data:image/png;base64,ZZZZ"))
+        .update_profile(
+            &account.id,
+            None,
+            None,
+            None,
+            Some("data:image/png;base64,ZZZZ"),
+        )
         .await?;
-    assert_eq!(updated.avatar_url.as_deref(), Some("data:image/png;base64,ZZZZ"));
+    assert_eq!(
+        updated.avatar_url.as_deref(),
+        Some("data:image/png;base64,ZZZZ")
+    );
     // Untouched fields survive.
     assert_eq!(updated.display_name.as_deref(), Some("avatar-user"));
 
@@ -120,11 +129,27 @@ async fn agent_avatar_url_roundtrip() -> Result<(), Box<dyn std::error::Error>> 
             None,
         )
         .await?;
-    assert_eq!(agent.avatar_url.as_deref(), Some("data:image/png;base64,AAAA"));
+    assert_eq!(
+        agent.avatar_url.as_deref(),
+        Some("data:image/png;base64,AAAA")
+    );
 
     // ...and leaves it NULL when omitted.
     let plain = db
-        .create_agent(&account.id, "Plain", None, None, None, "fallback", None, None, None, None, None, None)
+        .create_agent(
+            &account.id,
+            "Plain",
+            None,
+            None,
+            None,
+            "fallback",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await?;
     assert!(plain.avatar_url.is_none());
 
@@ -132,7 +157,8 @@ async fn agent_avatar_url_roundtrip() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[tokio::test]
-async fn patch_agent_avatar_url_sets_preserves_and_clears() -> Result<(), Box<dyn std::error::Error>> {
+async fn patch_agent_avatar_url_sets_preserves_and_clears() -> Result<(), Box<dyn std::error::Error>>
+{
     let pool = init_db("sqlite::memory:").await?;
     let db = Database::new(pool);
 
@@ -140,7 +166,20 @@ async fn patch_agent_avatar_url_sets_preserves_and_clears() -> Result<(), Box<dy
     let account = db.create_account("agent-avatar-patch", &hash).await?;
 
     let agent = db
-        .create_agent(&account.id, "AvatarBot", None, None, None, "fallback", None, None, None, None, None, None)
+        .create_agent(
+            &account.id,
+            "AvatarBot",
+            None,
+            None,
+            None,
+            "fallback",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await?;
     assert!(agent.avatar_url.is_none());
 
@@ -162,25 +201,65 @@ async fn patch_agent_avatar_url_sets_preserves_and_clears() -> Result<(), Box<dy
             None,
         )
         .await?;
-    assert_eq!(set.avatar_url.as_deref(), Some("https://example.com/agent.png"));
+    assert_eq!(
+        set.avatar_url.as_deref(),
+        Some("https://example.com/agent.png")
+    );
     assert_eq!(set.name, "AvatarBot");
 
     // Omitting avatar_url preserves the existing value even when other fields change.
     let preserved = db
-        .patch_agent(&agent.id, Some("AvatarBot v2"), None, None, None, None, None, None, None, None, None, None, None)
+        .patch_agent(
+            &agent.id,
+            Some("AvatarBot v2"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await?;
-    assert_eq!(preserved.avatar_url.as_deref(), Some("https://example.com/agent.png"));
+    assert_eq!(
+        preserved.avatar_url.as_deref(),
+        Some("https://example.com/agent.png")
+    );
     assert_eq!(preserved.name, "AvatarBot v2");
 
     // An explicit empty string clears the picture to NULL (not an empty string).
     let cleared = db
-        .patch_agent(&agent.id, None, None, None, Some(""), None, None, None, None, None, None, None, None)
+        .patch_agent(
+            &agent.id,
+            None,
+            None,
+            None,
+            Some(""),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await?;
-    assert!(cleared.avatar_url.is_none(), "expected NULL, got {:?}", cleared.avatar_url);
+    assert!(
+        cleared.avatar_url.is_none(),
+        "expected NULL, got {:?}",
+        cleared.avatar_url
+    );
 
     // And it stays cleared on a subsequent patch that omits the field.
     let still_cleared = db
-        .patch_agent(&agent.id, None, None, None, None, None, None, None, None, None, None, None, None)
+        .patch_agent(
+            &agent.id, None, None, None, None, None, None, None, None, None, None, None, None,
+        )
         .await?;
     assert!(still_cleared.avatar_url.is_none());
 

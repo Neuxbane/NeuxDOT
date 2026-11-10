@@ -154,7 +154,11 @@ pub fn build_user_identity(
     if name.is_none() && avatar.is_none() {
         return None;
     }
-    Some(UserIdentity { id: account_id, name, avatar })
+    Some(UserIdentity {
+        id: account_id,
+        name,
+        avatar,
+    })
 }
 
 /// Assemble the whole bootstrap from already-loaded rows.
@@ -210,7 +214,10 @@ pub fn build_bootstrap(
 /// Partitioning by agent or account is still the plugin's own concern,
 /// expressed in the keys it chooses.
 pub fn storage_namespace(server_id: &str) -> String {
-    server_id.strip_prefix("wasm:").unwrap_or(server_id).to_string()
+    server_id
+        .strip_prefix("wasm:")
+        .unwrap_or(server_id)
+        .to_string()
 }
 
 /// Validate a storage operation against the resolved grants.
@@ -284,7 +291,12 @@ async fn load_server(state: &AppState, id: &str) -> Result<McpServer, ApiError> 
 }
 
 /// True when `account_id` may use `server` through an agent it can access.
-async fn agent_grants_plugin(state: &AppState, account_id: &str, agent_id: &str, server_id: &str) -> bool {
+async fn agent_grants_plugin(
+    state: &AppState,
+    account_id: &str,
+    agent_id: &str,
+    server_id: &str,
+) -> bool {
     let Ok(Some(agent)) = state.db.get_agent(agent_id).await else {
         return false;
     };
@@ -295,7 +307,11 @@ async fn agent_grants_plugin(state: &AppState, account_id: &str, agent_id: &str,
         return false;
     }
     // The plugin must actually be attached to that agent.
-    let bound = state.db.get_agent_mcp_servers(agent_id).await.unwrap_or_default();
+    let bound = state
+        .db
+        .get_agent_mcp_servers(agent_id)
+        .await
+        .unwrap_or_default();
     let bare = server_id.strip_prefix("wasm:").unwrap_or(server_id);
     bound.iter().any(|s| {
         let sid = s.id.strip_prefix("wasm:").unwrap_or(&s.id);
@@ -446,7 +462,12 @@ pub async fn host_avatar_handler(
             }
             agent.avatar_url
         }
-        _ => return Err(api_err(StatusCode::BAD_REQUEST, "kind must be 'user' or 'agent'")),
+        _ => {
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                "kind must be 'user' or 'agent'",
+            ))
+        }
     };
 
     let Some(url) = avatar_url.filter(|u| !u.trim().is_empty()) else {
@@ -458,8 +479,10 @@ pub async fn host_avatar_handler(
         let ct = HeaderValue::from_str(&content_type)
             .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
         resp.headers_mut().insert(header::CONTENT_TYPE, ct);
-        resp.headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));
+        resp.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, max-age=300"),
+        );
         return Ok(resp);
     }
 
@@ -509,9 +532,7 @@ async fn storage_target(
 
     if server.account_id != auth.account_id {
         let permitted = match agent_id.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(agent) => {
-                agent_grants_plugin(state, &auth.account_id, agent, &server.id).await
-            }
+            Some(agent) => agent_grants_plugin(state, &auth.account_id, agent, &server.id).await,
             None => false,
         };
         if !permitted {
@@ -529,7 +550,13 @@ pub async fn storage_get_handler(
     Json(payload): Json<StorageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let key = payload.key.unwrap_or_default();
-    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id, payload.agent_id.as_deref()).await?;
+    let (ns, perms) = storage_target(
+        &state,
+        &auth,
+        &payload.plugin_id,
+        payload.agent_id.as_deref(),
+    )
+    .await?;
     check_storage_access(&perms, "get", &key).map_err(|(c, m)| api_err(c, m))?;
 
     let value = state
@@ -548,7 +575,13 @@ pub async fn storage_set_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let key = payload.key.unwrap_or_default();
     let value = payload.value.unwrap_or_default();
-    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id, payload.agent_id.as_deref()).await?;
+    let (ns, perms) = storage_target(
+        &state,
+        &auth,
+        &payload.plugin_id,
+        payload.agent_id.as_deref(),
+    )
+    .await?;
     check_storage_access(&perms, "set", &key).map_err(|(c, m)| api_err(c, m))?;
 
     state
@@ -566,7 +599,13 @@ pub async fn storage_delete_handler(
     Json(payload): Json<StorageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let key = payload.key.unwrap_or_default();
-    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id, payload.agent_id.as_deref()).await?;
+    let (ns, perms) = storage_target(
+        &state,
+        &auth,
+        &payload.plugin_id,
+        payload.agent_id.as_deref(),
+    )
+    .await?;
     check_storage_access(&perms, "delete", &key).map_err(|(c, m)| api_err(c, m))?;
 
     let removed = state
@@ -583,7 +622,13 @@ pub async fn storage_list_handler(
     State(state): State<AppState>,
     Json(payload): Json<StorageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let (ns, perms) = storage_target(&state, &auth, &payload.plugin_id, payload.agent_id.as_deref()).await?;
+    let (ns, perms) = storage_target(
+        &state,
+        &auth,
+        &payload.plugin_id,
+        payload.agent_id.as_deref(),
+    )
+    .await?;
     if !perms.allows(neuxdot_core::db::schema::CAP_STORAGE_KEYS) {
         return Err(api_err(
             StatusCode::FORBIDDEN,
@@ -618,14 +663,20 @@ mod tests {
 
     fn perms() -> PluginPermissions {
         PluginPermissions {
-            ui: UiPermissions { enabled: true, resources: vec!["ui://a".into()] },
+            ui: UiPermissions {
+                enabled: true,
+                resources: vec!["ui://a".into()],
+            },
             storage: StoragePermissions {
                 get: true,
                 set: true,
                 delete: false,
                 keys: Some(vec!["chat.".into()]),
             },
-            agent: AgentPermissions { trigger: true, tools: false },
+            agent: AgentPermissions {
+                trigger: true,
+                tools: false,
+            },
             identity: IdentityPermissions {
                 agent_name: true,
                 agent_profile_picture: false,
@@ -633,7 +684,9 @@ mod tests {
                 user_profile_picture: false,
             },
             process: false,
-            network: false,
+            network: Default::default(),
+            elevated: false,
+            control: Default::default(),
         }
     }
 
@@ -669,7 +722,10 @@ mod tests {
         assert!(user.avatar.is_none());
 
         let serialised = serde_json::to_value(&user).unwrap();
-        assert!(serialised.get("avatar").is_none(), "ungranted avatar must be omitted");
+        assert!(
+            serialised.get("avatar").is_none(),
+            "ungranted avatar must be omitted"
+        );
     }
 
     #[test]
@@ -691,7 +747,10 @@ mod tests {
             user: None,
             capabilities: p.capabilities(),
             permissions: p,
-            context: BridgeContext { locale: None, theme: "light".into() },
+            context: BridgeContext {
+                locale: None,
+                theme: "light".into(),
+            },
         };
         let v = serde_json::to_value(&boot).unwrap();
         assert!(v.get("agent").is_none());
@@ -700,10 +759,18 @@ mod tests {
         // grant is off, so neither may appear in the advertised capabilities.
         assert_eq!(
             v["capabilities"],
-            json!(["ui.context.refresh", "storage.get", "storage.set", "storage.keys", "agent.trigger"])
+            json!([
+                "ui.context.refresh",
+                "storage.get",
+                "storage.set",
+                "storage.keys",
+                "agent.trigger"
+            ])
         );
         let caps = v["capabilities"].as_array().unwrap();
-        assert!(caps.iter().all(|c| !c.as_str().unwrap().starts_with("identity.")));
+        assert!(caps
+            .iter()
+            .all(|c| !c.as_str().unwrap().starts_with("identity.")));
     }
 
     #[test]
@@ -752,7 +819,6 @@ mod tests {
         assert!(decode_data_url("https://example.com/a.png").is_none());
         assert!(decode_data_url("file:///etc/passwd").is_none());
     }
-
 }
 
 #[derive(Debug, Deserialize)]

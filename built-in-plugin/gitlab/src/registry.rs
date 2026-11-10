@@ -256,7 +256,7 @@ mod tests {
         Config {
             api_url: "https://gitlab.example.com/api/v4".into(),
             graphql_url: "https://gitlab.example.com/api/graphql".into(),
-            token: "t".into(),
+            token: Some("t".into()),
             auth: crate::config::AuthKind::PrivateToken,
             default_project_id: None,
             read_only: false,

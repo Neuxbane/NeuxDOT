@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, SET_COOKIE, COOKIE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, COOKIE, SET_COOKIE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
@@ -90,8 +90,9 @@ impl CustomToolsTransport {
         manifest_json: &str,
         notif_tx: tokio::sync::mpsc::UnboundedSender<McpNotification>,
     ) -> Result<Self, McpError> {
-        let manifest: CustomPluginManifest = serde_json::from_str(manifest_json)
-            .map_err(|e| McpError::Protocol(format!("Invalid custom_tools manifest JSON: {}", e)))?;
+        let manifest: CustomPluginManifest = serde_json::from_str(manifest_json).map_err(|e| {
+            McpError::Protocol(format!("Invalid custom_tools manifest JSON: {}", e))
+        })?;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
@@ -153,8 +154,9 @@ impl CustomToolsTransport {
         arguments: &Value,
     ) -> Result<(u16, String), McpError> {
         let method_str = tool.method.to_uppercase();
-        let method = reqwest::Method::from_bytes(method_str.as_bytes())
-            .map_err(|e| McpError::Protocol(format!("Invalid HTTP method '{}': {}", method_str, e)))?;
+        let method = reqwest::Method::from_bytes(method_str.as_bytes()).map_err(|e| {
+            McpError::Protocol(format!("Invalid HTTP method '{}': {}", method_str, e))
+        })?;
 
         // Interpolate URL
         let url_str = Self::interpolate(&tool.url, arguments, &self.session).await;
@@ -163,7 +165,9 @@ impl CustomToolsTransport {
 
         // Guard against SSRF to private addresses if required (allowing standard http/https)
         if url.scheme() != "http" && url.scheme() != "https" {
-            return Err(McpError::Protocol("Only http and https schemes are permitted".into()));
+            return Err(McpError::Protocol(
+                "Only http and https schemes are permitted".into(),
+            ));
         }
 
         let mut req_builder = self.http_client.request(method, url);
@@ -198,16 +202,17 @@ impl CustomToolsTransport {
 
         // Interpolate body if present
         if let Some(body_template) = &tool.body {
-            let interpolated_body = Self::interpolate(body_template, arguments, &self.session).await;
+            let interpolated_body =
+                Self::interpolate(body_template, arguments, &self.session).await;
             req_builder = req_builder.body(interpolated_body);
         }
 
-        debug!("CustomToolsTransport executing {} to {}", tool.method, url_str);
+        debug!(
+            "CustomToolsTransport executing {} to {}",
+            tool.method, url_str
+        );
 
-        let response = req_builder
-            .send()
-            .await
-            .map_err(|e| McpError::Http(e))?;
+        let response = req_builder.send().await.map_err(|e| McpError::Http(e))?;
 
         let status = response.status();
 
@@ -227,7 +232,9 @@ impl CustomToolsTransport {
             }
             if !cookie_pairs.is_empty() {
                 let combined_cookies = cookie_pairs.join("; ");
-                self.session.set(cookie_var_name.clone(), combined_cookies.clone()).await;
+                self.session
+                    .set(cookie_var_name.clone(), combined_cookies.clone())
+                    .await;
                 debug!("Captured {} = {}", cookie_var_name, combined_cookies);
             }
         }
@@ -263,7 +270,10 @@ impl CustomToolsTransport {
         }
 
         if !status.is_success() {
-            warn!("HTTP custom tool '{}' returned status {}", tool.name, status);
+            warn!(
+                "HTTP custom tool '{}' returned status {}",
+                tool.name, status
+            );
         }
 
         Ok((status.as_u16(), resp_text))
@@ -355,7 +365,8 @@ impl McpTransport for CustomToolsTransport {
             }
 
             "tools/call" => {
-                let p = params.ok_or_else(|| McpError::Protocol("Missing params for tools/call".into()))?;
+                let p = params
+                    .ok_or_else(|| McpError::Protocol("Missing params for tools/call".into()))?;
                 let tool_name = p
                     .get("name")
                     .and_then(|v| v.as_str())
@@ -385,9 +396,14 @@ impl McpTransport for CustomToolsTransport {
 
             "resources/list" => Ok(json!({ "resources": [] })),
 
-            "resources/read" => Err(McpError::Protocol("Resources not supported on custom tools".into())),
+            "resources/read" => Err(McpError::Protocol(
+                "Resources not supported on custom tools".into(),
+            )),
 
-            _ => Err(McpError::Protocol(format!("Method not supported: {}", method))),
+            _ => Err(McpError::Protocol(format!(
+                "Method not supported: {}",
+                method
+            ))),
         }
     }
 
@@ -403,8 +419,12 @@ mod tests {
     #[tokio::test]
     async fn test_interpolation_with_args_and_session() {
         let session = PluginSessionVault::new();
-        session.set("COOKIES".into(), "session_token=xyz123".into()).await;
-        session.set("BASE_URL".into(), "https://api.example.com".into()).await;
+        session
+            .set("COOKIES".into(), "session_token=xyz123".into())
+            .await;
+        session
+            .set("BASE_URL".into(), "https://api.example.com".into())
+            .await;
 
         let template = "${BASE_URL}/users/{{user_id}}?role={{role}}&c=$COOKIES";
         let args = json!({

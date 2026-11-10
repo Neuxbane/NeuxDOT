@@ -1,9 +1,10 @@
 pub mod accounts;
 pub mod agents;
 pub mod auth;
-pub mod mcp;
+pub mod control_mcp;
 pub mod host;
 pub mod instruction_presets;
+pub mod mcp;
 pub mod profile;
 pub mod providers;
 pub mod ws;
@@ -27,7 +28,10 @@ pub fn build_router(state: AppState) -> Router {
             get(accounts::list_accounts_handler).post(accounts::create_account_handler),
         )
         // Any signed-in user may search for someone to share a bot with.
-        .route("/api/accounts/search", get(accounts::search_accounts_handler))
+        .route(
+            "/api/accounts/search",
+            get(accounts::search_accounts_handler),
+        )
         .route(
             "/api/accounts/:id",
             axum::routing::patch(accounts::update_account_handler)
@@ -38,7 +42,10 @@ pub fn build_router(state: AppState) -> Router {
             post(accounts::change_password_handler),
         )
         // Agents
-        .route("/api/agents", get(agents::list_agents_handler).post(agents::create_agent_handler))
+        .route(
+            "/api/agents",
+            get(agents::list_agents_handler).post(agents::create_agent_handler),
+        )
         .route(
             "/api/agents/:id",
             get(agents::get_agent_handler)
@@ -53,8 +60,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/agents/:id/shares/:account_id",
-            patch(agents::update_agent_share_handler)
-                .delete(agents::delete_agent_share_handler),
+            patch(agents::update_agent_share_handler).delete(agents::delete_agent_share_handler),
         )
         .route(
             "/api/agents/:id/pushed",
@@ -63,6 +69,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/agents/:id/memory",
             get(agents::get_agent_memory_handler),
+        )
+        .route(
+            "/api/agents/:id/memory/graph",
+            get(agents::get_agent_memory_graph_handler),
         )
         .route(
             "/api/agents/:id/history",
@@ -74,7 +84,12 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/agents/:id/subscriptions",
-            get(agents::get_agent_subscriptions_handler).put(agents::update_agent_subscriptions_handler),
+            get(agents::get_agent_subscriptions_handler)
+                .put(agents::update_agent_subscriptions_handler),
+        )
+        .route(
+            "/api/agents/:id/mcp/:mcp_id/config",
+            get(agents::get_agent_mcp_config_handler).put(agents::set_agent_mcp_config_handler),
         )
         // Providers
         .route(
@@ -90,8 +105,14 @@ pub fn build_router(state: AppState) -> Router {
             put(providers::update_provider_handler).delete(providers::delete_provider_handler),
         )
         // Unified Plugins & MCP Servers
-        .route("/api/mcp", get(mcp::list_mcp_handler).post(mcp::create_mcp_handler))
-        .route("/api/mcp/test-custom-tool", post(mcp::test_custom_tool_handler))
+        .route(
+            "/api/mcp",
+            get(mcp::list_mcp_handler).post(mcp::create_mcp_handler),
+        )
+        .route(
+            "/api/mcp/test-custom-tool",
+            post(mcp::test_custom_tool_handler),
+        )
         .route(
             "/api/mcp/:id",
             get(mcp::get_mcp_handler)
@@ -101,8 +122,14 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/mcp/:id/push", post(mcp::push_mcp_information_handler))
         .route("/api/mcp/:id/rpc", post(mcp::plugin_rpc_handler))
-        .route("/api/plugins", get(mcp::list_mcp_handler).post(mcp::create_mcp_handler))
-        .route("/api/plugins/test-custom-tool", post(mcp::test_custom_tool_handler))
+        .route(
+            "/api/plugins",
+            get(mcp::list_mcp_handler).post(mcp::create_mcp_handler),
+        )
+        .route(
+            "/api/plugins/test-custom-tool",
+            post(mcp::test_custom_tool_handler),
+        )
         .route(
             "/api/plugins/upload-binary",
             post(mcp::upload_binary_handler).layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
@@ -114,7 +141,10 @@ pub fn build_router(state: AppState) -> Router {
                 .patch(mcp::update_mcp_handler)
                 .delete(mcp::delete_mcp_handler),
         )
-        .route("/api/plugins/:id/push", post(mcp::push_mcp_information_handler))
+        .route(
+            "/api/plugins/:id/push",
+            post(mcp::push_mcp_information_handler),
+        )
         .route("/api/plugins/:id/rpc", post(mcp::plugin_rpc_handler))
         // Profile
         .route(
@@ -140,8 +170,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/host/identities", get(host::host_identities_handler))
         .route("/api/host/storage/get", post(host::storage_get_handler))
         .route("/api/host/storage/set", post(host::storage_set_handler))
-        .route("/api/host/storage/delete", post(host::storage_delete_handler))
+        .route(
+            "/api/host/storage/delete",
+            post(host::storage_delete_handler),
+        )
         .route("/api/host/storage/list", post(host::storage_list_handler))
+        // Server-native control MCP: lets an agent drive this server's own
+        // configuration (agents, plugins, providers, shares, accounts) using a
+        // Basic-auth credential, bounded by the plugin's declared control
+        // scopes. See `routes/control_mcp.rs` for the authority model.
+        .route("/api/control/mcp", post(control_mcp::control_mcp_handler))
         // WebSocket
         .route("/ws/events", get(ws::ws_events_handler))
         .with_state(state)

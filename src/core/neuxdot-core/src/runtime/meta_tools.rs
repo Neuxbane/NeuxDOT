@@ -25,7 +25,9 @@ pub fn parse_duration_string(s: &str) -> Result<Duration, String> {
     let chars = s.chars();
     for c in chars {
         if c.is_ascii_digit() {
-            current_num = current_num.saturating_mul(10).saturating_add(c as u64 - '0' as u64);
+            current_num = current_num
+                .saturating_mul(10)
+                .saturating_add(c as u64 - '0' as u64);
         } else {
             has_unit = true;
             match c {
@@ -157,8 +159,8 @@ pub fn get_meta_tools_definitions() -> Value {
         {
             "type": "function",
             "function": {
-                "name": "setMemory",
-                "description": "Set the complete agent memory block (max 5,000 characters). Requires correct currentHash for optimistic locking. Returns updated hash.",
+                "name": "instructionsWrite",
+                "description": "Replace the whole PERSISTENT INSTRUCTIONS block (max 5,000 chars). This is a second, editable instruction set re-injected into the system prompt every turn — NOT the keyed memory graph (use memoryNodeWrite for that). Requires currentHash. Returns the new hash.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -168,7 +170,7 @@ pub fn get_meta_tools_definitions() -> Value {
                         },
                         "currentHash": {
                             "type": "string",
-                            "description": "The current hash of the memory. If memory is empty, obtain it via readMemory()"
+                            "description": "The current hash of the memory. If memory is empty, obtain it via instructionsRead()"
                         }
                     },
                     "required": ["content", "currentHash"]
@@ -178,8 +180,8 @@ pub fn get_meta_tools_definitions() -> Value {
         {
             "type": "function",
             "function": {
-                "name": "editMemory",
-                "description": "Perform a search-and-replace edit on the agent memory. Requires correct currentHash. Returns updated hash.",
+                "name": "instructionsEdit",
+                "description": "Search-and-replace inside the PERSISTENT INSTRUCTIONS block (not the keyed memory graph). Requires currentHash. Returns the new hash.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -203,8 +205,145 @@ pub fn get_meta_tools_definitions() -> Value {
         {
             "type": "function",
             "function": {
-                "name": "readMemory",
-                "description": "Read the full, untruncated agent memory block and its current hash.",
+                "name": "instructionsRead",
+                "description": "Read the full PERSISTENT INSTRUCTIONS block (not the keyed memory graph) and its current hash.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "memoryNodeWrite",
+                "description": "Create or replace ONE KEYED MEMORY NODE in the wikilink graph (not the instructions block). Nodes are the primary long-term memory: each `key` is a canonical lowercase noun phrase and other nodes link to it with [[key]] inside their value. Replacing an existing node requires its `expectedHash`; omitting it when the key already exists is rejected. Returns the new hash.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Node identity, a canonical noun phrase (e.g. 'postgres primary'), max 100 chars. Referenced by other nodes as [[key]]."
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "The node body, max 10,000 chars. Use [[other key]] to link related nodes."
+                        },
+                        "type": {
+                            "type": "string",
+                            "enum": ["entity", "decision", "preference", "event", "file", "concept", "skill"],
+                            "description": "Advisory kind, used for grouping in the graph view. Default 'concept'."
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Optional recall-oriented one-liner: the question this node answers."
+                        },
+                        "expectedHash": {
+                            "type": "string",
+                            "description": "Hash of the node being replaced. Required when the key already exists; omit for a new node."
+                        }
+                    },
+                    "required": ["key", "value"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "memoryNodeRead",
+                "description": "Read one keyed memory NODE by key, including outgoing [[links]] and backlinks (not the instructions block).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string", "description": "Exact node key" }
+                    },
+                    "required": ["key"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "memoryNodeSearch",
+                "description": "Search keyed memory NODES. Key matches rank first, then descriptions, then values. Use this to find a key before reading or editing it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Case-insensitive substring" },
+                        "limit": { "type": "integer", "description": "1-100, default 10" }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "memoryNodeList",
+                "description": "List the keyed memory graph: every node key with its type, description and degree. Cheap overview before reading specific nodes.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "description": "Only nodes of this kind, e.g. 'skill' or 'decision'"
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "memoryNodeDelete",
+                "description": "Delete a keyed memory NODE and every link touching it. Use it to retract a fact that is no longer true.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string", "description": "Exact node key" },
+                        "expectedHash": {
+                            "type": "string",
+                            "description": "Hash of the node being deleted. Required, so a stale read cannot delete newer content."
+                        }
+                    },
+                    "required": ["key", "expectedHash"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "skillWrite",
+                "description": "Create or replace a reusable skill. A skill is a memory node with type 'skill': its value holds the actual instructions/procedure, and it is recalled the same way ([[links]], search, read). Load a skill with memoryRead before following it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Skill name, e.g. 'deploy staging'. Stored lowercased as the node key."
+                        },
+                        "instructions": {
+                            "type": "string",
+                            "description": "The procedure itself: numbered steps, commands, caveats, max 10,000 chars."
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "When to use this skill, phrased as the situation it handles. This is what memorySearch matches against."
+                        },
+                        "expectedHash": {
+                            "type": "string",
+                            "description": "Hash of the skill being replaced; omit for a new skill."
+                        }
+                    },
+                    "required": ["name", "instructions", "description"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "skillList",
+                "description": "List available skills (memory nodes of type 'skill') with their descriptions, so you can decide which to load.",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -226,7 +365,7 @@ pub fn get_meta_tools_definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "sleep",
-                "description": "Pause agent execution for a specified duration (e.g. '1m', '30s', '2h', '1d'). Requires duration or time parameter. If interruptible is true (default), incoming events can wake the agent early.",
+                "description": "Pause agent execution for a specified duration (e.g. '1m', '30s', '2h', '1d'). Requires duration or time parameter. The sleep tool will block and not return until the specified time has elapsed.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -240,7 +379,7 @@ pub fn get_meta_tools_definitions() -> Value {
                         },
                         "interruptible": {
                             "type": "boolean",
-                            "description": "Whether incoming notifications can interrupt the sleep early (default: true)"
+                            "description": "Optional flag (default: false). Sleep waits for the full duration."
                         }
                     }
                 }
@@ -376,7 +515,10 @@ pub fn truncate_middle(text: &str, cfg: TruncationConfig) -> String {
 
     let take = |from: usize, to: usize| -> String { chars[from..to].iter().collect() };
     let marker = |from: usize, to: usize| -> String {
-        format!("{}{}-{}{}", TRUNCATION_MARKER_PREFIX, from, to, TRUNCATION_MARKER_SUFFIX)
+        format!(
+            "{}{}-{}{}",
+            TRUNCATION_MARKER_PREFIX, from, to, TRUNCATION_MARKER_SUFFIX
+        )
     };
 
     let mut out = String::with_capacity(cfg.budget() + 64);
@@ -422,7 +564,9 @@ pub fn context_header(current: usize, max: usize) -> String {
 
 /// Current UTC time formatted as `2026-11-02T07:49:33.124Z`.
 pub fn utc_now_millis() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
 
 /// Prepends the context header to `body` on its own line.
@@ -474,7 +618,11 @@ pub fn interpolate_prompt(
             .join("\n")
     };
 
-    let time_str = chrono::Local::now().format("%l:%M %p").to_string().trim().to_string();
+    let time_str = chrono::Local::now()
+        .format("%l:%M %p")
+        .to_string()
+        .trim()
+        .to_string();
 
     let data = json!({
         "agent": {
@@ -523,7 +671,11 @@ pub fn render_response_hooks(
     max_history_chars: usize,
 ) -> Vec<String> {
     let remaining = max_history_chars.saturating_sub(current_history_chars);
-    let time_str = chrono::Local::now().format("%l:%M %p").to_string().trim().to_string();
+    let time_str = chrono::Local::now()
+        .format("%l:%M %p")
+        .to_string()
+        .trim()
+        .to_string();
 
     let mut hbs = Handlebars::new();
     hbs.set_strict_mode(false);
@@ -557,16 +709,23 @@ mod tests {
     fn test_meta_tools_schema_count() {
         let tools = get_meta_tools_definitions();
         let arr = tools.as_array().expect("array");
-        assert_eq!(arr.len(), 11);
-        assert_eq!(arr[8]["function"]["name"], "sleep");
-        assert_eq!(arr[9]["function"]["name"], "history_search");
-        assert_eq!(arr[10]["function"]["name"], "history_inspect");
+        assert_eq!(arr.len(), 18);
+        assert_eq!(arr[14]["function"]["name"], "compact");
+        assert_eq!(arr[15]["function"]["name"], "sleep");
+        assert_eq!(arr[16]["function"]["name"], "history_search");
+        assert_eq!(arr[17]["function"]["name"], "history_inspect");
     }
 
     #[test]
     fn test_truncate_middle_keeps_head_body_tail() {
-        let cfg = TruncationConfig { head: 10, body: 10, tail: 10 };
-        let text: String = (0..1000).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let cfg = TruncationConfig {
+            head: 10,
+            body: 10,
+            tail: 10,
+        };
+        let text: String = (0..1000)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
         let out = truncate_middle(&text, cfg);
 
         // Short text is untouched.
@@ -623,7 +782,11 @@ mod tests {
 
     #[test]
     fn test_truncate_middle_is_idempotent() {
-        let cfg = TruncationConfig { head: 5, body: 5, tail: 5 };
+        let cfg = TruncationConfig {
+            head: 5,
+            body: 5,
+            tail: 5,
+        };
         let text = "x".repeat(500);
         let once = truncate_middle(&text, cfg);
         let twice = truncate_middle(&once, cfg);
@@ -632,7 +795,11 @@ mod tests {
 
     #[test]
     fn test_truncate_middle_utf8_safe() {
-        let cfg = TruncationConfig { head: 3, body: 3, tail: 3 };
+        let cfg = TruncationConfig {
+            head: 3,
+            body: 3,
+            tail: 3,
+        };
         // Multibyte characters must never be split.
         let text = "日本語テスト🎉".repeat(100);
         let out = truncate_middle(&text, cfg);
@@ -642,7 +809,11 @@ mod tests {
 
     #[test]
     fn test_truncate_middle_disabled() {
-        let cfg = TruncationConfig { head: 0, body: 0, tail: 0 };
+        let cfg = TruncationConfig {
+            head: 0,
+            body: 0,
+            tail: 0,
+        };
         let text = "y".repeat(500);
         assert_eq!(truncate_middle(&text, cfg), text);
     }
@@ -655,7 +826,9 @@ mod tests {
         let mut rest = out;
         while let Some(start) = rest.find(TRUNCATION_MARKER_PREFIX) {
             let after = &rest[start + TRUNCATION_MARKER_PREFIX.len()..];
-            let end = after.find(TRUNCATION_MARKER_SUFFIX).expect("closing marker");
+            let end = after
+                .find(TRUNCATION_MARKER_SUFFIX)
+                .expect("closing marker");
             let range = &after[..end];
             let (from, to) = range.split_once('-').expect("from-to");
             let from: usize = from.parse().unwrap();
@@ -693,18 +866,36 @@ mod tests {
 
     #[test]
     fn test_duration_parsing() {
-        assert_eq!(parse_duration_string("30s").unwrap(), Duration::from_secs(30));
-        assert_eq!(parse_duration_string("1m").unwrap(), Duration::from_secs(60));
-        assert_eq!(parse_duration_string("2h").unwrap(), Duration::from_secs(7200));
-        assert_eq!(parse_duration_string("1d").unwrap(), Duration::from_secs(86400));
-        assert_eq!(parse_duration_string("1h30m").unwrap(), Duration::from_secs(5400));
+        assert_eq!(
+            parse_duration_string("30s").unwrap(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            parse_duration_string("1m").unwrap(),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            parse_duration_string("2h").unwrap(),
+            Duration::from_secs(7200)
+        );
+        assert_eq!(
+            parse_duration_string("1d").unwrap(),
+            Duration::from_secs(86400)
+        );
+        assert_eq!(
+            parse_duration_string("1h30m").unwrap(),
+            Duration::from_secs(5400)
+        );
         assert!(parse_duration_string("xyz").is_err());
     }
 
     #[test]
     fn test_memory_hash_calculation() {
         let h1 = calculate_memory_hash("");
-        assert_eq!(h1, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            h1,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]
@@ -765,7 +956,8 @@ mod tests {
         let hooks = vec![
             crate::db::schema::ResponseHook {
                 id: "hook-1".to_string(),
-                message: "Time: {{time}} | Context remaining: {{context_remaining}} chars".to_string(),
+                message: "Time: {{time}} | Context remaining: {{context_remaining}} chars"
+                    .to_string(),
                 source: "user".to_string(),
                 enabled: true,
             },

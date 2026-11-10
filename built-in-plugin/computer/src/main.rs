@@ -108,14 +108,14 @@ fn parse_signal(s: &str) -> i32 {
 fn get_tool_definitions() -> Value {
     json!([
         {
-            "name": "terminal",
-            "description": "Execute a bash command in the terminal environment. If execution exceeds the timeout, it automatically detaches into the background with a PID.",
+            "name": "shell",
+            "description": "Run a shell command (bash -c) and return its output. This is one-shot execution, not an interactive/persistent session. If execution exceeds the timeout it detaches into the background with a PID.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "bash": {
+                    "command": {
                         "type": "string",
-                        "description": "The bash command to execute in shell environment"
+                        "description": "The shell command to execute (passed to bash -c)"
                     },
                     "runInBackground": {
                         "type": "boolean",
@@ -126,7 +126,7 @@ fn get_tool_definitions() -> Value {
                         "description": "Execution timeout duration, e.g. \"120s\", \"30s\", \"5m\" (default: \"120s\")"
                     }
                 },
-                "required": ["bash"]
+                "required": ["command"]
             }
         },
         {
@@ -260,10 +260,13 @@ async fn tool_terminal(
     state: &Arc<AppState>,
     args: &Value,
 ) -> Result<Value, String> {
+    // `command` is the canonical name. `bash` is accepted as an alias so
+    // prompts and persisted tool calls written before the rename still run.
     let command = args
-        .get("bash")
+        .get("command")
+        .or_else(|| args.get("bash"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "Missing required 'bash' parameter".to_string())?
+        .ok_or_else(|| "Missing required 'command' parameter".to_string())?
         .to_string();
 
     let run_in_background = args
@@ -757,7 +760,7 @@ async fn handle_request(state: &Arc<AppState>, req: Value) {
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             let result: Result<Value, String> = match tool_name {
-                "terminal" | "execute" => tool_terminal(state, &arguments).await,
+                "shell" | "terminal" | "execute" => tool_terminal(state, &arguments).await,
                 "list_terminal" => tool_list_terminal(state, &arguments).await,
                 "check_terminal" => tool_check_terminal(state, &arguments).await,
                 "kill_terminal" => tool_kill_terminal(state, &arguments).await,

@@ -82,11 +82,12 @@ pub const IMPLEMENTED_COMPOSITES: &[&str] = &[
 const TERMINAL_STATUSES: &[&str] = &["success", "failed", "canceled", "skipped", "manual"];
 
 pub struct Executor {
-    client: GitLabClient,
-    registry: Arc<Registry>,
-    default_project_id: Option<String>,
-    allowed_project_ids: std::collections::BTreeSet<String>,
-    api_url: String,
+    pub client: GitLabClient,
+    pub registry: Arc<Registry>,
+    pub default_project_id: Option<String>,
+    pub allowed_project_ids: std::collections::BTreeSet<String>,
+    pub api_url: String,
+    pub read_only: bool,
 }
 
 impl Executor {
@@ -97,7 +98,19 @@ impl Executor {
             default_project_id: cfg.default_project_id.clone(),
             allowed_project_ids: cfg.allowed_project_ids.clone(),
             api_url: cfg.api_url.clone(),
+            read_only: cfg.read_only,
         })
+    }
+
+    pub fn api_url_root(&self) -> String {
+        self.api_url
+            .strip_suffix("/api/v4")
+            .unwrap_or(&self.api_url)
+            .to_string()
+    }
+
+    pub fn has_global_token(&self) -> bool {
+        self.client.default_token.is_some()
     }
 
     pub async fn call(
@@ -105,7 +118,10 @@ impl Executor {
         entry: &ToolEntry,
         mut args: Map<String, Value>,
     ) -> Result<Value, ToolError> {
-        let call_token = args
+        let agent_id = args.get("agent_id").and_then(|v| v.as_str());
+        let agent_cfg = agent_id.and_then(crate::config::AgentGitLabConfig::load);
+
+        let mut call_token = args
             .remove("gitlab_token")
             .or_else(|| args.remove("token"))
             .or_else(|| args.remove("private_token"))
@@ -118,16 +134,48 @@ impl Executor {
                 _ => None,
             });
 
+        if call_token.is_none() {
+            if let Some(ref cfg) = agent_cfg {
+                if let Some(ref t) = cfg.token {
+                    if !t.trim().is_empty() {
+                        call_token = Some(t.trim().to_string());
+                    }
+                }
+            }
+        }
+
+        let agent_api_url = agent_cfg.as_ref().and_then(|c| c.api_url.clone());
+        let agent_default_project = agent_cfg.as_ref().and_then(|c| c.default_project_id.clone());
+        let is_read_only = agent_cfg
+            .as_ref()
+            .and_then(|c| c.read_only)
+            .unwrap_or(self.read_only);
+
+        if is_read_only && !entry.endpoint.read_only {
+            return err(format!(
+                "{} changes GitLab state and this agent is configured in read-only mode",
+                entry.meta.name
+            ));
+        }
+
+        if !args.contains_key("project_id") {
+            if let Some(ref p) = agent_default_project {
+                args.insert("project_id".to_string(), Value::String(p.clone()));
+            }
+        }
+
         self.apply_default_project(entry, &mut args);
         self.check_project_allowed(&args)?;
 
-        crate::gitlab::CURRENT_GITLAB_TOKEN.scope(call_token, async {
-            match entry.endpoint.kind {
-                Kind::Rest => self.call_rest(entry, args).await,
-                Kind::Graphql => self.call_graphql(entry, args).await,
-                Kind::Composite => self.call_composite(entry, args).await,
-                Kind::Local => self.call_local(entry, args),
-            }
+        crate::gitlab::CURRENT_GITLAB_URL.scope(agent_api_url, async {
+            crate::gitlab::CURRENT_GITLAB_TOKEN.scope(call_token, async {
+                match entry.endpoint.kind {
+                    Kind::Rest => self.call_rest(entry, args).await,
+                    Kind::Graphql => self.call_graphql(entry, args).await,
+                    Kind::Composite => self.call_composite(entry, args).await,
+                    Kind::Local => self.call_local(entry, args),
+                }
+            }).await
         }).await
     }
 

@@ -205,11 +205,17 @@ mod tests {
         let date_1 = "2026-10-31 14:06:12";
         let pass_a = derive_root_password(date_1);
         let pass_b = derive_root_password(date_1);
-        assert_eq!(pass_a, pass_b, "Derived password must be 100% deterministic");
+        assert_eq!(
+            pass_a, pass_b,
+            "Derived password must be 100% deterministic"
+        );
         assert_eq!(pass_a.len(), 32);
 
         let date_2 = "2026-10-31 14:06:13";
         let pass_c = derive_root_password(date_2);
-        assert_ne!(pass_a, pass_c, "Different dates must produce different passwords");
+        assert_ne!(
+            pass_a, pass_c,
+            "Different dates must produce different passwords"
+        );
     }
 }

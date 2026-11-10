@@ -38,7 +38,10 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
             Some("data:image/png;base64,AAAA"),
         )
         .await?;
-    assert_eq!(updated_profile.display_name.as_deref(), Some("NeuxBane Core"));
+    assert_eq!(
+        updated_profile.display_name.as_deref(),
+        Some("NeuxBane Core")
+    );
     assert_eq!(
         updated_profile.avatar_url.as_deref(),
         Some("data:image/png;base64,AAAA")
@@ -74,8 +77,16 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
     assert_eq!(p_model.model_id, "llama3:8b");
-    assert!(p_model.config_json.as_ref().unwrap().contains("budget_tokens"));
-    assert!(p_model.params_json.as_ref().unwrap().contains("budget_tokens"));
+    assert!(p_model
+        .config_json
+        .as_ref()
+        .unwrap()
+        .contains("budget_tokens"));
+    assert!(p_model
+        .params_json
+        .as_ref()
+        .unwrap()
+        .contains("budget_tokens"));
 
     // 4. External MCP Server Registration
     let mcp = db
@@ -118,8 +129,10 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Bind Model & MCP to Agent
-    db.set_agent_models(&agent.id, &[p_model.id.clone()]).await?;
-    db.set_agent_mcp_servers(&agent.id, &[mcp.id.clone()]).await?;
+    db.set_agent_models(&agent.id, &[p_model.id.clone()])
+        .await?;
+    db.set_agent_mcp_servers(&agent.id, &[mcp.id.clone()])
+        .await?;
 
     let bound_models = db.get_agent_models(&agent.id).await?;
     assert_eq!(bound_models.len(), 1);
@@ -140,11 +153,12 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(executor.models.len(), 1);
 
-    // Verify Meta-Tools (11: search, schema, call, servers, setMemory, editMemory,
-    // readMemory, compact, sleep, history_search, history_inspect)
+    // Verify Meta-Tools (18: search, schema, call, servers, the legacy memory
+    // blob trio, the seven node-graph tools, compact, sleep, history_search,
+    // history_inspect)
     let meta_tools = get_meta_tools_definitions();
     let tools_arr = meta_tools.as_array().unwrap();
-    assert_eq!(tools_arr.len(), 11);
+    assert_eq!(tools_arr.len(), 18);
     assert!(tools_arr
         .iter()
         .any(|t| t["function"]["name"] == "history_search"));
@@ -162,9 +176,16 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
             "get_tool_schema",
             "call_tool",
             "list_servers",
-            "setMemory",
-            "editMemory",
-            "readMemory",
+            "instructionsWrite",
+            "instructionsEdit",
+            "instructionsRead",
+            "memoryNodeWrite",
+            "memoryNodeRead",
+            "memoryNodeSearch",
+            "memoryNodeList",
+            "memoryNodeDelete",
+            "skillWrite",
+            "skillList",
             "compact",
             "sleep",
             "history_search",
@@ -173,11 +194,26 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Test duration parsing for sleep meta-tool
-    assert_eq!(parse_duration_string("1m").unwrap(), Duration::from_secs(60));
-    assert_eq!(parse_duration_string("30s").unwrap(), Duration::from_secs(30));
-    assert_eq!(parse_duration_string("2h").unwrap(), Duration::from_secs(7200));
-    assert_eq!(parse_duration_string("1d").unwrap(), Duration::from_secs(86400));
-    assert_eq!(parse_duration_string("1h30m").unwrap(), Duration::from_secs(5400));
+    assert_eq!(
+        parse_duration_string("1m").unwrap(),
+        Duration::from_secs(60)
+    );
+    assert_eq!(
+        parse_duration_string("30s").unwrap(),
+        Duration::from_secs(30)
+    );
+    assert_eq!(
+        parse_duration_string("2h").unwrap(),
+        Duration::from_secs(7200)
+    );
+    assert_eq!(
+        parse_duration_string("1d").unwrap(),
+        Duration::from_secs(86400)
+    );
+    assert_eq!(
+        parse_duration_string("1h30m").unwrap(),
+        Duration::from_secs(5400)
+    );
     assert!(parse_duration_string("invalid").is_err());
 
     // Test Safe Literal Prompt Interpolation
@@ -216,7 +252,10 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(patched.strategy, "round-robin");
     assert!(patched.is_active);
     assert!(patched.allow_output_text);
-    assert_eq!(patched.output_text_error_message.as_deref(), Some("Custom disallowed message"));
+    assert_eq!(
+        patched.output_text_error_message.as_deref(),
+        Some("Custom disallowed message")
+    );
     assert_eq!(patched.max_running_history_chars, 250_000);
 
     // 7. Test MCP Server Push Information Ingestion
@@ -240,7 +279,11 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     let messages = db.list_pushed_messages(&agent.id, 10).await?;
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].method, "notifications/resources/updated");
-    assert!(messages[0].params_json.as_ref().unwrap().contains("file_modified"));
+    assert!(messages[0]
+        .params_json
+        .as_ref()
+        .unwrap()
+        .contains("file_modified"));
 
     // 8. Test Memory Operations & Constraints
     let initial_mem = db.get_agent_memory(&agent.id).await?;
@@ -265,8 +308,13 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     assert!(saved_mem.content.contains(search));
     let edited = saved_mem.content.replace(search, replace);
     let edited_hash = calculate_memory_hash(&edited);
-    let final_mem = db.set_agent_memory(&agent.id, &edited, &edited_hash).await?;
-    assert_eq!(final_mem.content, "User prefers concise and modular answers and Rust code.");
+    let final_mem = db
+        .set_agent_memory(&agent.id, &edited, &edited_hash)
+        .await?;
+    assert_eq!(
+        final_mem.content,
+        "User prefers concise and modular answers and Rust code."
+    );
     assert_eq!(final_mem.hash, edited_hash);
 
     let read_back = db.get_agent_memory(&agent.id).await?;
@@ -277,14 +325,57 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     let initial_history = db.get_agent_history(&agent.id).await?;
     assert_eq!(initial_history.len(), 0);
 
-    let _sys_item = db.append_agent_history(&agent.id, "system", "You are Ares.", None, None, None).await?;
-    let _user_item = db.append_agent_history(&agent.id, "user", "Hello Ares!", None, None, None).await?;
-    let _asst_item = db.append_agent_history(&agent.id, "assistant", "Hello! How can I assist?", None, None, None).await?;
+    let _sys_item = db
+        .append_agent_history(&agent.id, "system", "You are Ares.", None, None, None)
+        .await?;
+    let _user_item = db
+        .append_agent_history(&agent.id, "user", "Hello Ares!", None, None, None)
+        .await?;
+    let _asst_item = db
+        .append_agent_history(
+            &agent.id,
+            "assistant",
+            "Hello! How can I assist?",
+            None,
+            None,
+            None,
+        )
+        .await?;
     // Mirror what the executor does: every turn is also archived to the
     // append-only transcript.
-    db.append_transcript(&agent.id, "system", "You are Ares.", None, None, "system", 1, None).await?;
-    db.append_transcript(&agent.id, "user", "Hello Ares!", None, None, "turn", 1, None).await?;
-    db.append_transcript(&agent.id, "assistant", "Hello! How can I assist?", None, None, "turn", 1, None).await?;
+    db.append_transcript(
+        &agent.id,
+        "system",
+        "You are Ares.",
+        None,
+        None,
+        "system",
+        1,
+        None,
+    )
+    .await?;
+    db.append_transcript(
+        &agent.id,
+        "user",
+        "Hello Ares!",
+        None,
+        None,
+        "turn",
+        1,
+        None,
+    )
+    .await?;
+    db.append_transcript(
+        &agent.id,
+        "assistant",
+        "Hello! How can I assist?",
+        None,
+        None,
+        "turn",
+        1,
+        None,
+    )
+    .await?;
     assert_eq!(db.get_agent_history(&agent.id).await?.len(), 3);
 
     let summary = format!("Memory (Hash: {}):\n{}", final_mem.hash, final_mem.content);
@@ -330,9 +421,14 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .contains("call_compact_1"));
     assert_eq!(post_compact_history[2].role, "tool");
-    assert_eq!(post_compact_history[2].tool_call_id.as_deref(), Some("call_compact_1"));
+    assert_eq!(
+        post_compact_history[2].tool_call_id.as_deref(),
+        Some("call_compact_1")
+    );
     assert_eq!(post_compact_history[3].role, "system");
-    assert!(post_compact_history[3].content.contains("Compaction Summary"));
+    assert!(post_compact_history[3]
+        .content
+        .contains("Compaction Summary"));
     assert!(post_compact_history[3].content.contains(&final_mem.hash));
     // The new instruction must appear exactly once (never duplicated).
     assert_eq!(
@@ -346,11 +442,15 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     // The append-only transcript must retain what compaction removed.
     let transcript = db.get_agent_transcript(&agent.id).await?;
     assert!(
-        transcript.iter().any(|t| t.role == "user" && t.content == "Hello Ares!"),
+        transcript
+            .iter()
+            .any(|t| t.role == "user" && t.content == "Hello Ares!"),
         "compaction must not delete transcript history"
     );
     assert!(
-        transcript.iter().any(|t| t.content == "Hello! How can I assist?"),
+        transcript
+            .iter()
+            .any(|t| t.content == "Hello! How can I assist?"),
         "transcript must retain pre-compaction assistant turns"
     );
     for (i, item) in transcript.iter().enumerate() {
@@ -367,15 +467,23 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
         { "id": "call_p2", "type": "function", "function": { "name": "computer.list", "arguments": "{}" } }
     ])
     .to_string();
-    db.append_agent_history(&agent.id, "user", "next turn", None, None, None).await?;
-    db.append_agent_history(&agent.id, "assistant", "", Some(&tool_calls), None, None).await?;
-    db.append_agent_history(&agent.id, "tool", "slept", None, Some("call_p1"), None).await?;
-    db.append_agent_history(&agent.id, "tool", "listed", None, Some("call_p2"), None).await?;
-    db.append_agent_history(&agent.id, "user", "after tools", None, None, None).await?;
+    db.append_agent_history(&agent.id, "user", "next turn", None, None, None)
+        .await?;
+    db.append_agent_history(&agent.id, "assistant", "", Some(&tool_calls), None, None)
+        .await?;
+    db.append_agent_history(&agent.id, "tool", "slept", None, Some("call_p1"), None)
+        .await?;
+    db.append_agent_history(&agent.id, "tool", "listed", None, Some("call_p2"), None)
+        .await?;
+    db.append_agent_history(&agent.id, "user", "after tools", None, None, None)
+        .await?;
 
     // Budget only large enough for the system prompt + the trailing user turns.
     let pruned = db
-        .prune_agent_history_to_limit(&agent.id, post_compact_history[0].content.chars().count() + 30)
+        .prune_agent_history_to_limit(
+            &agent.id,
+            post_compact_history[0].content.chars().count() + 30,
+        )
         .await?;
     assert!(pruned > 0);
     let remaining = db.get_agent_history(&agent.id).await?;
@@ -383,11 +491,18 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         remaining.iter().all(|h| h.tool_call_id.is_none()),
         "pruning left orphaned tool rows: {:?}",
-        remaining.iter().map(|h| (&h.role, &h.tool_call_id)).collect::<Vec<_>>()
+        remaining
+            .iter()
+            .map(|h| (&h.role, &h.tool_call_id))
+            .collect::<Vec<_>>()
     );
 
     // --- History search / inspect round-trip over the append-only transcript ---
-    let big_result = format!("HEAD-{}--MIDDLE--{}-TAIL", "x".repeat(5000), "y".repeat(5000));
+    let big_result = format!(
+        "HEAD-{}--MIDDLE--{}-TAIL",
+        "x".repeat(5000),
+        "y".repeat(5000)
+    );
     let row = db
         .append_transcript(
             &agent.id,
@@ -408,7 +523,10 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     // history_search finds it and reports an offset.
     let hits = db.search_transcript(&agent.id, "MIDDLE", 100).await?;
     assert!(!hits.is_empty());
-    let hit = hits.iter().find(|h| h["id"] == row.id.as_str()).expect("hit for row");
+    let hit = hits
+        .iter()
+        .find(|h| h["id"] == row.id.as_str())
+        .expect("hit for row");
     let offset = hit["offset"].as_u64().unwrap() as usize;
     assert_eq!(hit["role"], "tool");
     assert!(hit["time"].as_i64().unwrap() > 0);
@@ -437,7 +555,8 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
         .is_none());
 
     // Test Safe Handlebars Prompt Interpolation with {{agent.name}} and {{tools.preset}}
-    let handlebars_template = "You are {{agent.name}}. Tools: {{tools.preset}}. Request schema on-demand.";
+    let handlebars_template =
+        "You are {{agent.name}}. Tools: {{tools.preset}}. Request schema on-demand.";
     let allowed_tools = vec!["chat_send".to_string(), "read_file".to_string()];
     let interpolated_hbs = interpolate_prompt(
         handlebars_template,

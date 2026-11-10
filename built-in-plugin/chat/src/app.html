@@ -188,14 +188,7 @@
 </style>
 </head>
 <body>
-  <header>
-    <div style="display:flex;align-items:center;gap:10px;">
-      <div id="header-avatar"></div>
-      <div>
-        <div id="header-name" style="font-size:12px;font-weight:600;color:var(--text);line-height:1.2;">Chat</div>
-        <div id="header-sub" style="font-size:10px;color:var(--muted);line-height:1.2;">Connected</div>
-      </div>
-    </div>
+  <header style="justify-content: flex-end;">
     <div style="display:flex;align-items:center;gap:6px;">
       <button class="btn-clear" id="refresh-btn" title="Refresh context and history">Refresh</button>
       <button class="btn-clear" id="clear-btn">Clear History</button>
@@ -219,8 +212,8 @@
     // omits anything that was not granted, so `null` here always means
     // "not known", and the UI renders its own neutral placeholders.
     const DEFAULT_AGENT_COLOR = '#3b82f6';
-    const DEFAULT_USER_COLOR = '#10b981';
-    const NEUTRAL_AGENT_LABEL = 'Chat';       // never invent an agent name
+    const DEFAULT_USER_COLOR = '#3b82f6';
+    const NEUTRAL_AGENT_LABEL = 'Bot';
     const NEUTRAL_USER_LABEL = 'User';
 
     let agentId = '';
@@ -354,16 +347,23 @@
       if (theme) document.documentElement.setAttribute('data-theme', theme);
 
       renderHeader();
+      const container = document.getElementById('messages');
+      if (container && container.querySelector('.empty')) {
+        renderEmpty();
+      }
     }
 
     const displayAgentName = () => agentName || NEUTRAL_AGENT_LABEL;
     const displayUserName = () => userName || NEUTRAL_USER_LABEL;
 
     function renderHeader() {
-      replaceChildren(
-        document.getElementById('header-avatar'),
-        makeAvatar(agentName, agentAvatarUrl, agentAvatarColor, agentAvatarShape, 28)
-      );
+      const avatarEl = document.getElementById('header-avatar');
+      if (avatarEl) {
+        replaceChildren(
+          avatarEl,
+          makeAvatar(agentName, agentAvatarUrl, agentAvatarColor, agentAvatarShape, 28)
+        );
+      }
       const nameSlot = document.getElementById('header-name');
       if (nameSlot) nameSlot.textContent = displayAgentName();
       const subSlot = document.getElementById('header-sub');
@@ -481,12 +481,13 @@
 
       const desc = document.createElement('div');
       desc.className = 'empty-desc';
-      desc.textContent = agentName
-        ? 'Send a message to start chatting with ' + agentName + ' over sandboxed MCP JSON-RPC.'
-        : 'Send a message to start chatting over sandboxed MCP JSON-RPC.';
+      desc.textContent = 'Use this interface to chat the bot.';
       wrap.appendChild(desc);
 
       replaceChildren(container, wrap);
+
+      const input = document.getElementById('chat-input');
+      if (input) input.placeholder = 'Message ' + displayAgentName() + '...';
     }
 
     // 100% DOM-built: message text, names and timestamps are set through
@@ -553,10 +554,10 @@
         // Attribute the bubble to the message's own sender, not the account
         // currently viewing. Falls back to the live viewer only for legacy
         // entries written before senders were recorded.
-        const isMe = isUser && (!m.sender_id || m.sender_id === currentAccountId);
+        const isMe = isUser && (!m.sender_id || m.sender_id === currentAccountId || !currentAccountId);
         const author = isUser ? identityOf(m.sender_id) : null;
         const name = isUser
-          ? (author && author.name) || (m.sender_id ? 'User' : displayUserName())
+          ? (author && author.name) || (isMe ? displayUserName() : (m.sender_id ? 'User' : displayUserName()))
           : displayAgentName();
 
         const row = document.createElement('div');
@@ -565,14 +566,14 @@
         row.appendChild(
           isUser
             ? makeAvatar(
-                (author && author.name) || userName,
+                (author && author.name) || (isMe ? displayUserName() : userName),
                 author && author.avatar && author.avatar.url
                   ? author.avatar.url
                   : isMe
                     ? userAvatarUrl
                     : null,
-                (author && author.avatar && author.avatar.color) || DEFAULT_USER_COLOR,
-                (author && author.avatar && author.avatar.shape) || userAvatarShape,
+                (author && author.avatar && author.avatar.color) || (isMe ? userAvatarColor : DEFAULT_USER_COLOR),
+                (author && author.avatar && author.avatar.shape) || (isMe ? userAvatarShape : 'circle'),
                 28
               )
             : makeAvatar(agentName, agentAvatarUrl, agentAvatarColor, agentAvatarShape, 28)
@@ -608,7 +609,10 @@
     }
 
     async function loadHistory() {
-      if (!agentId) return;
+      if (!agentId) {
+        renderEmpty();
+        return;
+      }
       try {
         const res = await mcpRequest('tools/call', {
           name: 'chat_history',
@@ -617,6 +621,7 @@
         renderMessages(parseToolJson(res));
       } catch (e) {
         console.error('Failed to load history:', e);
+        renderEmpty();
       }
     }
 

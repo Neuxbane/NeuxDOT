@@ -53,9 +53,7 @@ fn to_summary(account: Account, profile: Option<Profile>) -> AccountSummary {
         id: account.id,
         username: account.username,
         role: account.role,
-        display_name: profile
-            .display_name
-            .filter(|name| !name.trim().is_empty()),
+        display_name: profile.display_name.filter(|name| !name.trim().is_empty()),
         avatar_url: profile.avatar_url.filter(|url| !url.trim().is_empty()),
         created_at: account.created_at,
     }
@@ -71,7 +69,11 @@ pub async fn list_accounts_handler(
     let accounts = state.db.list_accounts().await.map_err(internal_error)?;
     let mut result = Vec::with_capacity(accounts.len());
     for account in accounts {
-        let profile = state.db.get_profile(&account.id).await.map_err(internal_error)?;
+        let profile = state
+            .db
+            .get_profile(&account.id)
+            .await
+            .map_err(internal_error)?;
         result.push(to_summary(account, profile));
     }
 
@@ -150,7 +152,10 @@ pub async fn create_account_handler(
         .await
         .map_err(internal_error)?;
 
-    Ok((StatusCode::CREATED, Json(to_summary(account, Some(profile)))))
+    Ok((
+        StatusCode::CREATED,
+        Json(to_summary(account, Some(profile))),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,7 +182,12 @@ pub async fn update_account_handler(
         .get_account_by_id(&account_id)
         .await
         .map_err(internal_error)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Account not found" }))))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Account not found" })),
+            )
+        })?;
 
     let username = match payload.username {
         Some(ref raw) => {
@@ -221,9 +231,7 @@ pub async fn update_account_handler(
                     .await
                     .map_err(internal_error)?
             {
-                return Err(bad_request(
-                    "Cannot demote the last remaining root account",
-                ));
+                return Err(bad_request("Cannot demote the last remaining root account"));
             }
             Some(new_role.clone())
         }
@@ -273,7 +281,12 @@ pub async fn delete_account_handler(
         .get_account_by_id(&account_id)
         .await
         .map_err(internal_error)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Account not found" }))))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Account not found" })),
+            )
+        })?;
 
     if account.is_root()
         && state
@@ -291,7 +304,10 @@ pub async fn delete_account_handler(
         .await
         .map_err(internal_error)?;
     if !deleted {
-        return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Account not found" }))));
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Account not found" })),
+        ));
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -328,7 +344,12 @@ pub async fn change_password_handler(
         .get_account_by_id(&account_id)
         .await
         .map_err(internal_error)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": "Account not found" }))))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Account not found" })),
+            )
+        })?;
 
     let old_password = payload
         .old_password

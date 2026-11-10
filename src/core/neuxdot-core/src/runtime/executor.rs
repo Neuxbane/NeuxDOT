@@ -26,6 +26,62 @@ pub struct ToolRegistryEntry {
     pub tool: McpTool,
 }
 
+/// Kills every MCP child process spawned for one turn, on every exit path.
+///
+/// `McpTransport::close` is async, so the kill is dispatched from `Drop` onto
+/// the runtime. Killing the child is what actually ends the process; the
+/// blocking reader then sees EOF, drops the notification sender, and the
+/// per-session listener task exits on its own.
+struct SessionGuard {
+    transports: Vec<Arc<dyn crate::mcp::client::McpTransport>>,
+}
+
+impl SessionGuard {
+    fn new(sessions: &HashMap<String, Arc<McpClientSession>>) -> Self {
+        Self {
+            transports: sessions
+                .values()
+                .map(|s| Arc::clone(&s.transport))
+                .collect(),
+        }
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        for transport in self.transports.drain(..) {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let _ = transport.close().await;
+                });
+            }
+        }
+    }
+}
+
+/// Compose the model-facing tool name for a plugin tool.
+///
+/// The host namespaces every plugin tool by its alias, but most plugins already
+/// prefix their own tools with that same domain (`telegram_*`, `control_*`).
+/// Naively doing `format!("{alias}.{tool}")` then produces `control.control_whoami`
+/// and `telegram.telegram_send_message` — stuttering, ambiguous to read, and a
+/// collision hazard for `resolve_tool`'s bare-name fallback.
+///
+/// The alias prefix is redundant when the tool already starts with `<alias>_`,
+/// so it is stripped in that case only. A tool that genuinely starts with the
+/// alias but is not namespaced by it (e.g. plugin `a`, tool `a_b` where the
+/// plugin means the literal name) still resolves, because `resolve_tool`
+/// matches `original_tool_name` as well.
+pub fn compose_tool_name(alias: &str, tool: &str) -> String {
+    let prefix = format!("{alias}_");
+    if let Some(stripped) = tool.strip_prefix(&prefix) {
+        if !stripped.is_empty() {
+            return format!("{alias}.{stripped}");
+        }
+    }
+    format!("{alias}.{tool}")
+}
+
 pub fn resolve_tool<'a>(
     registry: &'a HashMap<String, ToolRegistryEntry>,
     name: &str,
@@ -90,8 +146,10 @@ pub fn sanitize_chat_messages(messages: Vec<Value>) -> Vec<Value> {
     }
 
     let mut sanitized: Vec<Value> = Vec::with_capacity(messages.len());
-    let mut active_tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut tool_id_to_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut active_tool_call_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut tool_id_to_name: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut seen_tool_replies: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for mut msg in messages {
@@ -111,7 +169,11 @@ pub fn sanitize_chat_messages(messages: Vec<Value>) -> Vec<Value> {
                 for tc in tool_calls {
                     if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
                         active_tool_call_ids.insert(id.to_string());
-                        if let Some(fn_name) = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
+                        if let Some(fn_name) = tc
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                        {
                             tool_id_to_name.insert(id.to_string(), fn_name.to_string());
                         }
                     }
@@ -119,9 +181,16 @@ pub fn sanitize_chat_messages(messages: Vec<Value>) -> Vec<Value> {
             }
             sanitized.push(msg);
         } else if role == "tool" {
-            let tid = msg.get("tool_call_id").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let tid = msg
+                .get("tool_call_id")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
 
-            if !tid.is_empty() && active_tool_call_ids.contains(&tid) && seen_tool_replies.insert(tid.clone()) {
+            if !tid.is_empty()
+                && active_tool_call_ids.contains(&tid)
+                && seen_tool_replies.insert(tid.clone())
+            {
                 // Ensure name is present for Gemini / OpenAI proxy compliance
                 if msg.get("name").is_none() || msg["name"].as_str().unwrap_or("").is_empty() {
                     if let Some(name) = tool_id_to_name.get(&tid) {
@@ -136,14 +205,20 @@ pub fn sanitize_chat_messages(messages: Vec<Value>) -> Vec<Value> {
             } else if seen_tool_replies.contains(&tid) {
                 // Duplicate reply (e.g. a delayed real reply after a repair).
                 // Providers reject responses that answer a call twice.
-                warn!("Sanitizing duplicate tool message (id: '{}') into system context", tid);
+                warn!(
+                    "Sanitizing duplicate tool message (id: '{}') into system context",
+                    tid
+                );
                 let content = msg["content"].as_str().unwrap_or("");
                 sanitized.push(json!({
                     "role": "system",
                     "content": format!("[Previous Tool Context]: {}", content)
                 }));
             } else {
-                warn!("Sanitizing orphaned tool message (id: '{}') into system context", tid);
+                warn!(
+                    "Sanitizing orphaned tool message (id: '{}') into system context",
+                    tid
+                );
                 let content = msg["content"].as_str().unwrap_or("");
                 sanitized.push(json!({
                     "role": "system",
@@ -193,10 +268,16 @@ fn close_tool_call_group(
     for id in ids {
         if answered_anywhere.contains(&id) {
             // A late reply exists; leave the group alone so we don't duplicate.
-            warn!("Tool call '{}' is answered out of order ({}); leaving as-is", id, reason);
+            warn!(
+                "Tool call '{}' is answered out of order ({}); leaving as-is",
+                id, reason
+            );
             continue;
         }
-        warn!("Synthesizing missing tool response for unanswered tool_call '{}' ({})", id, reason);
+        warn!(
+            "Synthesizing missing tool response for unanswered tool_call '{}' ({})",
+            id, reason
+        );
         let mut tool_msg = json!({
             "role": "tool",
             "tool_call_id": id,
@@ -243,7 +324,9 @@ fn append_missing_tool_responses(
         for call in calls {
             if let (Some(id), Some(name)) = (
                 call.get("id").and_then(|i| i.as_str()),
-                call.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()),
+                call.get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str()),
             ) {
                 names.insert(id.to_string(), name.to_string());
             }
@@ -262,7 +345,10 @@ fn append_missing_tool_responses(
             continue;
         }
 
-        warn!("Emitting synthetic tool response for unanswered tool_call '{}' ({})", id, reason);
+        warn!(
+            "Emitting synthetic tool response for unanswered tool_call '{}' ({})",
+            id, reason
+        );
         let mut tool_msg = json!({
             "role": "tool",
             "tool_call_id": id,
@@ -317,11 +403,17 @@ pub fn normalize_history_transcript(history: &[crate::db::schema::AgentHistoryIt
             }
             let content = match recovered.get(id) {
                 Some(real) => {
-                    warn!("History repair: reattaching recovered real reply for '{}'", id);
+                    warn!(
+                        "History repair: reattaching recovered real reply for '{}'",
+                        id
+                    );
                     real.clone()
                 }
                 None => {
-                    warn!("History repair: unanswered tool_call '{}' — inserting synthetic response", id);
+                    warn!(
+                        "History repair: unanswered tool_call '{}' — inserting synthetic response",
+                        id
+                    );
                     json!({
                         "error": "This tool call was not executed because the turn was interrupted."
                     })
@@ -356,7 +448,8 @@ pub fn normalize_history_transcript(history: &[crate::db::schema::AgentHistoryIt
     // repair itself produced in an earlier run). If a real reply exists
     // anywhere later in the history, the synthetic placeholder is garbage and
     // must be removed rather than preserved.
-    const SYNTHETIC_MARKER: &str = "This tool call was not executed because the turn was interrupted.";
+    const SYNTHETIC_MARKER: &str =
+        "This tool call was not executed because the turn was interrupted.";
     let mut real_reply_ids: HashSet<String> = HashSet::new();
     for item in history {
         if item.role == "tool" {
@@ -409,7 +502,9 @@ pub fn normalize_history_transcript(history: &[crate::db::schema::AgentHistoryIt
         let summaries: Vec<usize> = history
             .iter()
             .enumerate()
-            .filter(|(_, h)| h.role == "system" && h.content.starts_with("### [Compaction Summary]"))
+            .filter(|(_, h)| {
+                h.role == "system" && h.content.starts_with("### [Compaction Summary]")
+            })
             .map(|(i, _)| i)
             .collect();
         summaries.windows(2).any(|w| w[1] - w[0] <= 3)
@@ -473,7 +568,10 @@ pub fn normalize_history_transcript(history: &[crate::db::schema::AgentHistoryIt
                 if item.content.contains(SYNTHETIC_MARKER)
                     && (real_reply_ids.contains(&tid) || recovered.contains_key(&tid))
                 {
-                    warn!("History repair: dropping stale synthetic reply for '{}'", tid);
+                    warn!(
+                        "History repair: dropping stale synthetic reply for '{}'",
+                        tid
+                    );
                     answered.insert(tid.clone());
                     // Emit the recovered real answer in its place (adjacent to
                     // the assistant message) so the group stays answered;
@@ -491,7 +589,10 @@ pub fn normalize_history_transcript(history: &[crate::db::schema::AgentHistoryIt
                     }
                     continue;
                 }
-                if !tid.is_empty() && open_ids.iter().any(|id| *id == tid) && !answered.contains(&tid) {
+                if !tid.is_empty()
+                    && open_ids.iter().any(|id| *id == tid)
+                    && !answered.contains(&tid)
+                {
                     let mut tool_msg = json!({
                         "role": "tool",
                         "tool_call_id": tid,
@@ -503,7 +604,10 @@ pub fn normalize_history_transcript(history: &[crate::db::schema::AgentHistoryIt
                     answered.insert(tid);
                     out.push(tool_msg);
                 } else {
-                    warn!("History repair: orphaned/duplicate tool reply '{}' → system context", tid);
+                    warn!(
+                        "History repair: orphaned/duplicate tool reply '{}' → system context",
+                        tid
+                    );
                     deferred_notes.push(json!({
                         "role": "system",
                         "content": format!("[Previous Tool Context]: {}", item.content)
@@ -517,21 +621,25 @@ pub fn normalize_history_transcript(history: &[crate::db::schema::AgentHistoryIt
             // message stays immediately followed by its replies.
             // A "[Previous Tool Context]" note that was reattached as a real
             // tool reply above must not also appear as its own row.
-            "system" if item.content.starts_with("[Previous Tool Context]:")
-                && consumed_notes.contains(
-                    item.content
-                        .trim_start_matches("[Previous Tool Context]:")
-                        .trim(),
-                ) =>
+            "system"
+                if item.content.starts_with("[Previous Tool Context]:")
+                    && consumed_notes.contains(
+                        item.content
+                            .trim_start_matches("[Previous Tool Context]:")
+                            .trim(),
+                    ) =>
             {
                 continue;
             }
             "system" if !open_ids.is_empty() => {
                 // Running `compact` twice in one turn produced duplicate
                 // summary rows; keep only the first.
-                let dup = deferred_system.iter().chain(out.iter().rev().take(1)).any(|prev| {
-                    prev.get("content").and_then(|c| c.as_str()) == msg["content"].as_str()
-                });
+                let dup = deferred_system
+                    .iter()
+                    .chain(out.iter().rev().take(1))
+                    .any(|prev| {
+                        prev.get("content").and_then(|c| c.as_str()) == msg["content"].as_str()
+                    });
                 if !dup {
                     deferred_system.push(msg);
                 }
@@ -551,12 +659,12 @@ pub fn normalize_history_transcript(history: &[crate::db::schema::AgentHistoryIt
     }
 
     close_group(
-                    &mut out,
-                    &mut open_ids,
-                    &mut open_names,
-                    &mut answered,
-                    &recovered,
-                );
+        &mut out,
+        &mut open_ids,
+        &mut open_names,
+        &mut answered,
+        &recovered,
+    );
     flush_notes(&mut out, &mut deferred_notes, &mut deferred_system);
     out
 }
@@ -585,7 +693,10 @@ fn normalized_changed(
             return true;
         }
         let stored_tid = item.tool_call_id.clone();
-        let wanted_tid = msg.get("tool_call_id").and_then(|t| t.as_str()).map(|s| s.to_string());
+        let wanted_tid = msg
+            .get("tool_call_id")
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
         stored_tid != wanted_tid
     })
 }
@@ -649,6 +760,385 @@ impl AgentExecutor {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Keyed memory graph and skills
+    // -------------------------------------------------------------------------
+
+    /// Shared write path for `memoryWrite` and `skillWrite`.
+    ///
+    /// Both are the same operation with a different `type`; keeping one
+    /// implementation means the hash-CAS and link-derivation rules cannot drift
+    /// between them.
+    async fn write_memory_node(
+        &self,
+        raw_key: &str,
+        value: &str,
+        node_type: &str,
+        description: &str,
+        expected_hash: Option<&str>,
+    ) -> (Value, bool) {
+        let Some(key) = crate::db::repos::normalize_memory_key(raw_key) else {
+            return (
+                json!({
+                    "error": {
+                        "code": "invalid_key",
+                        "message": format!(
+                            "'{raw_key}' is not a usable memory key: it must be 1-{} characters, a single line, and must not contain '[', ']' or '|'.",
+                            crate::db::repos::MEMORY_KEY_MAX_CHARS
+                        ),
+                        "retryable": true,
+                        "hint": "Use a canonical lowercase noun phrase, e.g. 'postgres primary'."
+                    }
+                }),
+                false,
+            );
+        };
+
+        let value_chars = value.chars().count();
+        if value.trim().is_empty() {
+            return (
+                json!({
+                    "error": {
+                        "code": "empty_value",
+                        "message": "A memory node cannot be empty. Use memoryDelete to remove one.",
+                        "retryable": true
+                    }
+                }),
+                false,
+            );
+        }
+        if value_chars > crate::db::repos::MEMORY_VALUE_MAX_CHARS {
+            return (
+                json!({
+                    "error": {
+                        "code": "value_too_long",
+                        "message": format!(
+                            "The value is {value_chars} characters; the limit is {}.",
+                            crate::db::repos::MEMORY_VALUE_MAX_CHARS
+                        ),
+                        "retryable": true,
+                        "hint": "Split it into several linked nodes instead of one huge one."
+                    }
+                }),
+                false,
+            );
+        }
+
+        // Optimistic concurrency: an update must prove it read the current node.
+        let existing = match self.db.get_memory_node(&self.agent.id, &key).await {
+            Ok(node) => node,
+            Err(e) => {
+                return (
+                    json!({ "error": { "code": "storage_error", "message": format!("Could not read the existing node: {e}"), "retryable": true } }),
+                    false,
+                );
+            }
+        };
+        match (&existing, expected_hash) {
+            (Some(node), None) => {
+                return (
+                    json!({
+                        "error": {
+                            "code": "hash_required",
+                            "message": format!("Memory node '{key}' already exists; pass its expectedHash to replace it."),
+                            "retryable": true,
+                            "hint": format!("Call memoryRead(key=\"{key}\") to obtain hash {} and decide whether to overwrite.", node.hash)
+                        }
+                    }),
+                    false,
+                );
+            }
+            (Some(node), Some(provided)) if provided != node.hash => {
+                return (
+                    json!({
+                        "error": {
+                            "code": "stale_hash",
+                            "message": format!("Hash mismatch for '{key}': provided '{provided}' but the node is at '{}'. Nothing was written.", node.hash),
+                            "retryable": true,
+                            "hint": format!("Call memoryRead(key=\"{key}\") to see the current content, then re-apply your change.")
+                        }
+                    }),
+                    false,
+                );
+            }
+            _ => {}
+        }
+
+        let hash = crate::runtime::meta_tools::calculate_memory_hash(value);
+        let description = description.trim();
+        if let Err(e) = self
+            .db
+            .upsert_memory_node(&self.agent.id, &key, value, node_type, description, &hash)
+            .await
+        {
+            return (
+                json!({ "error": { "code": "storage_error", "message": format!("Memory was not saved: {e}"), "retryable": true } }),
+                false,
+            );
+        }
+
+        let links = crate::db::repos::extract_wikilinks(value);
+        // The graph view and the prompt manifest are both derived, so tell the
+        // UI a node changed.
+        self.emit(AgentEvent::MemoryUpdated {
+            agent_id: self.agent.id.clone(),
+            updated_hash: hash.clone(),
+            char_count: value_chars,
+        });
+
+        (
+            json!({
+                "success": true,
+                "key": key,
+                "type": node_type,
+                "hash": hash,
+                "character_count": value_chars,
+                "links": links,
+                "replaced": existing.is_some(),
+            }),
+            true,
+        )
+    }
+
+    async fn memory_write(&self, args: &Value) -> (Value, bool) {
+        let key = args["key"].as_str().unwrap_or("");
+        let value = args["value"].as_str().unwrap_or("");
+        let node_type = args["type"].as_str().unwrap_or("concept");
+        let description = args["description"].as_str().unwrap_or("");
+        let expected = args["expectedHash"].as_str();
+        self.write_memory_node(key, value, node_type, description, expected)
+            .await
+    }
+
+    async fn memory_read(&self, args: &Value) -> (Value, bool) {
+        let raw_key = args["key"].as_str().unwrap_or("");
+        let Some(key) = crate::db::repos::normalize_memory_key(raw_key) else {
+            return (
+                json!({ "error": { "code": "invalid_key", "message": format!("'{raw_key}' is not a valid memory key."), "retryable": true } }),
+                false,
+            );
+        };
+
+        let views = match self.db.memory_nodes_with_links(&self.agent.id).await {
+            Ok(views) => views,
+            Err(e) => {
+                return (
+                    json!({ "error": { "code": "storage_error", "message": format!("Could not read memory: {e}"), "retryable": true } }),
+                    false,
+                );
+            }
+        };
+
+        match views.into_iter().find(|v| v.key == key) {
+            Some(view) => (
+                json!({
+                    "key": view.key,
+                    "type": view.r#type,
+                    "description": view.description,
+                    "value": view.value,
+                    "hash": view.hash,
+                    "updated_at": view.updated_at,
+                    "links": view.outbound,
+                    "backlinks": view.backlinks,
+                }),
+                true,
+            ),
+            None => (
+                json!({
+                    "error": {
+                        "code": "not_found",
+                        "message": format!("No memory node '{key}'."),
+                        "retryable": true,
+                        "hint": "Use memoryList or memorySearch to find the right key."
+                    }
+                }),
+                false,
+            ),
+        }
+    }
+
+    async fn memory_search(&self, args: &Value) -> (Value, bool) {
+        let query = args["query"].as_str().unwrap_or("");
+        let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+        match self
+            .db
+            .search_memory_nodes(&self.agent.id, query, limit)
+            .await
+        {
+            Ok(nodes) => {
+                let results: Vec<Value> = nodes
+                    .iter()
+                    .map(|n| {
+                        json!({
+                            "key": n.key,
+                            "type": n.r#type,
+                            "description": n.description,
+                            "hash": n.hash,
+                            "preview": n.value.chars().take(160).collect::<String>(),
+                        })
+                    })
+                    .collect();
+                (
+                    json!({ "query": query, "count": results.len(), "results": results }),
+                    true,
+                )
+            }
+            Err(e) => (
+                json!({ "error": { "code": "storage_error", "message": format!("Search failed: {e}"), "retryable": true } }),
+                false,
+            ),
+        }
+    }
+
+    async fn memory_list(&self, args: &Value) -> (Value, bool) {
+        let wanted_type = args["type"].as_str().map(|t| t.trim().to_lowercase());
+        match self.db.memory_nodes_with_links(&self.agent.id).await {
+            Ok(views) => {
+                let nodes: Vec<Value> = views
+                    .iter()
+                    .filter(|v| {
+                        wanted_type
+                            .as_deref()
+                            .map(|t| v.r#type.eq_ignore_ascii_case(t))
+                            .unwrap_or(true)
+                    })
+                    .map(|v| {
+                        json!({
+                            "key": v.key,
+                            "type": v.r#type,
+                            "description": v.description,
+                            "hash": v.hash,
+                            "links": v.outbound.len(),
+                            "backlinks": v.backlinks.len(),
+                        })
+                    })
+                    .collect();
+                (json!({ "count": nodes.len(), "nodes": nodes }), true)
+            }
+            Err(e) => (
+                json!({ "error": { "code": "storage_error", "message": format!("Could not list memory: {e}"), "retryable": true } }),
+                false,
+            ),
+        }
+    }
+
+    async fn memory_delete(&self, args: &Value) -> (Value, bool) {
+        let raw_key = args["key"].as_str().unwrap_or("");
+        let Some(key) = crate::db::repos::normalize_memory_key(raw_key) else {
+            return (
+                json!({ "error": { "code": "invalid_key", "message": format!("'{raw_key}' is not a valid memory key."), "retryable": true } }),
+                false,
+            );
+        };
+        let Some(expected) = args["expectedHash"]
+            .as_str()
+            .filter(|h| !h.trim().is_empty())
+        else {
+            return (
+                json!({
+                    "error": {
+                        "code": "hash_required",
+                        "message": "memoryDelete requires expectedHash so a stale read cannot delete newer content.",
+                        "retryable": true,
+                        "hint": format!("Call memoryRead(key=\"{key}\") to obtain the current hash.")
+                    }
+                }),
+                false,
+            );
+        };
+
+        let existing = match self.db.get_memory_node(&self.agent.id, &key).await {
+            Ok(node) => node,
+            Err(e) => {
+                return (
+                    json!({ "error": { "code": "storage_error", "message": format!("Could not read the node: {e}"), "retryable": true } }),
+                    false,
+                );
+            }
+        };
+        let Some(node) = existing else {
+            return (
+                json!({ "error": { "code": "not_found", "message": format!("No memory node '{key}'."), "retryable": true } }),
+                false,
+            );
+        };
+        if expected != node.hash {
+            return (
+                json!({
+                    "error": {
+                        "code": "stale_hash",
+                        "message": format!("Hash mismatch for '{key}': provided '{expected}' but the node is at '{}'. Nothing was deleted.", node.hash),
+                        "retryable": true
+                    }
+                }),
+                false,
+            );
+        }
+
+        match self.db.delete_memory_node(&self.agent.id, &key).await {
+            Ok(deleted) => (
+                json!({ "success": true, "key": key, "deleted": deleted }),
+                true,
+            ),
+            Err(e) => (
+                json!({ "error": { "code": "storage_error", "message": format!("Delete failed: {e}"), "retryable": true } }),
+                false,
+            ),
+        }
+    }
+
+    async fn skill_write(&self, args: &Value) -> (Value, bool) {
+        let name = args["name"].as_str().unwrap_or("");
+        let instructions = args["instructions"].as_str().unwrap_or("");
+        let description = args["description"].as_str().unwrap_or("");
+        let expected = args["expectedHash"].as_str();
+        if description.trim().is_empty() {
+            return (
+                json!({
+                    "error": {
+                        "code": "missing_description",
+                        "message": "A skill needs a description: it is what memorySearch matches when deciding whether to load the skill.",
+                        "retryable": true
+                    }
+                }),
+                false,
+            );
+        }
+        self.write_memory_node(name, instructions, "skill", description, expected)
+            .await
+    }
+
+    async fn skill_list(&self) -> (Value, bool) {
+        match self.db.memory_nodes_with_links(&self.agent.id).await {
+            Ok(views) => {
+                let skills: Vec<Value> = views
+                    .iter()
+                    .filter(|v| v.r#type.eq_ignore_ascii_case("skill"))
+                    .map(|v| {
+                        json!({
+                            "name": v.key,
+                            "description": v.description,
+                            "hash": v.hash,
+                            "character_count": v.value.chars().count(),
+                        })
+                    })
+                    .collect();
+                (
+                    json!({
+                        "count": skills.len(),
+                        "skills": skills,
+                        "note": "Load a skill with memoryRead(key=<name>) before following it."
+                    }),
+                    true,
+                )
+            }
+            Err(e) => (
+                json!({ "error": { "code": "storage_error", "message": format!("Could not list skills: {e}"), "retryable": true } }),
+                false,
+            ),
+        }
+    }
+
     /// Per-agent head/body/tail truncation config for large payloads.
     fn truncation_config(&self) -> crate::runtime::meta_tools::TruncationConfig {
         crate::runtime::meta_tools::TruncationConfig::default()
@@ -696,7 +1186,10 @@ impl AgentExecutor {
         messages
             .iter()
             .map(|m| {
-                m["content"].as_str().map(|s| s.chars().count()).unwrap_or(0)
+                m["content"]
+                    .as_str()
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0)
                     + m.get("tool_calls")
                         .map(|tc| tc.to_string().chars().count())
                         .unwrap_or(0)
@@ -714,7 +1207,10 @@ impl AgentExecutor {
         let current: usize = messages
             .iter()
             .map(|m| {
-                m["content"].as_str().map(|s| s.chars().count()).unwrap_or(0)
+                m["content"]
+                    .as_str()
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0)
                     + m.get("tool_calls")
                         .map(|tc| tc.to_string().chars().count())
                         .unwrap_or(0)
@@ -765,16 +1261,20 @@ impl AgentExecutor {
     /// Initializes MCP sessions and sets up background listener for pushed information
     pub async fn setup_mcp_sessions(
         &self,
-        wake_signal_tx: mpsc::UnboundedSender<String>,
         // Live history size in chars, shared with the notification tasks so
         // push events can report real context pressure.
         current_chars: Arc<std::sync::atomic::AtomicUsize>,
     ) -> (
         HashMap<String, Arc<McpClientSession>>,
         HashMap<String, ToolRegistryEntry>,
+        Vec<String>,
     ) {
         let mut sessions = HashMap::new();
         let mut tool_registry = HashMap::new();
+        // Plugins whose `tools/list` failed this turn. `search_tools` must not
+        // report these as "no matches": an empty result caused by a dead or
+        // still-starting plugin is a different answer from "no such tool".
+        let mut unreachable: Vec<String> = Vec::new();
 
         for server in &self.mcp_servers {
             if !server.is_active {
@@ -782,52 +1282,50 @@ impl AgentExecutor {
             }
             let (notif_tx, notif_rx) = mpsc::unbounded_channel::<McpNotification>();
 
-            let transport: Option<Arc<dyn crate::mcp::client::McpTransport>> =
-                if server.transport == "stdio" || server.transport == "binary" {
-                    match StdioTransport::spawn(
-                        &server.url_or_command,
-                        server.headers_or_env.as_deref(),
-                        notif_tx,
-                    )
-                    .await
-                    {
-                        Ok(t) => Some(t),
-                        Err(e) => {
-                            self.emit(AgentEvent::AgentError {
-                                agent_id: self.agent.id.clone(),
-                                message: format!(
-                                    "Failed to start MCP server '{}': {}",
-                                    server.name, e
-                                ),
-                            });
-                            None
-                        }
+            let transport: Option<Arc<dyn crate::mcp::client::McpTransport>> = if server.transport
+                == "stdio"
+                || server.transport == "binary"
+            {
+                let launch = crate::mcp::sandbox::SandboxSpec::launch_for(server);
+                match StdioTransport::spawn_with_sandbox(
+                    &server.url_or_command,
+                    server.headers_or_env.as_deref(),
+                    Some(self.agent.id.as_str()),
+                    notif_tx,
+                    &launch,
+                )
+                .await
+                {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        self.emit(AgentEvent::AgentError {
+                            agent_id: self.agent.id.clone(),
+                            message: format!("Failed to start MCP server '{}': {}", server.name, e),
+                        });
+                        None
                     }
-                } else if server.transport == "custom_tools" || server.transport == "curl" {
-                    match CustomToolsTransport::new(
-                        &server.id,
-                        &server.url_or_command,
-                        notif_tx,
-                    ) {
-                        Ok(t) => Some(Arc::new(t)),
-                        Err(e) => {
-                            self.emit(AgentEvent::AgentError {
-                                agent_id: self.agent.id.clone(),
-                                message: format!(
-                                    "Failed to load custom tools for '{}': {}",
-                                    server.name, e
-                                ),
-                            });
-                            None
-                        }
+                }
+            } else if server.transport == "custom_tools" || server.transport == "curl" {
+                match CustomToolsTransport::new(&server.id, &server.url_or_command, notif_tx) {
+                    Ok(t) => Some(Arc::new(t)),
+                    Err(e) => {
+                        self.emit(AgentEvent::AgentError {
+                            agent_id: self.agent.id.clone(),
+                            message: format!(
+                                "Failed to load custom tools for '{}': {}",
+                                server.name, e
+                            ),
+                        });
+                        None
                     }
-                } else {
-                    Some(HttpTransport::new(
-                        &server.url_or_command,
-                        server.headers_or_env.as_deref(),
-                        notif_tx,
-                    ))
-                };
+                }
+            } else {
+                Some(HttpTransport::new(
+                    &server.url_or_command,
+                    server.headers_or_env.as_deref(),
+                    notif_tx,
+                ))
+            };
 
             if let Some(transport) = transport {
                 let session = Arc::new(McpClientSession {
@@ -841,15 +1339,10 @@ impl AgentExecutor {
                     warn!("MCP init handshake failed for {}: {}", server.name, e);
                 }
 
-                // Initial Subscriptions: send resources/subscribe for all agent subscriptions
-                if let Ok(subscriptions) = self.db.get_agent_subscriptions(&self.agent.id).await {
-                    for uri in &subscriptions {
-                        let _ = session
-                            .transport
-                            .send_request("resources/subscribe", Some(serde_json::json!({ "uri": uri })))
-                            .await;
-                    }
-                }
+                // Push subscriptions are owned by the server's long-lived
+                // `SubscriptionHub`, not by a turn. Subscribing here too would
+                // start a second consumer for the same bot (Telegram answers
+                // 409) and the stream would die with this turn anyway.
 
                 // Granular Tool Permissions: filter out disabled tools from discovery
                 let tool_perms = self
@@ -877,7 +1370,7 @@ impl AgentExecutor {
                                 );
                                 continue;
                             }
-                            let unique_tool_name = format!("{}.{}", server_alias, tool.name);
+                            let unique_tool_name = compose_tool_name(&server_alias, &tool.name);
                             tool_registry.insert(
                                 unique_tool_name,
                                 ToolRegistryEntry {
@@ -891,6 +1384,7 @@ impl AgentExecutor {
                     }
                     Err(e) => {
                         warn!("Failed to list tools from {}: {}", server.name, e);
+                        unreachable.push(format!("{}: {}", server.name, e));
                     }
                 }
 
@@ -900,7 +1394,6 @@ impl AgentExecutor {
                 let event_tx = self.event_tx.clone();
                 let db = Arc::clone(&self.db);
                 let session_worker = Arc::clone(&session);
-                let wake_tx = wake_signal_tx.clone();
                 let live_chars = Arc::clone(&current_chars);
                 let max_chars = self.agent.max_history_chars();
 
@@ -914,7 +1407,12 @@ impl AgentExecutor {
 
                         let params_str = notif.params.as_ref().map(|p| p.to_string());
                         let _ = db
-                            .save_pushed_message(&agent_id, Some(&mcp_id), &notif.method, params_str.as_deref())
+                            .save_pushed_message(
+                                &agent_id,
+                                Some(&mcp_id),
+                                &notif.method,
+                                params_str.as_deref(),
+                            )
                             .await;
 
                         // Event stream must not carry unbounded payloads: keep a
@@ -946,9 +1444,6 @@ impl AgentExecutor {
                         )
                         .with_context(current, max_chars);
                         let _ = event_tx.send(envelope);
-
-                        // Wake up interruptible sleep if sleeping
-                        let _ = wake_tx.send(format!("MCP Push: {}", notif.method));
                     }
                 });
 
@@ -956,7 +1451,7 @@ impl AgentExecutor {
             }
         }
 
-        (sessions, tool_registry)
+        (sessions, tool_registry, unreachable)
     }
 
     /// Execute an agent turn using persistent running history and enforcing output text settings
@@ -978,13 +1473,20 @@ impl AgentExecutor {
         // Cancel any active sleep timer for this agent so it doesn't retrigger or conflict
         global_timer_manager().cancel_timer(&self.agent.id, "new turn started");
 
-        let (wake_tx, mut wake_rx) = mpsc::unbounded_channel::<String>();
         // Shared live context pressure; updated as the transcript grows and
         // read by the spawned MCP notification tasks.
         let live_chars = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (sessions, tool_registry) = self
-            .setup_mcp_sessions(wake_tx, Arc::clone(&live_chars))
-            .await;
+        let (sessions, tool_registry, unreachable_servers) =
+            self.setup_mcp_sessions(Arc::clone(&live_chars)).await;
+
+        // Every turn spawns its own plugin processes. Nothing else reaps them:
+        // the notification listener holds a session `Arc` (so the transport is
+        // never dropped) and the child is not `kill_on_drop`. Because
+        // `run_turn` returns early on many error paths (no provider, provider
+        // failure, cancellation), cleanup has to be tied to scope, not to the
+        // end of the function. Leaked children keep long-polling and fight the
+        // next turn for a single-consumer API such as Telegram's getUpdates.
+        let _session_guard = SessionGuard::new(&sessions);
 
         let mut allowed_tools: Vec<String> = tool_registry.keys().cloned().collect();
         allowed_tools.sort();
@@ -1030,13 +1532,13 @@ impl AgentExecutor {
             let initial_sys = self
                 .db
                 .append_agent_history(
-					&self.agent.id,
-					"system",
-					&system_text,
-					None,
-					None,
-					Some(base_template),
-				)
+                    &self.agent.id,
+                    "system",
+                    &system_text,
+                    None,
+                    None,
+                    Some(base_template),
+                )
                 .await
                 .map_err(|e| e.to_string())?;
 
@@ -1127,7 +1629,11 @@ impl AgentExecutor {
         let normalized = normalize_history_transcript(&db_history);
         let mut messages_override: Option<Vec<Value>> = None;
         if normalized_changed(&db_history, &normalized) {
-            match self.db.replace_agent_history(&self.agent.id, &normalized).await {
+            match self
+                .db
+                .replace_agent_history(&self.agent.id, &normalized)
+                .await
+            {
                 Ok(()) => {
                     warn!(
                         "Repaired inconsistent tool-call history for agent '{}' ({} rows)",
@@ -1234,8 +1740,12 @@ impl AgentExecutor {
 
         let mut final_response = String::new();
         let max_iterations = 8;
+        let mut turn_superseded = false;
 
         for _iteration in 0..max_iterations {
+            if turn_superseded {
+                break;
+            }
             // Publish live context pressure for event headers (MCP push tasks
             // read this from a detached spawned task).
             live_chars.store(
@@ -1293,11 +1803,9 @@ impl AgentExecutor {
             // Check Output Text Permission when no tool calls are made
             if !has_tool_calls {
                 if !self.agent.allow_output_text {
-                    let error_msg = self
-                        .agent
-                        .output_text_error_message
-                        .as_deref()
-                        .unwrap_or("Output Text is not allowed, consider use correct tool or sleep.");
+                    let error_msg = self.agent.output_text_error_message.as_deref().unwrap_or(
+                        "Output Text is not allowed, consider use correct tool or sleep.",
+                    );
 
                     self.emit(AgentEvent::TextDisallowed {
                         agent_id: self.agent.id.clone(),
@@ -1323,19 +1831,19 @@ impl AgentExecutor {
                             None,
                         )
                         .await;
-                    self.record_transcript("assistant", content_str, None, None, "turn", turn_number)
-                        .await;
+                    self.record_transcript(
+                        "assistant",
+                        content_str,
+                        None,
+                        None,
+                        "turn",
+                        turn_number,
+                    )
+                    .await;
 
                     let _ = self
                         .db
-                        .append_agent_history(
-                            &self.agent.id,
-                            "user",
-                            error_msg,
-                            None,
-                            None,
-                            None,
-                        )
+                        .append_agent_history(&self.agent.id, "user", error_msg, None, None, None)
                         .await;
                     self.record_transcript("user", error_msg, None, None, "turn", turn_number)
                         .await;
@@ -1355,8 +1863,15 @@ impl AgentExecutor {
                             None,
                         )
                         .await;
-                    self.record_transcript("assistant", content_str, None, None, "turn", turn_number)
-                        .await;
+                    self.record_transcript(
+                        "assistant",
+                        content_str,
+                        None,
+                        None,
+                        "turn",
+                        turn_number,
+                    )
+                    .await;
                     break;
                 }
             }
@@ -1390,8 +1905,67 @@ impl AgentExecutor {
                     let call_id = call["id"].as_str().unwrap_or("call_0").to_string();
                     let fn_name = call["function"]["name"].as_str().unwrap_or("");
                     let fn_args_str = call["function"]["arguments"].as_str().unwrap_or("{}");
-                    let fn_args: Value =
-                        serde_json::from_str(fn_args_str).unwrap_or(json!({}));
+                    // Models routinely emit slightly malformed argument JSON.
+                    // Turning that into `{}` re-attributes the failure to the
+                    // tool ("missing 'query'"), so the model retries the same
+                    // broken call forever. Repair it instead, and when the
+                    // repair fails say *that*.
+                    let fn_args = match serde_json::from_str::<Value>(fn_args_str) {
+                        Ok(value) if value.is_object() => value,
+                        Ok(value) => {
+                            // A model sometimes double-encodes the object as a
+                            // string; unwrap that one level.
+                            match value
+                                .as_str()
+                                .and_then(|inner| serde_json::from_str::<Value>(inner).ok())
+                            {
+                                Some(inner) if inner.is_object() => inner,
+                                _ => json!({}),
+                            }
+                        }
+                        Err(_) => json!({}),
+                    };
+                    let fn_args_parse_error = fn_args_str.trim() != "{}"
+                        && serde_json::from_str::<Value>(fn_args_str).is_err();
+
+                    if turn_superseded {
+                        let err_val = json!({
+                            "error": "This tool call was not executed because the turn was interrupted."
+                        });
+                        let (event_payload, event_truncated) =
+                            self.truncate_event_payload(&err_val);
+                        self.emit_with_context(
+                            AgentEvent::ToolCallCompleted {
+                                agent_id: self.agent.id.clone(),
+                                call_id: call_id.clone(),
+                                tool_name: fn_name.to_string(),
+                                result: event_payload,
+                                success: false,
+                                response_id: None,
+                                truncated: event_truncated,
+                            },
+                            &messages,
+                        );
+                        let tool_content_str = err_val.to_string();
+                        let _ = self
+                            .db
+                            .append_agent_history(
+                                &self.agent.id,
+                                "tool",
+                                &tool_content_str,
+                                None,
+                                Some(&call_id),
+                                None,
+                            )
+                            .await;
+                        messages.push(json!({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "name": fn_name,
+                            "content": tool_content_str
+                        }));
+                        continue;
+                    }
 
                     self.emit(AgentEvent::ToolCallStarted {
                         agent_id: self.agent.id.clone(),
@@ -1406,212 +1980,327 @@ impl AgentExecutor {
                     let mut truncation_override: Option<
                         crate::runtime::meta_tools::TruncationConfig,
                     > = None;
-                    let (result_value, success) = match fn_name {
-                        "search_tools" => {
-                            let query = fn_args["query"].as_str().unwrap_or("").to_lowercase();
-                            let limit = fn_args["limit"].as_u64().unwrap_or(10) as usize;
-
-                            let mut matches = vec![];
-                            for (unique_name, entry) in &tool_registry {
-                                let desc = entry.tool.description.as_deref().unwrap_or("").to_lowercase();
-                                if unique_name.to_lowercase().contains(&query)
-                                    || desc.contains(&query)
-                                    || entry.original_tool_name.to_lowercase().contains(&query)
-                                {
-                                    matches.push(json!({
-                                        "name": unique_name,
-                                        "server_alias": entry.server_alias,
-                                        "original_name": entry.original_tool_name,
-                                        "description": entry.tool.description
-                                    }));
+                    // A call whose arguments could not be parsed is answered
+                    // immediately with an actionable error. Dispatching it with
+                    // `{}` would blame the tool for a malformed request and
+                    // teach the model the wrong cause.
+                    let (result_value, success) = if fn_args_parse_error {
+                        (
+                            json!({
+                                "error": {
+                                    "code": "invalid_arguments",
+                                    "message": format!(
+                                        "The arguments for '{fn_name}' were not valid JSON, so the call was not executed."
+                                    ),
+                                    "retryable": true,
+                                    "hint": "Re-emit the tool call with a JSON object as its arguments. Do not double-encode the object as a string."
                                 }
-                                if matches.len() >= limit {
-                                    break;
+                            }),
+                            false,
+                        )
+                    } else {
+                        match fn_name {
+                            "search_tools" => {
+                                let query = fn_args["query"].as_str().unwrap_or("").to_lowercase();
+                                let limit = fn_args["limit"].as_u64().unwrap_or(10) as usize;
+
+                                let mut matches = vec![];
+                                for (unique_name, entry) in &tool_registry {
+                                    let desc = entry
+                                        .tool
+                                        .description
+                                        .as_deref()
+                                        .unwrap_or("")
+                                        .to_lowercase();
+                                    if unique_name.to_lowercase().contains(&query)
+                                        || desc.contains(&query)
+                                        || entry.original_tool_name.to_lowercase().contains(&query)
+                                    {
+                                        matches.push(json!({
+                                            "name": unique_name,
+                                            "server_alias": entry.server_alias,
+                                            "original_name": entry.original_tool_name,
+                                            "description": entry.tool.description
+                                        }));
+                                    }
+                                    if matches.len() >= limit {
+                                        break;
+                                    }
+                                }
+
+                                self.emit(AgentEvent::ToolSearch {
+                                    agent_id: self.agent.id.clone(),
+                                    query: query.clone(),
+                                    results_count: matches.len(),
+                                });
+
+                                // Distinguish "no such tool" from "a plugin
+                                // failed to enumerate". A bare empty list made
+                                // a transient plugin failure look like the tool
+                                // did not exist, which is what caused the agent
+                                // to retry identical searches.
+                                let mut out = json!({ "tools": matches });
+                                if !unreachable_servers.is_empty() {
+                                    out["plugins_unavailable"] = json!(unreachable_servers);
+                                    out["note"] = json!(
+                                        "Some plugins could not be queried this turn;                                          their tools may exist but are not shown.                                          Retry, or inspect them with `get_tool_schema`."
+                                    );
+                                }
+                                (out, true)
+                            }
+
+                            "get_tool_schema" => {
+                                let name = fn_args["name"].as_str().unwrap_or("");
+                                self.emit(AgentEvent::ToolSchemaFetched {
+                                    agent_id: self.agent.id.clone(),
+                                    tool_name: name.to_string(),
+                                });
+
+                                match resolve_tool(&tool_registry, name) {
+                                    Ok(entry) => {
+                                        let unique_name = format!(
+                                            "{}.{}",
+                                            entry.server_alias, entry.original_tool_name
+                                        );
+                                        (
+                                            json!({
+                                                "name": unique_name,
+                                                "original_name": entry.original_tool_name,
+                                                "server_alias": entry.server_alias,
+                                                "description": entry.tool.description,
+                                                "inputSchema": entry.tool.input_schema
+                                            }),
+                                            true,
+                                        )
+                                    }
+                                    Err(err) => (json!({ "error": err }), false),
                                 }
                             }
 
-                            self.emit(AgentEvent::ToolSearch {
-                                agent_id: self.agent.id.clone(),
-                                query: query.clone(),
-                                results_count: matches.len(),
-                            });
+                            "call_tool" => {
+                                let name = fn_args["name"].as_str().unwrap_or("");
+                                let arguments =
+                                    fn_args.get("arguments").cloned().unwrap_or(json!({}));
 
-                            (json!({ "tools": matches }), true)
-                        }
+                                // Optional per-call head/body/tail overrides. Any
+                                // omitted segment falls back to the agent default.
+                                let default_cfg = self.truncation_config();
+                                let pick = |key: &str, fallback: usize| -> usize {
+                                    fn_args
+                                        .get(key)
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as usize)
+                                        .unwrap_or(fallback)
+                                };
+                                if fn_args.get("head").is_some()
+                                    || fn_args.get("body").is_some()
+                                    || fn_args.get("tail").is_some()
+                                {
+                                    truncation_override =
+                                        Some(crate::runtime::meta_tools::TruncationConfig {
+                                            head: pick("head", default_cfg.head),
+                                            body: pick("body", default_cfg.body),
+                                            tail: pick("tail", default_cfg.tail),
+                                        });
+                                }
 
-                        "get_tool_schema" => {
-                            let name = fn_args["name"].as_str().unwrap_or("");
-                            self.emit(AgentEvent::ToolSchemaFetched {
-                                agent_id: self.agent.id.clone(),
-                                tool_name: name.to_string(),
-                            });
+                                match resolve_tool(&tool_registry, name) {
+                                    Ok(entry) => {
+                                        // Arguments are forwarded exactly as the model
+                                        // supplied them. The runtime must not know any
+                                        // plugin's schema; tools that need the caller
+                                        // read the host-stamped `_sender_*` metadata that
+                                        // the HTTP proxy adds.
+                                        //
+                                        // Agent-initiated calls have no authenticated
+                                        // human behind them, so nothing is stamped here
+                                        // and plugins must treat a missing sender as
+                                        // "the agent itself".
+                                        if let Some(session) = sessions.get(&entry.server_id) {
+                                            let mut final_args = arguments;
+                                            if let Some(map) = final_args.as_object_mut() {
+                                                map.entry("agent_id".to_string())
+                                                    .or_insert_with(|| json!(self.agent.id));
+                                            }
+                                            match session
+                                                .call_tool(&entry.original_tool_name, final_args)
+                                                .await
+                                            {
+                                                Ok(res) => (res, true),
+                                                Err(e) => {
+                                                    (json!({ "error": e.to_string() }), false)
+                                                }
+                                            }
+                                        } else {
+                                            (
+                                                json!({ "error": "MCP server session not active" }),
+                                                false,
+                                            )
+                                        }
+                                    }
+                                    Err(err) => (json!({ "error": err }), false),
+                                }
+                            }
 
-                            match resolve_tool(&tool_registry, name) {
-                                Ok(entry) => {
-                                    let unique_name = format!("{}.{}", entry.server_alias, entry.original_tool_name);
+                            "history_search" => {
+                                let pattern = fn_args["regex"].as_str().unwrap_or("");
+                                let limit = fn_args["limit"].as_u64().unwrap_or(20) as usize;
+
+                                if pattern.is_empty() {
+                                    (json!({ "error": "regex must not be empty" }), false)
+                                } else {
+                                    match self
+                                        .db
+                                        .search_transcript(&self.agent.id, pattern, limit)
+                                        .await
+                                    {
+                                        Ok(hits) => {
+                                            let count = hits.len();
+                                            (json!({ "matches": hits, "count": count }), true)
+                                        }
+                                        Err(e) => (
+                                            json!({ "error": format!("history_search failed: {}", e) }),
+                                            false,
+                                        ),
+                                    }
+                                }
+                            }
+
+                            "history_inspect" => {
+                                let id = fn_args["id"].as_str().unwrap_or("");
+                                let from = fn_args["from"].as_u64().unwrap_or(0) as usize;
+                                let to = fn_args["to"]
+                                    .as_u64()
+                                    .map(|t| t as usize)
+                                    .unwrap_or(from.saturating_add(2000));
+
+                                if id.is_empty() {
+                                    (json!({ "error": "id must not be empty" }), false)
+                                } else {
+                                    match self
+                                        .db
+                                        .inspect_transcript(&self.agent.id, id, from, to)
+                                        .await
+                                    {
+                                        Ok(Some((total, slice))) => (
+                                            json!({
+                                                "id": id,
+                                                "from": from,
+                                                "to": to,
+                                                "total": total,
+                                                "content": slice,
+                                            }),
+                                            true,
+                                        ),
+                                        Ok(None) => (
+                                            json!({ "error": format!("No history entry with id '{}'", id) }),
+                                            false,
+                                        ),
+                                        Err(e) => (
+                                            json!({ "error": format!("history_inspect failed: {}", e) }),
+                                            false,
+                                        ),
+                                    }
+                                }
+                            }
+
+                            "list_servers" => {
+                                let list: Vec<Value> = self
+                                    .mcp_servers
+                                    .iter()
+                                    .map(|s| {
+                                        json!({
+                                            "id": s.id,
+                                            "name": s.name,
+                                            "transport": s.transport,
+                                            "active": sessions.contains_key(&s.id)
+                                        })
+                                    })
+                                    .collect();
+                                (json!({ "servers": list }), true)
+                            }
+
+                            "setMemory" | "set_memory" | "instructionsWrite" | "instructions_write" => {
+                                let content_str = fn_args["content"].as_str().unwrap_or("");
+                                let char_count = content_str.chars().count();
+
+                                if char_count > MAX_MEMORY_CHARS {
                                     (
                                         json!({
-                                            "name": unique_name,
-                                            "original_name": entry.original_tool_name,
-                                            "server_alias": entry.server_alias,
-                                            "description": entry.tool.description,
-                                            "inputSchema": entry.tool.input_schema
+                                            "error": format!(
+                                                "Memory limit exceeded: new content has {} characters, exceeding the 5,000 character maximum limit. Rejected.",
+                                                char_count
+                                            )
                                         }),
-                                        true,
+                                        false,
                                     )
-                                }
-                                Err(err) => (json!({ "error": err }), false),
-                            }
-                        }
+                                } else {
+                                    let provided_hash = fn_args
+                                        .get("currentHash")
+                                        .or_else(|| fn_args.get("current_hash"))
+                                        .and_then(|h| h.as_str())
+                                        .unwrap_or("");
 
-                        "call_tool" => {
-                            let name = fn_args["name"].as_str().unwrap_or("");
-                            let arguments = fn_args.get("arguments").cloned().unwrap_or(json!({}));
+                                    let mem =
+                                        self.db.get_agent_memory(&self.agent.id).await.unwrap();
 
-                            // Optional per-call head/body/tail overrides. Any
-                            // omitted segment falls back to the agent default.
-                            let default_cfg = self.truncation_config();
-                            let pick = |key: &str, fallback: usize| -> usize {
-                                fn_args
-                                    .get(key)
-                                    .and_then(|v| v.as_u64())
-                                    .map(|v| v as usize)
-                                    .unwrap_or(fallback)
-                            };
-                            if fn_args.get("head").is_some()
-                                || fn_args.get("body").is_some()
-                                || fn_args.get("tail").is_some()
-                            {
-                                truncation_override = Some(
-                                    crate::runtime::meta_tools::TruncationConfig {
-                                        head: pick("head", default_cfg.head),
-                                        body: pick("body", default_cfg.body),
-                                        tail: pick("tail", default_cfg.tail),
-                                    },
-                                );
-                            }
-
-                            match resolve_tool(&tool_registry, name) {
-                                Ok(entry) => {
-                                    // Arguments are forwarded exactly as the model
-                                    // supplied them. The runtime must not know any
-                                    // plugin's schema; tools that need the caller
-                                    // read the host-stamped `_sender_*` metadata that
-                                    // the HTTP proxy adds.
-                                    //
-                                    // Agent-initiated calls have no authenticated
-                                    // human behind them, so nothing is stamped here
-                                    // and plugins must treat a missing sender as
-                                    // "the agent itself".
-                                    if let Some(session) = sessions.get(&entry.server_id) {
-                                        match session.call_tool(&entry.original_tool_name, arguments).await {
-                                            Ok(res) => (res, true),
-                                            Err(e) => (json!({ "error": e.to_string() }), false),
-                                        }
-                                    } else {
+                                    if mem.hash != provided_hash {
                                         (
-                                            json!({ "error": "MCP server session not active" }),
+                                            json!({
+                                                "error": format!(
+                                                    "Hash mismatch: provided currentHash '{}' does not match actual memory hash '{}'. The memory may have been modified. Please call instructionsRead() to inspect the current untruncated content and hash.",
+                                                    provided_hash, mem.hash
+                                                )
+                                            }),
                                             false,
                                         )
+                                    } else {
+                                        let new_hash = calculate_memory_hash(content_str);
+                                        // A discarded write result here would report
+                                        // success for memory that was never stored --
+                                        // the exact silent-degradation shape that makes
+                                        // an agent distrust a correct call. Propagate.
+                                        match self
+                                            .db
+                                            .set_agent_memory(
+                                                &self.agent.id,
+                                                content_str,
+                                                &new_hash,
+                                            )
+                                            .await
+                                        {
+                                            Ok(_) => {
+                                                self.emit(AgentEvent::MemoryUpdated {
+                                                    agent_id: self.agent.id.clone(),
+                                                    updated_hash: new_hash.clone(),
+                                                    char_count,
+                                                });
+
+                                                (
+                                                    json!({
+                                                        "success": true,
+                                                        "updated_hash": new_hash,
+                                                        "character_count": char_count
+                                                    }),
+                                                    true,
+                                                )
+                                            }
+                                            Err(e) => (
+                                                json!({
+                                                    "error": format!(
+                                                        "Memory was not saved: {e}. Nothing was stored; retry the call."
+                                                    )
+                                                }),
+                                                false,
+                                            ),
+                                        }
                                     }
                                 }
-                                Err(err) => (json!({ "error": err }), false),
                             }
-                        }
 
-                        "history_search" => {
-                            let pattern = fn_args["regex"].as_str().unwrap_or("");
-                            let limit = fn_args["limit"].as_u64().unwrap_or(20) as usize;
-
-                            if pattern.is_empty() {
-                                (json!({ "error": "regex must not be empty" }), false)
-                            } else {
-                                match self
-                                    .db
-                                    .search_transcript(&self.agent.id, pattern, limit)
-                                    .await
-                                {
-                                    Ok(hits) => {
-                                        let count = hits.len();
-                                        (json!({ "matches": hits, "count": count }), true)
-                                    }
-                                    Err(e) => (
-                                        json!({ "error": format!("history_search failed: {}", e) }),
-                                        false,
-                                    ),
-                                }
-                            }
-                        }
-
-                        "history_inspect" => {
-                            let id = fn_args["id"].as_str().unwrap_or("");
-                            let from = fn_args["from"].as_u64().unwrap_or(0) as usize;
-                            let to = fn_args["to"]
-                                .as_u64()
-                                .map(|t| t as usize)
-                                .unwrap_or(from.saturating_add(2000));
-
-                            if id.is_empty() {
-                                (json!({ "error": "id must not be empty" }), false)
-                            } else {
-                                match self
-                                    .db
-                                    .inspect_transcript(&self.agent.id, id, from, to)
-                                    .await
-                                {
-                                    Ok(Some((total, slice))) => (
-                                        json!({
-                                            "id": id,
-                                            "from": from,
-                                            "to": to,
-                                            "total": total,
-                                            "content": slice,
-                                        }),
-                                        true,
-                                    ),
-                                    Ok(None) => (
-                                        json!({ "error": format!("No history entry with id '{}'", id) }),
-                                        false,
-                                    ),
-                                    Err(e) => (
-                                        json!({ "error": format!("history_inspect failed: {}", e) }),
-                                        false,
-                                    ),
-                                }
-                            }
-                        }
-
-                        "list_servers" => {
-                            let list: Vec<Value> = self
-                                .mcp_servers
-                                .iter()
-                                .map(|s| {
-                                    json!({
-                                        "id": s.id,
-                                        "name": s.name,
-                                        "transport": s.transport,
-                                        "active": sessions.contains_key(&s.id)
-                                    })
-                                })
-                                .collect();
-                            (json!({ "servers": list }), true)
-                        }
-
-                        "setMemory" | "set_memory" => {
-                            let content_str = fn_args["content"].as_str().unwrap_or("");
-                            let char_count = content_str.chars().count();
-
-                            if char_count > MAX_MEMORY_CHARS {
-                                (
-                                    json!({
-                                        "error": format!(
-                                            "Memory limit exceeded: new content has {} characters, exceeding the 5,000 character maximum limit. Rejected.",
-                                            char_count
-                                        )
-                                    }),
-                                    false,
-                                )
-                            } else {
+                            "editMemory" | "edit_memory" | "instructionsEdit" | "instructions_edit" => {
+                                let search = fn_args["search"].as_str().unwrap_or("");
+                                let replace = fn_args["replace"].as_str().unwrap_or("");
                                 let provided_hash = fn_args
                                     .get("currentHash")
                                     .or_else(|| fn_args.get("current_hash"))
@@ -1624,361 +2313,354 @@ impl AgentExecutor {
                                     (
                                         json!({
                                             "error": format!(
-                                                "Hash mismatch: provided currentHash '{}' does not match actual memory hash '{}'. The memory may have been modified. Please call readMemory() to inspect current untruncated content and hash.",
+                                                "Hash mismatch: provided currentHash '{}' does not match actual memory hash '{}'. The memory may have been modified. Please call instructionsRead() to inspect the current untruncated content and hash.",
                                                 provided_hash, mem.hash
                                             )
                                         }),
                                         false,
                                     )
-                                } else {
-                                    let new_hash = calculate_memory_hash(content_str);
-                                    let _ = self
-                                        .db
-                                        .set_agent_memory(&self.agent.id, content_str, &new_hash)
-                                        .await;
-
-                                    self.emit(AgentEvent::MemoryUpdated {
-                                        agent_id: self.agent.id.clone(),
-                                        updated_hash: new_hash.clone(),
-                                        char_count,
-                                    });
-
-                                    (
-                                        json!({
-                                            "success": true,
-                                            "updated_hash": new_hash,
-                                            "character_count": char_count
-                                        }),
-                                        true,
-                                    )
-                                }
-                            }
-                        }
-
-                        "editMemory" | "edit_memory" => {
-                            let search = fn_args["search"].as_str().unwrap_or("");
-                            let replace = fn_args["replace"].as_str().unwrap_or("");
-                            let provided_hash = fn_args
-                                .get("currentHash")
-                                .or_else(|| fn_args.get("current_hash"))
-                                .and_then(|h| h.as_str())
-                                .unwrap_or("");
-
-                            let mem = self.db.get_agent_memory(&self.agent.id).await.unwrap();
-
-                            if mem.hash != provided_hash {
-                                (
-                                    json!({
-                                        "error": format!(
-                                            "Hash mismatch: provided currentHash '{}' does not match actual memory hash '{}'. The memory may have been modified. Please call readMemory() to inspect current untruncated content and hash.",
-                                            provided_hash, mem.hash
-                                        )
-                                    }),
-                                    false,
-                                )
-                            } else if !mem.content.contains(search) {
-                                (
-                                    json!({
-                                        "error": format!(
-                                            "Search segment '{}' not found in current memory.",
-                                            search
-                                        )
-                                    }),
-                                    false,
-                                )
-                            } else {
-                                let new_content = mem.content.replace(search, replace);
-                                let char_count = new_content.chars().count();
-
-                                if char_count > MAX_MEMORY_CHARS {
+                                } else if !mem.content.contains(search) {
                                     (
                                         json!({
                                             "error": format!(
-                                                "Memory limit exceeded: resulting content has {} characters, exceeding the 5,000 character maximum limit. Rejected.",
-                                                char_count
+                                                "Search segment '{}' not found in current memory.",
+                                                search
                                             )
                                         }),
                                         false,
                                     )
                                 } else {
-                                    let new_hash = calculate_memory_hash(&new_content);
-                                    let _ = self
-                                        .db
-                                        .set_agent_memory(&self.agent.id, &new_content, &new_hash)
-                                        .await;
+                                    let new_content = mem.content.replace(search, replace);
+                                    let char_count = new_content.chars().count();
 
-                                    self.emit(AgentEvent::MemoryUpdated {
-                                        agent_id: self.agent.id.clone(),
-                                        updated_hash: new_hash.clone(),
-                                        char_count,
-                                    });
+                                    if char_count > MAX_MEMORY_CHARS {
+                                        (
+                                            json!({
+                                                "error": format!(
+                                                    "Memory limit exceeded: resulting content has {} characters, exceeding the 5,000 character maximum limit. Rejected.",
+                                                    char_count
+                                                )
+                                            }),
+                                            false,
+                                        )
+                                    } else {
+                                        let new_hash = calculate_memory_hash(&new_content);
+                                        // Same rule as setMemory: never report a
+                                        // write that did not happen.
+                                        match self
+                                            .db
+                                            .set_agent_memory(
+                                                &self.agent.id,
+                                                &new_content,
+                                                &new_hash,
+                                            )
+                                            .await
+                                        {
+                                            Ok(_) => {
+                                                self.emit(AgentEvent::MemoryUpdated {
+                                                    agent_id: self.agent.id.clone(),
+                                                    updated_hash: new_hash.clone(),
+                                                    char_count,
+                                                });
 
-                                    (
-                                        json!({
-                                            "success": true,
-                                            "updated_hash": new_hash,
-                                            "character_count": char_count
-                                        }),
-                                        true,
-                                    )
+                                                (
+                                                    json!({
+                                                        "success": true,
+                                                        "updated_hash": new_hash,
+                                                        "character_count": char_count
+                                                    }),
+                                                    true,
+                                                )
+                                            }
+                                            Err(e) => (
+                                                json!({
+                                                    "error": format!(
+                                                        "Memory edit was not saved: {e}. Nothing changed; retry the call."
+                                                    )
+                                                }),
+                                                false,
+                                            ),
+                                        }
+                                    }
                                 }
                             }
-                        }
 
-                        "readMemory" | "read_memory" => {
-                            let mem = self.db.get_agent_memory(&self.agent.id).await.unwrap();
-                            let char_count = mem.content.chars().count();
+                            "readMemory" | "read_memory" | "instructionsRead" | "instructions_read" => {
+                                // Never panic a tool call: a DB hiccup must surface
+                                // as a retryable error, not a killed turn.
+                                match self.db.get_agent_memory(&self.agent.id).await {
+                                    Ok(mem) => {
+                                        let char_count = mem.content.chars().count();
 
-                            self.emit(AgentEvent::MemoryRead {
-                                agent_id: self.agent.id.clone(),
-                                current_hash: mem.hash.clone(),
-                                char_count,
-                            });
+                                        self.emit(AgentEvent::MemoryRead {
+                                            agent_id: self.agent.id.clone(),
+                                            current_hash: mem.hash.clone(),
+                                            char_count,
+                                        });
 
-                            (
-                                json!({
-                                    "content": mem.content,
-                                    "current_hash": mem.hash,
-                                    "character_count": char_count
-                                }),
-                                true,
-                            )
-                        }
+                                        (
+                                            json!({
+                                                "content": mem.content,
+                                                "current_hash": mem.hash,
+                                                "character_count": char_count
+                                            }),
+                                            true,
+                                        )
+                                    }
+                                    Err(e) => (
+                                        json!({
+                                            "error": format!(
+                                                "Could not read memory: {e}. This is a host storage error; retry the call."
+                                            )
+                                        }),
+                                        false,
+                                    ),
+                                }
+                            }
 
-                        "compact" => {
-                            let mem = self.db.get_agent_memory(&self.agent.id).await.unwrap();
+                            "memoryWrite" | "memory_write" | "memoryNodeWrite" | "memory_node_write" => self.memory_write(&fn_args).await,
 
-                            // Compaction is the designated context-rebuild
-                            // point: re-render the system instruction from the
-                            // agent's CURRENT system_prompt (which is where a
-                            // selected instruction preset lands), memory and
-                            // tool list, then install it as the new row 0.
-                            // This is the only place a changed preset becomes
-                            // live for an already-running agent, and it costs
-                            // no cache hit because history is rebuilt anyway.
-                            let base_template = self
-                                .agent
-                                .system_prompt
-                                .as_deref()
-                                .unwrap_or("You are {{agent.name}}, an autonomous AI assistant.");
+                            "memoryRead" | "memory_read" | "memoryNodeRead" | "memory_node_read" => self.memory_read(&fn_args).await,
 
-                            let rendered_instruction = interpolate_prompt(
-                                base_template,
-                                &self.agent.id,
-                                &self.agent.name,
-                                &self.agent.strategy,
-                                &mem.content,
-                                &mem.hash,
-                                &allowed_tools,
-                                max_history_chars,
-                            );
+                            "memorySearch" | "memory_search" | "memoryNodeSearch" | "memory_node_search" => self.memory_search(&fn_args).await,
 
-                            let summary = format!(
-                                "Earlier turns were compacted by the agent.\n\
+                            "memoryList" | "memory_list" | "memoryNodeList" | "memory_node_list" => self.memory_list(&fn_args).await,
+
+                            "memoryDelete" | "memory_delete" | "memoryNodeDelete" | "memory_node_delete" => self.memory_delete(&fn_args).await,
+
+                            "skillWrite" | "skill_write" => self.skill_write(&fn_args).await,
+
+                            "skillList" | "skill_list" => self.skill_list().await,
+
+                            "compact" => {
+                                let mem = match self.db.get_agent_memory(&self.agent.id).await {
+                                    Ok(mem) => mem,
+                                    Err(e) => {
+                                        return Err(format!(
+                                            "compaction aborted: could not read agent memory: {e}"
+                                        ));
+                                    }
+                                };
+
+                                // Compaction is the designated context-rebuild
+                                // point: re-render the system instruction from the
+                                // agent's CURRENT system_prompt (which is where a
+                                // selected instruction preset lands), memory and
+                                // tool list, then install it as the new row 0.
+                                // This is the only place a changed preset becomes
+                                // live for an already-running agent, and it costs
+                                // no cache hit because history is rebuilt anyway.
+                                let base_template = self.agent.system_prompt.as_deref().unwrap_or(
+                                    "You are {{agent.name}}, an autonomous AI assistant.",
+                                );
+
+                                let rendered_instruction = interpolate_prompt(
+                                    base_template,
+                                    &self.agent.id,
+                                    &self.agent.name,
+                                    &self.agent.strategy,
+                                    &mem.content,
+                                    &mem.hash,
+                                    &allowed_tools,
+                                    max_history_chars,
+                                );
+
+                                let summary = format!(
+                                    "Earlier turns were compacted by the agent.\n\
                                  Memory hash: {}\n\
                                  Memory:\n{}\n\
                                  You must continue by calling a tool. If you have\
                                  nothing to do right now, call `sleep`.",
-                                mem.hash, mem.content
-                            );
+                                    mem.hash, mem.content
+                                );
 
-                            let tool_reply = json!({
+                                let tool_reply = json!({
                                 "success": true,
                                 "message": "Running context compacted into a summary; original system prompt preserved.",
                                 "current_hash": mem.hash
                             })
                             .to_string();
 
-                            // Build the entire tool-call group up front: the
-                            // assistant message may carry sibling calls, and
-                            // every one of them must be answered adjacently.
-                            let skipped_notice = |name: &str| {
-                                json!({
+                                // Build the entire tool-call group up front: the
+                                // assistant message may carry sibling calls, and
+                                // every one of them must be answered adjacently.
+                                let skipped_notice = |name: &str| {
+                                    json!({
                                     "error": format!(
                                         "Tool call '{}' was skipped: history was compacted by this turn's earlier tool call.",
                                         name
                                     )
                                 })
                                 .to_string()
-                            };
-
-                            let mut group_calls: Vec<Value> = Vec::new();
-                            let mut replies: Vec<(String, String)> = Vec::new();
-                            for sibling in tool_calls.iter() {
-                                let sib_id =
-                                    sibling["id"].as_str().unwrap_or("call_0").to_string();
-                                let sib_name =
-                                    sibling["function"]["name"].as_str().unwrap_or("").to_string();
-                                let sib_content = if sib_id == call_id {
-                                    tool_reply.clone()
-                                } else {
-                                    skipped_notice(&sib_name)
                                 };
-                                group_calls.push(sibling.clone());
-                                replies.push((sib_id, sib_content));
-                            }
-                            if group_calls.is_empty() {
-                                group_calls.push(call.clone());
-                                replies.push((call_id.clone(), tool_reply.clone()));
-                            }
 
-                            let assistant_group = json!({
-                                "role": "assistant",
-                                "content": "",
-                                "tool_calls": group_calls
-                            });
+                                let mut group_calls: Vec<Value> = Vec::new();
+                                let mut replies: Vec<(String, String)> = Vec::new();
+                                for sibling in tool_calls.iter() {
+                                    let sib_id =
+                                        sibling["id"].as_str().unwrap_or("call_0").to_string();
+                                    let sib_name = sibling["function"]["name"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let sib_content = if sib_id == call_id {
+                                        tool_reply.clone()
+                                    } else {
+                                        skipped_notice(&sib_name)
+                                    };
+                                    group_calls.push(sibling.clone());
+                                    replies.push((sib_id, sib_content));
+                                }
+                                if group_calls.is_empty() {
+                                    group_calls.push(call.clone());
+                                    replies.push((call_id.clone(), tool_reply.clone()));
+                                }
 
-                            // Persist atomically in provider-valid order:
-                            // [base] [assistant] [tool replies] [summary]
-                            let _ = self
-                                .db
-                                .compact_agent_history(
-                                    &self.agent.id,
-                                    &rendered_instruction,
-                                    &summary,
-                                    Some(&assistant_group),
-                                    &replies,
+                                let assistant_group = json!({
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": group_calls
+                                });
+
+                                // Persist atomically in provider-valid order:
+                                // [base] [assistant] [tool replies] [summary]
+                                let _ = self
+                                    .db
+                                    .compact_agent_history(
+                                        &self.agent.id,
+                                        &rendered_instruction,
+                                        &summary,
+                                        Some(&assistant_group),
+                                        &replies,
+                                    )
+                                    .await;
+
+                                // Archived, never deleted: distillation keeps the
+                                // full pre-compaction sequence.
+                                self.record_transcript(
+                                    "system",
+                                    &format!("### [Compaction Summary]\n{}", summary),
+                                    None,
+                                    None,
+                                    "compaction",
+                                    turn_number,
                                 )
                                 .await;
 
-                            // Archived, never deleted: distillation keeps the
-                            // full pre-compaction sequence.
-                            self.record_transcript(
-                                "system",
-                                &format!("### [Compaction Summary]\n{}", summary),
-                                None,
-                                None,
-                                "compaction",
-                                turn_number,
-                            )
-                            .await;
-
-                            // In-memory context mirrors the persisted order:
-                            // row 0 is the freshly rendered instruction.
-                            let mut group_msgs: Vec<Value> = vec![json!({
-                                "role": "system",
-                                "content": rendered_instruction
-                            })];
-                            group_msgs.push(assistant_group);
-                            for (cid, content) in replies.iter() {
-                                group_msgs.push(json!({
-                                    "role": "tool",
-                                    "tool_call_id": cid,
-                                    "content": content
-                                }));
-                            }
-                            group_msgs.push(json!({
-                                "role": "system",
-                                "content": format!("### [Compaction Summary]\n{}", summary)
-                            }));
-
-                            messages = group_msgs;
-
-                            was_compacted = true;
-
-                            self.emit(AgentEvent::MemoryCompacted {
-                                agent_id: self.agent.id.clone(),
-                                current_hash: mem.hash.clone(),
-                            });
-
-                            (
-                                json!({
-                                    "success": true,
-                                    "message": "Running history compacted to system prompt, memory, and currentHash.",
-                                    "current_hash": mem.hash
-                                }),
-                                true,
-                            )
-                        }
-
-                        "sleep" => {
-                            let duration_str = fn_args
-                                .get("duration")
-                                .or_else(|| fn_args.get("time"))
-                                .and_then(|d| d.as_str())
-                                .unwrap_or("");
-
-                            let interruptible = fn_args
-                                .get("interruptible")
-                                .and_then(|i| i.as_bool())
-                                .unwrap_or(true);
-
-                            match parse_duration_string(duration_str) {
-                                Ok(dur) => {
-                                    self.emit(AgentEvent::AgentSleeping {
-                                        agent_id: self.agent.id.clone(),
-                                        duration: duration_str.to_string(),
-                                        interruptible,
-                                    });
-
-                                    let (cancel_tx, mut cancel_rx) =
-                                        tokio::sync::oneshot::channel::<String>();
-                                    // Strictly enforce single timer: cancelling any prior timer for this agent
-                                    global_timer_manager().register_timer(
-                                        &self.agent.id,
-                                        cancel_tx,
-                                        dur.as_secs(),
-                                    );
-
-                                    let was_interrupted: bool;
-                                    let wake_reason: String;
-
-                                    if interruptible {
-                                        tokio::select! {
-                                            _ = tokio::time::sleep(dur) => {
-                                                global_timer_manager().clear_timer(&self.agent.id);
-                                                was_interrupted = false;
-                                                wake_reason = "timer_completed".to_string();
-                                            }
-                                            Ok(reason) = &mut cancel_rx => {
-                                                was_interrupted = true;
-                                                wake_reason = format!("interrupted: {}", reason);
-                                            }
-                                            Some(reason) = wake_rx.recv() => {
-                                                was_interrupted = true;
-                                                wake_reason = format!("interrupted by {}", reason);
-                                                global_timer_manager().cancel_timer(&self.agent.id, &wake_reason);
-                                            }
-                                        }
-                                    } else {
-                                        tokio::select! {
-                                            _ = tokio::time::sleep(dur) => {
-                                                global_timer_manager().clear_timer(&self.agent.id);
-                                                was_interrupted = false;
-                                                wake_reason = "timer_completed".to_string();
-                                            }
-                                            Ok(reason) = &mut cancel_rx => {
-                                                was_interrupted = true;
-                                                wake_reason = format!("interrupted: {}", reason);
-                                            }
-                                        }
-                                    }
-
-                                    self.emit(AgentEvent::AgentWokeUp {
-                                        agent_id: self.agent.id.clone(),
-                                        reason: wake_reason.clone(),
-                                    });
-
-                                    (
-                                        json!({
-                                            "success": true,
-                                            "duration": duration_str,
-                                            "slept_seconds": dur.as_secs(),
-                                            "interrupted": was_interrupted,
-                                            "timer_cancelled": was_interrupted,
-                                            "wake_reason": wake_reason
-                                        }),
-                                        true,
-                                    )
+                                // In-memory context mirrors the persisted order:
+                                // row 0 is the freshly rendered instruction.
+                                let mut group_msgs: Vec<Value> = vec![json!({
+                                    "role": "system",
+                                    "content": rendered_instruction
+                                })];
+                                group_msgs.push(assistant_group);
+                                for (cid, content) in replies.iter() {
+                                    group_msgs.push(json!({
+                                        "role": "tool",
+                                        "tool_call_id": cid,
+                                        "content": content
+                                    }));
                                 }
-                                Err(err_str) => (json!({ "error": err_str }), false),
-                            }
-                        }
+                                group_msgs.push(json!({
+                                    "role": "system",
+                                    "content": format!("### [Compaction Summary]\n{}", summary)
+                                }));
 
-                        other => (
-                            json!({ "error": format!("Unknown meta-tool '{}'", other) }),
-                            false,
-                        ),
+                                messages = group_msgs;
+
+                                was_compacted = true;
+
+                                self.emit(AgentEvent::MemoryCompacted {
+                                    agent_id: self.agent.id.clone(),
+                                    current_hash: mem.hash.clone(),
+                                });
+
+                                (
+                                    json!({
+                                        "success": true,
+                                        "message": "Running history compacted to system prompt, memory, and currentHash.",
+                                        "current_hash": mem.hash
+                                    }),
+                                    true,
+                                )
+                            }
+
+                            "sleep" => {
+                                let duration_str = fn_args
+                                    .get("duration")
+                                    .or_else(|| fn_args.get("time"))
+                                    .and_then(|d| d.as_str())
+                                    .unwrap_or("");
+
+                                let interruptible = fn_args
+                                    .get("interruptible")
+                                    .and_then(|i| i.as_bool())
+                                    .unwrap_or(false);
+
+                                match parse_duration_string(duration_str) {
+                                    Ok(dur) => {
+                                        self.emit(AgentEvent::AgentSleeping {
+                                            agent_id: self.agent.id.clone(),
+                                            duration: duration_str.to_string(),
+                                            interruptible,
+                                        });
+
+                                        let (cancel_tx, mut cancel_rx) =
+                                            tokio::sync::oneshot::channel::<String>();
+                                        // Strictly enforce single timer: cancelling any prior timer for this agent
+                                        global_timer_manager().register_timer(
+                                            &self.agent.id,
+                                            cancel_tx,
+                                            dur.as_secs(),
+                                        );
+
+                                        let start_time = std::time::Instant::now();
+                                        let was_interrupted: bool;
+                                        let wake_reason: String;
+
+                                        tokio::select! {
+                                            _ = tokio::time::sleep(dur) => {
+                                                global_timer_manager().clear_timer(&self.agent.id);
+                                                was_interrupted = false;
+                                                wake_reason = "timer_completed".to_string();
+                                            }
+                                            Ok(reason) = &mut cancel_rx => {
+                                                was_interrupted = true;
+                                                wake_reason = format!("interrupted: {}", reason);
+                                                if reason == "new turn started" {
+                                                    turn_superseded = true;
+                                                }
+                                            }
+                                        }
+
+                                        let elapsed_secs = start_time.elapsed().as_secs();
+
+                                        self.emit(AgentEvent::AgentWokeUp {
+                                            agent_id: self.agent.id.clone(),
+                                            reason: wake_reason.clone(),
+                                        });
+
+                                        (
+                                            json!({
+                                                "success": true,
+                                                "duration": duration_str,
+                                                "slept_seconds": elapsed_secs,
+                                                "interrupted": was_interrupted,
+                                                "timer_cancelled": was_interrupted,
+                                                "wake_reason": wake_reason
+                                            }),
+                                            true,
+                                        )
+                                    }
+                                    Err(err_str) => (json!({ "error": err_str }), false),
+                                }
+                            }
+
+                            other => (
+                                json!({ "error": format!("Unknown meta-tool '{}'", other) }),
+                                false,
+                            ),
+                        }
                     };
 
                     // Emit only once the transcript row exists so the event can
@@ -2009,20 +2691,34 @@ impl AgentExecutor {
                             "history was compacted before this tool call was executed",
                         );
                     } else {
-                        let current_chars: usize = messages.iter().map(|m| {
-                            let content_len = m["content"].as_str().map(|s| s.chars().count()).unwrap_or(0);
-                            let tc_len = m.get("tool_calls").map(|tc| tc.to_string().chars().count()).unwrap_or(0);
-                            content_len + tc_len
-                        }).sum();
+                        let current_chars: usize = messages
+                            .iter()
+                            .map(|m| {
+                                let content_len = m["content"]
+                                    .as_str()
+                                    .map(|s| s.chars().count())
+                                    .unwrap_or(0);
+                                let tc_len = m
+                                    .get("tool_calls")
+                                    .map(|tc| tc.to_string().chars().count())
+                                    .unwrap_or(0);
+                                content_len + tc_len
+                            })
+                            .sum();
 
                         let enabled_hooks = self.agent.get_response_hooks();
-                        let rendered_hooks = render_response_hooks(&enabled_hooks, current_chars, max_history_chars);
+                        let rendered_hooks =
+                            render_response_hooks(&enabled_hooks, current_chars, max_history_chars);
 
                         // Full-fidelity text: goes to the append-only
                         // transcript, which is the source for distillation and
                         // for `history_inspect`.
                         let full_content_str = if !rendered_hooks.is_empty() {
-                            format!("{}\n\n[Response Hook]\n{}", result_value, rendered_hooks.join("\n"))
+                            format!(
+                                "{}\n\n[Response Hook]\n{}",
+                                result_value,
+                                rendered_hooks.join("\n")
+                            )
                         } else {
                             result_value.to_string()
                         };
@@ -2082,14 +2778,26 @@ impl AgentExecutor {
                         );
 
                         // Enforce max_running_history_chars limit
-                        let mut total_chars: usize = messages.iter().map(|m| {
-                            let content_len = m["content"].as_str().map(|s| s.chars().count()).unwrap_or(0);
-                            let tc_len = m.get("tool_calls").map(|tc| tc.to_string().chars().count()).unwrap_or(0);
-                            content_len + tc_len
-                        }).sum();
+                        let mut total_chars: usize = messages
+                            .iter()
+                            .map(|m| {
+                                let content_len = m["content"]
+                                    .as_str()
+                                    .map(|s| s.chars().count())
+                                    .unwrap_or(0);
+                                let tc_len = m
+                                    .get("tool_calls")
+                                    .map(|tc| tc.to_string().chars().count())
+                                    .unwrap_or(0);
+                                content_len + tc_len
+                            })
+                            .sum();
 
                         if total_chars > max_history_chars {
-                            let _ = self.db.prune_agent_history_to_limit(&self.agent.id, max_history_chars).await;
+                            let _ = self
+                                .db
+                                .prune_agent_history_to_limit(&self.agent.id, max_history_chars)
+                                .await;
 
                             // Trim whole atomic groups from the front (keeping the
                             // leading system message). Never remove an assistant
@@ -2110,12 +2818,14 @@ impl AgentExecutor {
                                             ids.iter().map(|s| s.as_str()).collect();
                                         while 1 + group_len < messages.len() {
                                             let follower = &messages[1 + group_len];
-                                            let is_member = follower.get("role").and_then(|r| r.as_str()) == Some("tool")
-                                                && follower
-                                                    .get("tool_call_id")
-                                                    .and_then(|t| t.as_str())
-                                                    .map(|id| pending.contains(id))
-                                                    .unwrap_or(false);
+                                            let is_member =
+                                                follower.get("role").and_then(|r| r.as_str())
+                                                    == Some("tool")
+                                                    && follower
+                                                        .get("tool_call_id")
+                                                        .and_then(|t| t.as_str())
+                                                        .map(|id| pending.contains(id))
+                                                        .unwrap_or(false);
                                             if !is_member {
                                                 break;
                                             }
@@ -2129,14 +2839,28 @@ impl AgentExecutor {
                                         break;
                                     }
                                     let removed = messages.remove(1);
-                                    let rem_len = removed["content"].as_str().map(|s| s.chars().count()).unwrap_or(0);
-                                    let rem_tc = removed.get("tool_calls").map(|tc| tc.to_string().chars().count()).unwrap_or(0);
+                                    let rem_len = removed["content"]
+                                        .as_str()
+                                        .map(|s| s.chars().count())
+                                        .unwrap_or(0);
+                                    let rem_tc = removed
+                                        .get("tool_calls")
+                                        .map(|tc| tc.to_string().chars().count())
+                                        .unwrap_or(0);
                                     total_chars = total_chars.saturating_sub(rem_len + rem_tc);
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            if turn_superseded {
+                info!(
+                    "Turn for agent {} was superseded by a newer turn; ending turn loop",
+                    self.agent.id
+                );
+                break;
             }
         }
 
@@ -2153,6 +2877,24 @@ impl AgentExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_tool_name_strips_a_redundant_alias_prefix() {
+        // Plugin `control` exposing `control_whoami` used to render as
+        // `control.control_whoami`; the model then had to guess the shape.
+        assert_eq!(compose_tool_name("control", "control_whoami"), "control.whoami");
+        assert_eq!(
+            compose_tool_name("telegram", "telegram_send_message"),
+            "telegram.send_message"
+        );
+        // Not prefixed: leave the name alone.
+        assert_eq!(compose_tool_name("chat", "send"), "chat.send");
+        // A tool whose name merely starts with the alias but is not the
+        // `<alias>_` prefix must not be truncated.
+        assert_eq!(compose_tool_name("a", "ab"), "a.ab");
+        // Degenerate: alias echoed exactly -> keep it rather than produce "x.".
+        assert_eq!(compose_tool_name("x", "x_"), "x.x_");
+    }
 
     #[test]
     fn test_resolve_tool_exact_and_fallback() {
@@ -2223,11 +2965,15 @@ mod tests {
 
         // Calling exact alias works
         assert_eq!(
-            resolve_tool(&registry, "telegram.chat_send").unwrap().server_id,
+            resolve_tool(&registry, "telegram.chat_send")
+                .unwrap()
+                .server_id,
             "srv_tg"
         );
         assert_eq!(
-            resolve_tool(&registry, "discord.chat_send").unwrap().server_id,
+            resolve_tool(&registry, "discord.chat_send")
+                .unwrap()
+                .server_id,
             "srv_dc"
         );
 
@@ -2254,7 +3000,10 @@ mod tests {
         assert_eq!(sanitized[0]["role"], "system");
         // Orphaned tool calls MUST be converted to system context to avoid Gemini functionResponse error
         assert_eq!(sanitized[1]["role"], "system");
-        assert!(sanitized[1]["content"].as_str().unwrap().contains("compacted"));
+        assert!(sanitized[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("compacted"));
         assert_eq!(sanitized[2]["role"], "system");
         assert_eq!(sanitized[3]["role"], "user");
     }
@@ -2317,7 +3066,12 @@ mod tests {
             let mut group: Vec<String> = Vec::new();
             let mut j = i + 1;
             while j < messages.len() && messages[j]["role"].as_str() == Some("tool") {
-                group.push(messages[j]["tool_call_id"].as_str().unwrap_or("").to_string());
+                group.push(
+                    messages[j]["tool_call_id"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                );
                 j += 1;
             }
 
@@ -2378,9 +3132,19 @@ mod tests {
             hist("system", "You are Nexura.", None, None),
             hist("system", "### [Compaction Summary]\nold", None, None),
             hist("assistant", "", Some(calls), None),
-            hist("tool", "{\"error\":\"This tool call was not executed because the turn was interrupted.\"}", None, Some("call_compact")),
+            hist(
+                "tool",
+                "{\"error\":\"This tool call was not executed because the turn was interrupted.\"}",
+                None,
+                Some("call_compact"),
+            ),
             hist("system", "### [Compaction Summary]\nold", None, None),
-            hist("system", "[Previous Tool Context]: {\"success\":true}", None, None),
+            hist(
+                "system",
+                "[Previous Tool Context]: {\"success\":true}",
+                None,
+                None,
+            ),
             hist("user", "hello?", None, None),
         ];
 
@@ -2423,7 +3187,10 @@ mod tests {
             .iter()
             .find(|m| m["tool_call_id"] == "call_gone")
             .expect("must be answered");
-        assert!(answered["content"].as_str().unwrap().contains("turn was interrupted"));
+        assert!(answered["content"]
+            .as_str()
+            .unwrap()
+            .contains("turn was interrupted"));
     }
 
     #[test]
@@ -2432,7 +3199,8 @@ mod tests {
         // two later assistant turns (the sleep call was interrupted by an MCP
         // push, so its reply landed late). Gemini pairs positionally per turn
         // and rejects this with "functionResponse turn ... order".
-        let calls = r#"[{"id":"call_a","type":"function","function":{"name":"sleep","arguments":"{}"}}]"#;
+        let calls =
+            r#"[{"id":"call_a","type":"function","function":{"name":"sleep","arguments":"{}"}}]"#;
         let calls_b = r#"[{"id":"call_b","type":"function","function":{"name":"computer.list","arguments":"{}"}}]"#;
         let calls_c = r#"[{"id":"call_c","type":"function","function":{"name":"computer.terminal","arguments":"{}"}}]"#;
         let history = vec![
@@ -2455,11 +3223,17 @@ mod tests {
         // context, preserving the information without breaking turn order.
         assert_eq!(normalized[2]["tool_calls"][0]["id"], "call_a");
         assert_eq!(normalized[3]["tool_call_id"], "call_a");
-        assert!(normalized[3]["content"].as_str().unwrap().contains("interrupted"));
+        assert!(normalized[3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("interrupted"));
         let late = normalized
             .iter()
             .find(|m| m["content"].as_str().unwrap_or("").contains("slept late"));
-        assert!(late.is_some(), "late reply content must be preserved as context");
+        assert!(
+            late.is_some(),
+            "late reply content must be preserved as context"
+        );
     }
 
     #[test]
@@ -2512,7 +3286,10 @@ mod tests {
         // call_y synthesized, duplicate call_x reply demoted to context.
         assert!(normalized.iter().any(|m| m["tool_call_id"] == "call_y"));
         assert_eq!(
-            normalized.iter().filter(|m| m["tool_call_id"] == "call_x").count(),
+            normalized
+                .iter()
+                .filter(|m| m["tool_call_id"] == "call_x")
+                .count(),
             1
         );
     }
@@ -2626,11 +3403,21 @@ mod tests {
     fn test_per_call_truncation_override() {
         use crate::runtime::meta_tools::{truncate_middle, TruncationConfig};
 
-        let text: String = (0..10_000).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let text: String = (0..10_000)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
 
         // A per-call override changes the retained budget.
-        let small = TruncationConfig { head: 100, body: 100, tail: 100 };
-        let large = TruncationConfig { head: 1000, body: 1000, tail: 1000 };
+        let small = TruncationConfig {
+            head: 100,
+            body: 100,
+            tail: 100,
+        };
+        let large = TruncationConfig {
+            head: 1000,
+            body: 1000,
+            tail: 1000,
+        };
 
         let a = truncate_middle(&text, small);
         let b = truncate_middle(&text, large);
@@ -2638,9 +3425,17 @@ mod tests {
         assert!(a.len() < b.len());
 
         // Disabling one segment works (0 = omit that segment).
-        let no_body = TruncationConfig { head: 10, body: 0, tail: 10 };
+        let no_body = TruncationConfig {
+            head: 10,
+            body: 0,
+            tail: 10,
+        };
         let out = truncate_middle(&text, no_body);
-        assert_eq!(out.matches("<<truncated:").count(), 1, "only the head/tail gap");
+        assert_eq!(
+            out.matches("<<truncated:").count(),
+            1,
+            "only the head/tail gap"
+        );
     }
 
     #[test]

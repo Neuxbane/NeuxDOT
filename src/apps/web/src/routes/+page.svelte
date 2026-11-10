@@ -11,16 +11,19 @@
 		type ResponseHook,
 		type InstructionPreset,
 		type AgentShare,
-		type AccountSearchResult
+		type AccountSearchResult,
+		type MemoryGraphNode
 	} from '$lib/api';
 	import { authState } from '$lib/stores/auth.svelte';
 	import { denyAll, resolvedPermissions } from '$lib/utils/permissions';
 	import { eventStore } from '$lib/stores/events.svelte';
 	import { navState } from '$lib/stores/nav.svelte';
+	import { agentsState } from '$lib/stores/agents.svelte';
 	import TerminalLog from '$lib/components/TerminalLog.svelte';
 	import ProviderSelect from '$lib/components/ProviderSelect.svelte';
 	import McpList from '$lib/components/McpList.svelte';
 	import McpAppIframe from '$lib/components/McpAppIframe.svelte';
+	import MemoryGraph from '$lib/components/MemoryGraph.svelte';
 	import Avatar from '$lib/components/Avatar.svelte';
 import AvatarCropModal from '$lib/components/AvatarCropModal.svelte';
 	import {
@@ -67,6 +70,7 @@ let agentAvatarPending = $state<File | null>(null);
 
 let agentMemory = $state<{ content: string; current_hash: string; character_count: number } | null>(null);
 	let showMemoryPreview = $state(false);
+	let memoryGraphNodes = $state<MemoryGraphNode[]>([]);
 
 	let bottomTab = $state<'terminal' | 'history'>('terminal');
 	let runningHistory = $state<any[]>([]);
@@ -248,10 +252,16 @@ shareError = e?.message || 'Failed to remove access.';
 		for (const srv of allMcpServers) {
 			if (srv.is_active === false) continue;
 			const perms = parsePluginPermissions(srv);
-			// An explicitly disabled UI hook hides the app; an empty/unreadable
-			// consent row must not, or the sidebar silently disagrees with the
-			// tool list that renders the same resource.
-			if (srv.permissions_json && !perms.ui.enabled) continue;
+			let explicitlyDisabled = false;
+			if (srv.permissions_json) {
+				try {
+					const stored = JSON.parse(srv.permissions_json);
+					if (stored?.ui && stored.ui.enabled === false) {
+						explicitlyDisabled = true;
+					}
+				} catch {}
+			}
+			if (explicitlyDisabled) continue;
 			if (srv.manifest_json) {
 				try {
 					const manifest = JSON.parse(srv.manifest_json);
@@ -286,8 +296,23 @@ shareError = e?.message || 'Failed to remove access.';
 				if (srv && srv.is_active === false) continue;
 				// A discovered resource with no matching server row still gets a
 				// conservative grant set: UI only, no identity, no storage.
-				const perms = srv ? parsePluginPermissions(srv) : denyAll();
-				if (srv?.permissions_json && !perms.ui.enabled) continue;
+				let perms = srv ? parsePluginPermissions(srv) : denyAll();
+				let explicitlyDisabled = false;
+				if (srv?.permissions_json) {
+					try {
+						const stored = JSON.parse(srv.permissions_json);
+						if (stored?.ui && stored.ui.enabled === false) {
+							explicitlyDisabled = true;
+						}
+					} catch {}
+				}
+				if (explicitlyDisabled) continue;
+				if (!perms.ui.enabled) {
+					perms = {
+						...perms,
+						ui: { enabled: true, resources: perms.ui.resources.length ? perms.ui.resources : ['*'] }
+					};
+				}
 				const key = `${res.mcp_id}:${uri}`;
 				map.set(key, {
 					pluginId: res.mcp_id,
@@ -314,8 +339,17 @@ shareError = e?.message || 'Failed to remove access.';
 		}
 	}
 
+	$effect(() => {
+		if (agent?.id && selectedMcpIds.length > 0) {
+			loadAgentMcpResources(agent.id);
+		} else if (selectedMcpIds.length === 0) {
+			agentResources = [];
+		}
+	});
+
 	function selectAnchor(anchorId: string) {
 		activePanel = 'config';
+		selectedMcpApp = null;
 		activeAnchor = anchorId;
 		// Mobile: choosing a section moves from level 2 (nav) to level 3 (content).
 		agentNavOpen = false;
@@ -325,34 +359,6 @@ shareError = e?.message || 'Failed to remove access.';
 				el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 			}
 		}, 20);
-	}
-
-	/**
-	 * Launch an MCP-App from the tool list. Resolves the same
-	 * `DiscoveredMcpApp` the sidebar builds, so both entry points open the
-	 * identical sandboxed viewer.
-	 */
-	function openMcpAppById(target: { mcpId: string; uri: string; name: string }) {
-		const found = sidebarMcpApps.find(
-			(a) => a.pluginId === target.mcpId && a.resourceUri === target.uri
-		);
-		if (found) {
-			selectMcpApp(found);
-			return;
-		}
-		// Not in the sidebar cache yet (just discovered): synthesise a minimal
-		// entry from the known server row rather than doing nothing.
-		const srv = allMcpServers.find((s) => s.id === target.mcpId);
-		if (!srv) return;
-		selectMcpApp({
-			pluginId: srv.id,
-			pluginName: srv.name,
-			transport: srv.transport,
-			resourceUri: target.uri,
-			title: target.name || srv.name,
-			permissions: parsePluginPermissions(srv),
-			isConnectedToAgent: selectedMcpIds.includes(srv.id)
-		});
 	}
 
 	async function selectMcpApp(app: DiscoveredMcpApp) {
@@ -369,9 +375,13 @@ shareError = e?.message || 'Failed to remove access.';
 	// Load data when agentId changes
 	$effect(() => {
 		if (agentId) {
+			activePanel = 'config';
+			selectedMcpApp = null;
 			loadAgentData(agentId);
 			eventStore.setAgent(agentId);
 		} else {
+			activePanel = 'config';
+			selectedMcpApp = null;
 			agent = null;
 			eventStore.setAgent(null);
 		}
@@ -432,11 +442,12 @@ triggerAutoSave();
 
 async function loadAgentData(id: string) {
 		try {
-			const [detail, provs, mcps, mem, hist] = await Promise.all([
+			const [detail, provs, mcps, mem, graph, hist] = await Promise.all([
 				api.agents.get(id),
 				api.providers.list(),
 				api.mcp.list(),
 				api.agents.getMemory(id).catch(() => null),
+				api.agents.getMemoryGraph(id).catch(() => null),
 				api.agents.getHistory(id).catch(() => [])
 			]);
 			// The access flags are returned alongside the agent, not inside it, so
@@ -459,6 +470,7 @@ agentShares = [];
 			allProviders = provs;
 			allMcpServers = mcps;
 			agentMemory = mem;
+			memoryGraphNodes = graph?.nodes ?? [];
 			runningHistory = hist;
 			maxRunningHistoryChars = agent.max_running_history_chars || 300000;
 			if (agent.response_hooks_json) {
@@ -485,7 +497,7 @@ agentShares = [];
 			} else {
 				responseHooks = [];
 			}
-			loadAgentMcpResources(id);
+			await loadAgentMcpResources(id);
 		} catch (e) {
 			console.error('Failed to load agent detail:', e);
 		}
@@ -518,6 +530,7 @@ async function reloadHistory() {
 		try {
 			runningHistory = await api.agents.getHistory(agent.id);
 			agentMemory = await api.agents.getMemory(agent.id).catch(() => null);
+			memoryGraphNodes = (await api.agents.getMemoryGraph(agent.id).catch(() => null))?.nodes ?? [];
 		} catch (e) {
 			console.error('Failed to reload history:', e);
 		}
@@ -568,6 +581,7 @@ function applyAgentAvatar(dataUrl: string) {
 agentAvatarPending = null;
 if (!agent) return;
 agent.avatar_url = dataUrl;
+agentsState.updateAgent(agent);
 triggerAutoSave();
 }
 
@@ -577,11 +591,13 @@ agentAvatarError = '';
 // undefined -> the patch sends '' which clears the picture server-side
 // (omitting the field would mean "leave unchanged").
 agent.avatar_url = undefined;
+agentsState.updateAgent({ id: agent.id, avatar_url: undefined });
 triggerAutoSave();
 }
 
 function triggerAutoSave() {
 		if (!agent) return;
+		agentsState.updateAgent(agent);
 		if (debounceTimer) clearTimeout(debounceTimer);
 
 		isSaving = true;
@@ -611,6 +627,7 @@ function triggerAutoSave() {
 					instruction_preset_id: agent.instruction_preset_id ?? ''
 				});
 				agent = updated;
+				agentsState.updateAgent(updated);
 				showSavedBadge();
 			} catch (e) {
 				console.error('Auto-save error:', e);
@@ -1014,7 +1031,7 @@ Shared
 
 			<!-- Main Content View -->
 			<main class="flex h-full flex-1 flex-col overflow-hidden">
-				{#if activePanel === 'config' || activePanel.startsWith('mcp-app:')}
+				{#if activePanel === 'config'}
 					<!-- Main Scrollable Configuration Area -->
 					<div id="agent-config-scroll" class="flex-1 overflow-y-auto px-4 py-5 space-y-5 sm:px-6 sm:py-6">
 			<!-- Settings Form -->
@@ -1351,7 +1368,7 @@ The base instruction row is refreshed in place, so your conversation history is 
 				</div>
 
 				<p class="text-[11px] text-zinc-500 dark:text-zinc-400">
-					Managed via <code>setMemory</code>, <code>editMemory</code>, <code>readMemory</code>, and <code>compact()</code> meta-tools. Guarded by hash verification and 5k max character limit.
+					Managed via <code>setMemory</code>, <code>editMemory</code>, <code>readMemory</code>, <code>memoryWrite</code>, <code>memorySearch</code>, <code>memoryList</code>, and <code>compact()</code> meta-tools. The block below is the legacy blob; the graph is the Obsidian-style key/value store with <code>[[wiki links]]</code>.
 				</p>
 
 				{#if showMemoryPreview}
@@ -1363,6 +1380,10 @@ The base instruction row is refreshed in place, so your conversation history is 
 						{/if}
 					</div>
 				{/if}
+
+				<div class="pt-1">
+					<MemoryGraph nodes={memoryGraphNodes} />
+				</div>
 			</section>
 			{/if}
 
@@ -1441,7 +1462,6 @@ The base instruction row is refreshed in place, so your conversation history is 
 						triggerAutoSave();
 						if (agent) setTimeout(() => loadAgentMcpResources(agent!.id), 600);
 					}}
-					onOpenApp={openMcpAppById}
 				/>
 			</section>
 			{/if}

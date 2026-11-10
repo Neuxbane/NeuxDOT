@@ -21,10 +21,7 @@ pub enum AgentEvent {
     },
 
     #[serde(rename = "tool_schema_fetched")]
-    ToolSchemaFetched {
-        agent_id: String,
-        tool_name: String,
-    },
+    ToolSchemaFetched { agent_id: String, tool_name: String },
 
     #[serde(rename = "tool_call_started")]
     ToolCallStarted {
@@ -60,16 +57,10 @@ pub enum AgentEvent {
     },
 
     #[serde(rename = "turn_started")]
-    TurnStarted {
-        agent_id: String,
-        turn_id: String,
-    },
+    TurnStarted { agent_id: String, turn_id: String },
 
     #[serde(rename = "turn_chunk")]
-    TurnChunk {
-        agent_id: String,
-        delta: String,
-    },
+    TurnChunk { agent_id: String, delta: String },
 
     #[serde(rename = "turn_completed")]
     TurnCompleted {
@@ -106,10 +97,7 @@ pub enum AgentEvent {
     },
 
     #[serde(rename = "agent_woke_up")]
-    AgentWokeUp {
-        agent_id: String,
-        reason: String,
-    },
+    AgentWokeUp { agent_id: String, reason: String },
 
     #[serde(rename = "text_disallowed")]
     TextDisallowed {
@@ -118,16 +106,10 @@ pub enum AgentEvent {
     },
 
     #[serde(rename = "error")]
-    AgentError {
-        agent_id: String,
-        message: String,
-    },
+    AgentError { agent_id: String, message: String },
 
     #[serde(rename = "info")]
-    AgentInfo {
-        agent_id: String,
-        message: String,
-    },
+    AgentInfo { agent_id: String, message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,17 +165,24 @@ mod tests {
         )
         .with_context(current, 300_000);
 
-        assert!(envelope.context.contains("ctx:30%"), "got {}", envelope.context);
+        assert!(
+            envelope.context.contains("ctx:30%"),
+            "got {}",
+            envelope.context
+        );
         assert!(envelope.context.ends_with("Z ctx:30%"));
         // The gauge updates are visible to the task on its next read.
         live.store(150_000, std::sync::atomic::Ordering::Relaxed);
-        let next = EventEnvelope::new("agent-1", AgentEvent::McpPushedNotification {
-            agent_id: "agent-1".into(),
-            mcp_id: "mcp-1".into(),
-            mcp_name: "Computer".into(),
-            method: "m".into(),
-            payload: serde_json::Value::Null,
-        })
+        let next = EventEnvelope::new(
+            "agent-1",
+            AgentEvent::McpPushedNotification {
+                agent_id: "agent-1".into(),
+                mcp_id: "mcp-1".into(),
+                mcp_name: "Computer".into(),
+                method: "m".into(),
+                payload: serde_json::Value::Null,
+            },
+        )
         .with_context(live.load(std::sync::atomic::Ordering::Relaxed), 300_000);
         assert!(next.context.ends_with("ctx:50%"), "got {}", next.context);
     }

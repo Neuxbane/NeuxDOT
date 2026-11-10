@@ -78,18 +78,68 @@ loading = false;
 }
 }
 
+function ensureBootstrapAgent(b: HostBridgeBootstrap): HostBridgeBootstrap {
+	if (!b.agent) {
+		b.agent = { id: agent.id };
+	} else if (!b.agent.id) {
+		b.agent.id = agent.id;
+	}
+	if (!b.agent.name && agent.name) {
+		b.agent.name = agent.name;
+	}
+	if (!b.agent.avatar && (agent.avatar_url || agent.avatar_color || agent.avatar_shape)) {
+		b.agent.avatar = {
+			url: agent.avatar_url,
+			color: agent.avatar_color,
+			shape: agent.avatar_shape
+		};
+	}
+	return b;
+}
+
+function ensureBootstrapIdentity(b: HostBridgeBootstrap): HostBridgeBootstrap {
+	ensureBootstrapAgent(b);
+	if (!b.user) {
+		b.user = {
+			id: authState.activeAccount?.id,
+			name: authState.displayName || authState.username,
+			avatar: {
+				url: authState.avatarUrl,
+				color: authState.avatarColor,
+				shape: authState.activeAccount?.avatarShape
+			}
+		};
+	} else {
+		if (!b.user.id && authState.activeAccount?.id) {
+			b.user.id = authState.activeAccount.id;
+		}
+		if (!b.user.name && (authState.displayName || authState.username)) {
+			b.user.name = authState.displayName || authState.username;
+		}
+		if (!b.user.avatar && (authState.avatarUrl || authState.avatarColor)) {
+			b.user.avatar = {
+				url: authState.avatarUrl,
+				color: authState.avatarColor,
+				shape: authState.activeAccount?.avatarShape
+			};
+		}
+	}
+	return b;
+}
+
 /**
  * Ask the server to build the bridge bootstrap (`GET /api/host/session`).
  * This is the API-proxy path: the browser never reads the profile or the
  * agent row to assemble identity itself.
  */
 async function resolveBootstrap(): Promise<HostBridgeBootstrap> {
-try {
-return await api.host.session(pluginId, agent.id, resourceUri);
-} catch (e) {
-console.warn('[McpAppIframe] /api/host/session unavailable, using local fallback', e);
-return buildLocalBootstrap();
-}
+	try {
+		const b = await api.host.session(pluginId, agent.id, resourceUri);
+		return ensureBootstrapIdentity(b);
+	} catch (e) {
+		console.warn('[McpAppIframe] /api/host/session unavailable, using local fallback', e);
+		return buildLocalBootstrap();
+	}
 }
 
 /**
@@ -98,27 +148,47 @@ return buildLocalBootstrap();
  * transient backend failure can never leak profile data into the sandbox.
  */
 function buildLocalBootstrap(): HostBridgeBootstrap {
-return {
-protocolVersion: '2025-03-26',
-app: { pluginId, pluginName, resourceUri, title },
-capabilities: [],
-permissions:
-permissions ??
-({
-ui: { enabled: false, resources: [] },
-storage: { get: false, set: false, delete: false, keys: [] },
-agent: { trigger: false, tools: false },
-identity: {
-'agent.name': false,
-'agent.profile_picture': false,
-'user.name': false,
-'user.profile_picture': false
-},
-process: false,
-network: false
-} satisfies PluginPermissions),
-context: { locale: null, theme: 'light' }
-};
+	return {
+		protocolVersion: '2025-03-26',
+		app: { pluginId, pluginName, resourceUri, title },
+		agent: {
+			id: agent.id,
+			name: agent.name,
+			avatar: {
+				url: agent.avatar_url,
+				color: agent.avatar_color,
+				shape: agent.avatar_shape
+			}
+		},
+		capabilities: [],
+		permissions:
+			permissions ??
+			({
+				ui: { enabled: false, resources: [] },
+				storage: { get: false, set: false, delete: false, keys: [] },
+				agent: { trigger: false, tools: false },
+				identity: {
+					'agent.name': false,
+					'agent.profile_picture': false,
+					'user.name': false,
+					'user.profile_picture': false
+				},
+				process: false,
+				network: { allow: [] },
+				elevated: false,
+				control: {
+					agents_read: false,
+					agents_write: false,
+					shares: false,
+					plugins_read: false,
+					plugins_write: false,
+					providers_read: false,
+					providers_write: false,
+					accounts: false
+				}
+			} satisfies PluginPermissions),
+		context: { locale: null, theme: 'light' }
+	};
 }
 
 /**
@@ -157,6 +227,7 @@ postToApp({ jsonrpc: '2.0', method: 'ui/history', params: { revision } });
 
 function pushContext() {
 if (!bootstrap) return;
+ensureBootstrapIdentity(bootstrap);
 postToApp({ jsonrpc: '2.0', method: 'ui/context', params: $state.snapshot(bootstrap) });
 }
 
@@ -264,7 +335,9 @@ postToApp({ jsonrpc: '2.0', id: data.id, error: err });
 
 try {
 if (data.method === 'ui/initialize') {
-reply($state.snapshot(bootstrap ?? (await resolveBootstrap())));
+const currentBootstrap = bootstrap ?? (await resolveBootstrap());
+ensureBootstrapIdentity(currentBootstrap);
+reply($state.snapshot(currentBootstrap));
 } else if (data.method === 'host/call') {
 const capability = data.params?.capability as Capability;
 reply(await handleHostCall(capability, data.params?.args));

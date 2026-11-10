@@ -41,7 +41,9 @@ impl AgentTimerManager {
                 "Cancelling existing sleep timer for agent {} (duration: {}s) to enforce single-timer invariant",
                 agent_id, existing.duration_secs
             );
-            let _ = existing.cancel_tx.send("cancelled: superseded by new timer".to_string());
+            let _ = existing
+                .cancel_tx
+                .send("cancelled: superseded by new timer".to_string());
         }
 
         timers.insert(
