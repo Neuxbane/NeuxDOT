@@ -118,6 +118,19 @@ not happen.** `setMemory` propagates a DB error instead of returning
 `compact` reports the memory hash it actually installed. Truncation always
 leaves a marker. Where the system cannot be certain, it says so.
 
+### 5. A turn is a lifetime, not a request.
+
+There is **no iteration cap**. `run_turn` loops until the agent decides it is
+done, a newer turn supersedes it, or a fatal error occurs. An agent is expected
+to run for hours or days: it works, calls `sleep`, wakes on its own timer or on
+a push event, and continues in the same turn. `sleep` is a yield point inside
+the loop — it blocks the turn, is interruptible, and does not end it.
+
+The only guard is a liveness one, not a work cap: if a tool-only agent replies
+with prose **5 times in a row** without calling any tool, the turn aborts loudly
+rather than re-feeding the same rejection forever. Any tool call (including
+`sleep`) resets that counter, so real long-horizon work is never truncated.
+
 ---
 
 ## 🏛️ Architecture
@@ -128,7 +141,7 @@ One server process. One SQLite file. Three crate boundaries.
 flowchart TB
     UI["SvelteKit 5 + Tauri<br/>desktop / web"] -->|REST + WebSocket| API
     API["Axum API<br/>JWT, DB-resolved role"] --> EXEC
-    EXEC["AgentExecutor<br/>one turn = ≤ 8 iterations"] --> ROUTER
+    EXEC["AgentExecutor<br/>one turn = unbounded<br/>sleep-paced"] --> ROUTER
     EXEC --> META["18 invariant meta-tools"]
     EXEC --> HIST["agent_history<br/>pruned, truncated"]
     EXEC --> TRAN["agent_transcript<br/>append-only"]
@@ -221,7 +234,7 @@ The model's entire permanent surface. Everything else is fetched on demand.
 
 | Tool | Does |
 | :--- | :--- |
-| `sleep` | `30s`/`1m`/`1h30m`/`1d`, no hard cap. **Blocks inside the turn** until the duration elapses; interruptible by a new turn or a push event. The timer registry is process-local, so a restart drops a pending wake. |
+| `sleep` | `30s`/`1m`/`1h30m`/`1d`, no hard cap. **Blocks inside the turn** (it is the agent's yield point, not a turn end), interruptible by a new turn or a push event. The timer registry is process-local, so a restart drops a pending wake. |
 
 **Archive (2)** — for text the model can no longer see
 
@@ -395,10 +408,11 @@ of the README can be trusted.
 | per-plugin consent, MCP-App host bridge, storage KV | **implemented** |
 | **WASM / Wasmtime extensions** | **not implemented** — the `extensions` table, `wasm_binary` column and `wasm` transport name exist as scaffolding only. No Wasmtime dependency, no host ABI, no runner. Do not rely on it. |
 | `sleep` persistence | **process-local** — a restart drops pending wakes |
+| unbounded turn length | **implemented** — no iteration cap; a turn runs until the agent stops, is superseded, or trips the 5-text-reply liveness guard |
 | automatic compaction | silent group prune; no model-written summary |
 | agent-to-agent messaging | **absent** — `server_*` can configure an agent, not converse with it |
 
-Test footprint: **175 tests** across core + server (`cargo test --workspace`).
+Test footprint: **176 tests** across core + server (`cargo test --workspace`).
 
 ---
 
@@ -451,7 +465,7 @@ omission rule for ungranted identity.
 ## 🧪 Testing
 
 ```bash
-cargo test --workspace          # 175 tests
+cargo test --workspace          # 176 tests
 pnpm --filter web check         # svelte-check
 pnpm --filter web build         # production bundle
 ```

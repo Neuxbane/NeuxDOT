@@ -18,6 +18,17 @@ use crate::mcp::custom_tools::CustomToolsTransport;
 use crate::mcp::http::HttpTransport;
 use crate::mcp::stdio::StdioTransport;
 
+/// How many consecutive turns a model may produce *no tool call* while output
+/// text is disallowed before the turn is abandoned.
+///
+/// This is a liveness guard, not a work cap. The turn loop itself is unbounded
+/// (an agent may run for as long as it keeps calling tools and sleeping), but a
+/// model that answers with prose to a tool-only agent would otherwise be re-fed
+/// the same rejection forever, burning tokens with zero progress. Any tool call
+/// — including `sleep` — resets the counter, so genuine long-horizon work is
+/// never truncated.
+const MAX_CONSECUTIVE_TEXT_REJECTIONS: u32 = 5;
+
 #[derive(Debug, Clone)]
 pub struct ToolRegistryEntry {
     pub server_id: String,
@@ -1739,12 +1750,38 @@ impl AgentExecutor {
         let meta_tools = get_meta_tools_definitions();
 
         let mut final_response = String::new();
-        let max_iterations = 8;
         let mut turn_superseded = false;
+        let mut iteration: u64 = 0;
+        // Counts consecutive model replies that contained no tool call while
+        // output text was disallowed. Reset by any tool call.
+        let mut text_rejections: u32 = 0;
 
-        for _iteration in 0..max_iterations {
+        // A turn is deliberately UNBOUNDED.
+        //
+        // The agent is built for long horizons: it paces itself with `sleep`
+        // (which blocks inside the turn and is interruptible), reacts to push
+        // events, and decides for itself when it is done. A fixed iteration
+        // cap silently truncated that work mid-thought — the turn just fell out
+        // of the loop and reported success with whatever partial text it had.
+        //
+        // The loop ends only when:
+        //   * the agent returns a final answer (and output text is allowed),
+        //   * a newer turn supersedes this one (`turn_superseded`), or
+        //   * a fatal error returns early.
+        //
+        // There is no iteration limit. A long-running turn is observable via
+        // the periodic progress log below and cancellable by sending the agent
+        // a new message, which sets `turn_superseded`.
+        loop {
+            iteration += 1;
             if turn_superseded {
                 break;
+            }
+            if iteration % 100 == 0 {
+                info!(
+                    "agent {} turn {} still running after {} iterations",
+                    self.agent.id, turn_number, iteration
+                );
             }
             // Publish live context pressure for event headers (MCP push tasks
             // read this from a detached spawned task).
@@ -1848,6 +1885,25 @@ impl AgentExecutor {
                     self.record_transcript("user", error_msg, None, None, "turn", turn_number)
                         .await;
 
+                    text_rejections += 1;
+                    if text_rejections >= MAX_CONSECUTIVE_TEXT_REJECTIONS {
+                        // The model is not cooperating with the tool-only
+                        // policy. Stop loudly instead of looping forever.
+                        let msg = format!(
+                            "Aborting turn after {} consecutive replies with no tool call. \
+                             This agent is tool-only: call a tool, or `sleep` if there is \
+                             nothing to do.",
+                            text_rejections
+                        );
+                        warn!("agent {}: {}", self.agent.id, msg);
+                        self.emit(AgentEvent::TurnCompleted {
+                            agent_id: self.agent.id.clone(),
+                            turn_id: turn_id.clone(),
+                            content: msg.clone(),
+                        });
+                        return Err(msg);
+                    }
+
                     continue;
                 } else {
                     final_response = content_str.to_string();
@@ -1876,7 +1932,9 @@ impl AgentExecutor {
                 }
             }
 
-            // Otherwise, assistant made tool calls
+            // Otherwise, assistant made tool calls. Real progress: any tool
+            // call (including `sleep`) clears the no-progress counter.
+            text_rejections = 0;
             messages.push(message.clone());
             let tool_calls_json_str = tool_calls.map(|tc| Value::Array(tc.clone()).to_string());
             let _ = self
