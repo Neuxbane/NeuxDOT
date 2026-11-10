@@ -7,6 +7,9 @@ pub struct ActiveAgentTimer {
     pub cancel_tx: oneshot::Sender<String>,
     pub duration_secs: u64,
     pub started_at: std::time::Instant,
+    /// When false, an arriving message must wait for the sleep to finish.
+    /// When true, it may cut the sleep short so the agent can respond.
+    pub interruptible: bool,
 }
 
 pub struct AgentTimerManager {
@@ -34,6 +37,7 @@ impl AgentTimerManager {
         agent_id: &str,
         cancel_tx: oneshot::Sender<String>,
         duration_secs: u64,
+        interruptible: bool,
     ) {
         let mut timers = self.timers.lock().unwrap();
         if let Some(existing) = timers.remove(agent_id) {
@@ -52,6 +56,7 @@ impl AgentTimerManager {
                 cancel_tx,
                 duration_secs,
                 started_at: std::time::Instant::now(),
+                interruptible,
             },
         );
     }
@@ -69,6 +74,27 @@ impl AgentTimerManager {
             true
         } else {
             false
+        }
+    }
+
+    /// Cancel the active timer **only if it was declared interruptible**.
+    ///
+    /// This is what makes `sleep(duration, interruptible: true)` mean something:
+    /// an arriving message may cut it short. A non-interruptible sleep is left
+    /// alone and the message waits for it to finish.
+    pub fn cancel_if_interruptible(&self, agent_id: &str, reason: &str) -> bool {
+        let mut timers = self.timers.lock().unwrap();
+        match timers.get(agent_id) {
+            Some(timer) if timer.interruptible => {
+                let timer = timers.remove(agent_id).expect("checked above");
+                info!(
+                    "Interrupted interruptible sleep timer for agent {} due to: {}",
+                    agent_id, reason
+                );
+                let _ = timer.cancel_tx.send(reason.to_string());
+                true
+            }
+            _ => false,
         }
     }
 
@@ -101,12 +127,12 @@ mod tests {
         let agent_id = "agent-single-test";
 
         let (tx1, rx1) = oneshot::channel::<String>();
-        mgr.register_timer(agent_id, tx1, 60);
+        mgr.register_timer(agent_id, tx1, 60, false);
         assert!(mgr.has_active_timer(agent_id));
 
         // Registering a second timer must cancel the first timer
         let (tx2, mut rx2) = oneshot::channel::<String>();
-        mgr.register_timer(agent_id, tx2, 30);
+        mgr.register_timer(agent_id, tx2, 30, false);
 
         // First timer should have received the cancellation notice
         let cancel_reason = rx1.await.expect("rx1 received cancellation");
@@ -125,12 +151,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_interruptible_timers_are_cancelled_by_a_message() {
+        let mgr = AgentTimerManager::new();
+
+        // Non-interruptible: must survive the arriving message.
+        let (tx, mut rx) = oneshot::channel::<String>();
+        mgr.register_timer("a", tx, 60, false);
+        assert!(!mgr.cancel_if_interruptible("a", "new message queued"));
+        assert!(mgr.has_active_timer("a"));
+        assert!(rx.try_recv().is_err(), "must not have been signalled");
+        mgr.clear_timer("a");
+
+        // Interruptible: must be cancelled.
+        let (tx, mut rx) = oneshot::channel::<String>();
+        mgr.register_timer("b", tx, 60, true);
+        assert!(mgr.cancel_if_interruptible("b", "new message queued"));
+        assert!(!mgr.has_active_timer("b"));
+        assert_eq!(
+            rx.try_recv().expect("signalled"),
+            "new message queued".to_string()
+        );
+    }
+
+    #[tokio::test]
     async fn test_timer_cleared_on_completion() {
         let mgr = AgentTimerManager::new();
         let agent_id = "agent-complete-test";
 
         let (tx, _rx) = oneshot::channel::<String>();
-        mgr.register_timer(agent_id, tx, 10);
+        mgr.register_timer(agent_id, tx, 10, false);
         assert!(mgr.has_active_timer(agent_id));
 
         mgr.clear_timer(agent_id);

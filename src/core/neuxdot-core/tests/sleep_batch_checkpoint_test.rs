@@ -26,13 +26,16 @@ use tokio::net::TcpListener;
 const SLEEP_SECS: u64 = 2;
 
 /// First completion asks for `sleep(2s)`; every later one answers with text.
-async fn mock_provider() -> (String, Arc<Mutex<Vec<Value>>>, Arc<AtomicUsize>) {
+async fn mock_provider(
+    sleep_args: Value,
+) -> (String, Arc<Mutex<Vec<Value>>>, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let bodies = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(AtomicUsize::new(0));
     let sink = Arc::clone(&bodies);
     let counter = Arc::clone(&count);
+    let sleep_args = Arc::new(sleep_args);
 
     tokio::spawn(async move {
         loop {
@@ -41,6 +44,7 @@ async fn mock_provider() -> (String, Arc<Mutex<Vec<Value>>>, Arc<AtomicUsize>) {
             };
             let sink = Arc::clone(&sink);
             let counter = Arc::clone(&counter);
+            let sleep_args = Arc::clone(&sleep_args);
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 1 << 20];
                 let n = socket.read(&mut buf).await.unwrap_or(0);
@@ -61,7 +65,7 @@ async fn mock_provider() -> (String, Arc<Mutex<Vec<Value>>>, Arc<AtomicUsize>) {
                                 "id": "call_sleep",
                                 "type": "function",
                                 "function": { "name": "sleep",
-                                              "arguments": json!({ "duration": format!("{SLEEP_SECS}s") }).to_string() }
+                                              "arguments": sleep_args.to_string() }
                             }]
                         }}]
                     })
@@ -115,9 +119,8 @@ fn make_executor(
     )
 }
 
-#[tokio::test]
-async fn a_queued_message_is_handled_after_sleep_finishes_not_during_it() {
-    let (base_url, bodies, count) = mock_provider().await;
+async fn run_sleeper(sleep_args: Value) -> (Duration, usize, String) {
+    let (base_url, bodies, count) = mock_provider(sleep_args).await;
 
     let pool = init_db("sqlite::memory:").await.unwrap();
     let db = Arc::new(Database::new(pool));
@@ -164,21 +167,8 @@ async fn a_queued_message_is_handled_after_sleep_finishes_not_during_it() {
     sleeper.await.unwrap().unwrap();
     queued.await.unwrap().unwrap();
 
-    assert_eq!(
-        count.load(Ordering::SeqCst),
-        2,
-        "one completion for the sleeping turn, one for the queued batch"
-    );
-
-    // The running turn was NOT interrupted: it slept its full duration.
-    assert!(
-        started.elapsed() >= Duration::from_secs(SLEEP_SECS),
-        "the sleep must not be cut short by the arriving message; elapsed {:?}",
-        started.elapsed()
-    );
-
-    // The queued message became the next turn, and the first turn's sleep
-    // result was recorded before it.
+    let elapsed = started.elapsed();
+    let calls = count.load(Ordering::SeqCst);
     let second_prompt = bodies.lock().unwrap()[1]["messages"]
         .as_array()
         .unwrap()
@@ -188,7 +178,41 @@ async fn a_queued_message_is_handled_after_sleep_finishes_not_during_it() {
         .last()
         .unwrap_or_default()
         .to_string();
-    assert_eq!(second_prompt, "second");
 
     assert!(!global_turn_queue().is_running(&agent.id));
+    (elapsed, calls, second_prompt)
+}
+
+/// `interruptible: false` must be honoured: the message waits for the timer.
+#[tokio::test]
+async fn non_interruptible_sleep_is_not_cut_short() {
+    let (elapsed, calls, second_prompt) = run_sleeper(json!({
+        "duration": format!("{SLEEP_SECS}s"),
+        "interruptible": false
+    }))
+    .await;
+
+    assert_eq!(calls, 2, "one completion for the sleep, one for the batch");
+    assert!(
+        elapsed >= Duration::from_secs(SLEEP_SECS),
+        "a non-interruptible sleep must run its full duration; elapsed {elapsed:?}"
+    );
+    assert_eq!(second_prompt, "second");
+}
+
+/// The default is interruptible, so an arriving message wakes the agent early
+/// and becomes the next turn.
+#[tokio::test]
+async fn default_sleep_is_interrupted_by_a_queued_message() {
+    let (elapsed, calls, second_prompt) = run_sleeper(json!({
+        "duration": format!("{SLEEP_SECS}s")
+    }))
+    .await;
+
+    assert_eq!(calls, 2, "one interrupted sleep turn, one batch turn");
+    assert!(
+        elapsed < Duration::from_secs(SLEEP_SECS),
+        "the default sleep must be interruptible; elapsed {elapsed:?}"
+    );
+    assert_eq!(second_prompt, "second");
 }

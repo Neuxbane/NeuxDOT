@@ -373,9 +373,10 @@ only the first becomes the runner.
 * A message arriving mid-turn is appended to a pending queue. It never cancels,
   interrupts or duplicates the running turn.
 * When the running turn finishes, the runner drains the queue into the next
-  turn. Because a turn can be unbounded, `sleep` is the boundary: once a sleep
-  completes and work is waiting, the turn ends so the batch runs next. The sleep
-  is not cut short.
+  turn. Because a turn can be unbounded, `sleep` is the boundary. A sleep is
+  interruptible **by default**: if work is waiting, the sleep is cut short, the
+  turn ends and the batch runs next. `interruptible: false` makes the sleep run
+  its full duration, and the message waits for it.
 * Two or more queued messages are merged into one prompt:
   `"N messages arrived while you were working. Address them together in one reply: 1. … 2. …"`.
   A single queued message passes through unwrapped.

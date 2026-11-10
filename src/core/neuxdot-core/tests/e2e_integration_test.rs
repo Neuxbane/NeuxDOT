@@ -576,12 +576,12 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     // Test AgentTimerManager: Single-Timer Invariant and Interruption Cancellation
     let timer_mgr = neuxdot_core::runtime::global_timer_manager();
     let (t1_tx, t1_rx) = tokio::sync::oneshot::channel::<String>();
-    timer_mgr.register_timer(&agent.id, t1_tx, 120);
+    timer_mgr.register_timer(&agent.id, t1_tx, 120, false);
     assert!(timer_mgr.has_active_timer(&agent.id));
 
     // Registering a second timer immediately supersedes and cancels the first
     let (t2_tx, mut t2_rx) = tokio::sync::oneshot::channel::<String>();
-    timer_mgr.register_timer(&agent.id, t2_tx, 60);
+    timer_mgr.register_timer(&agent.id, t2_tx, 60, false);
     let cancel_msg = t1_rx.await.expect("t1 cancelled");
     assert!(cancel_msg.contains("superseded"));
 

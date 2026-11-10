@@ -1482,9 +1482,19 @@ impl AgentExecutor {
                 "agent {} is busy; queued the incoming message for the next batch",
                 self.agent.id
             );
-            // Additive only: the active turn keeps running to completion (and
-            // any sleep it is in runs its full duration). The batch is handled
-            // afterwards by the runner, never as a second concurrent turn.
+            // A non-interruptible sleep keeps running to completion and the
+            // batch waits for it. An `interruptible: true` sleep is cut short so
+            // the agent can respond now. Either way a second turn is never
+            // started in parallel: the running turn ends and the batch becomes
+            // the next turn.
+            if global_timer_manager()
+                .cancel_if_interruptible(&self.agent.id, "new message queued")
+            {
+                info!(
+                    "agent {}: interrupted an interruptible sleep to handle a queued message",
+                    self.agent.id
+                );
+            }
             return Ok(String::new());
         };
 
@@ -2688,10 +2698,14 @@ impl AgentExecutor {
                                     .and_then(|d| d.as_str())
                                     .unwrap_or("");
 
+                                // Default interruptible: a waiting agent should
+                                // answer an incoming message rather than sit out
+                                // the full timer. The model can opt out with
+                                // `interruptible: false`.
                                 let interruptible = fn_args
                                     .get("interruptible")
                                     .and_then(|i| i.as_bool())
-                                    .unwrap_or(false);
+                                    .unwrap_or(true);
 
                                 match parse_duration_string(duration_str) {
                                     Ok(dur) => {
@@ -2708,6 +2722,7 @@ impl AgentExecutor {
                                             &self.agent.id,
                                             cancel_tx,
                                             dur.as_secs(),
+                                            interruptible,
                                         );
 
                                         let start_time = std::time::Instant::now();
@@ -2725,6 +2740,13 @@ impl AgentExecutor {
                                                 wake_reason = format!("interrupted: {}", reason);
                                                 if reason == "new turn started" {
                                                     turn_superseded = true;
+                                                } else if reason == "new message queued" {
+                                                    // The agent asked for a
+                                                    // sleep it is willing to
+                                                    // abandon; work is waiting,
+                                                    // so end this turn and let
+                                                    // the batch run next.
+                                                    yield_to_batch = true;
                                                 }
                                             }
                                         }

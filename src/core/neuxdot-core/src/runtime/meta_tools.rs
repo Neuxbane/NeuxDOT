@@ -365,7 +365,7 @@ pub fn get_meta_tools_definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "sleep",
-                "description": "Pause agent execution for a specified duration (e.g. '1m', '30s', '2h', '1d'). Requires duration or time parameter. The sleep tool will block and not return until the specified time has elapsed.",
+                "description": "Pause agent execution for a specified duration (e.g. '1m', '30s', '2h', '1d'). Blocks the current turn until the duration elapses, then continues. By default the sleep is INTERRUPTIBLE: a message arriving meanwhile cuts it short so you can respond. Pass interruptible=false when you must not be disturbed (e.g. waiting on a rate limit).",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -379,7 +379,7 @@ pub fn get_meta_tools_definitions() -> Value {
                         },
                         "interruptible": {
                             "type": "boolean",
-                            "description": "Optional flag (default: false). Sleep waits for the full duration."
+                            "description": "Default true. When true, an arriving message wakes you early. Set false to sleep the full duration regardless."
                         }
                     }
                 }

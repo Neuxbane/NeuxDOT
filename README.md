@@ -146,9 +146,10 @@ turns each called `sleep`, and each new timer cancelled the other, producing an
 endless `SLEEP 30m → WAKE cancelled: superseded by new timer` ping-pong.
 
 Because a turn can be unbounded, "when it finishes" needs a boundary: `sleep` is
-that boundary. When a sleep completes and queued work is waiting, the turn ends
-so the batch can run next. The sleep is never cut short — it runs its full
-duration, then yields. Ownership is a token with a drop guard, so a turn that
+that boundary. A sleep is **interruptible by default** — when a message is
+waiting, the sleep is cut short, the turn ends, and the batch runs next. Pass
+`interruptible: false` to sleep the full duration regardless; the message then
+waits for the timer. Ownership is a token with a drop guard, so a turn that
 unwinds still releases the agent.
 
 The only guard is a liveness one, not a work cap: if a tool-only agent replies
@@ -259,7 +260,7 @@ The model's entire permanent surface. Everything else is fetched on demand.
 
 | Tool | Does |
 | :--- | :--- |
-| `sleep` | `30s`/`1m`/`1h30m`/`1d`, no hard cap. **Blocks inside the turn** (it is the agent's yield point, not a turn end), interruptible by a new turn or a push event. The timer registry is process-local, so a restart drops a pending wake. |
+| `sleep` | `30s`/`1m`/`1h30m`/`1d`, no hard cap. Blocks inside the turn; **interruptible by default**, so an arriving message wakes the agent early. Pass `interruptible: false` to sleep the full duration. The timer registry is process-local, so a restart drops a pending wake. |
 
 **Archive (2)** — for text the model can no longer see
 
@@ -438,7 +439,7 @@ of the README can be trusted.
 | automatic compaction | silent group prune; no model-written summary |
 | agent-to-agent messaging | **absent** — `server_*` can configure an agent, not converse with it |
 
-Test footprint: **186 tests** across core + server (`cargo test --workspace`).
+Test footprint: **188 tests** across core + server (`cargo test --workspace`).
 
 ---
 
@@ -491,7 +492,7 @@ omission rule for ungranted identity.
 ## 🧪 Testing
 
 ```bash
-cargo test --workspace          # 186 tests
+cargo test --workspace          # 188 tests
 pnpm --filter web check         # svelte-check
 pnpm --filter web build         # production bundle
 ```
