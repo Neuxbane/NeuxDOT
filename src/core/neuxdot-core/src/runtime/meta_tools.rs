@@ -354,10 +354,15 @@ pub fn get_meta_tools_definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "compact",
-                "description": "Compact running conversation history so it retains only the system prompt, current memory, and current hash.",
+                "description": "Compact running conversation history so it retains only the system prompt, current memory, and current hash. Write the next concrete action into `continuation`: it is injected as a user message immediately after compaction, so the rebuilt session starts working on it right away instead of waiting for an external event.",
                 "parameters": {
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "continuation": {
+                            "type": "string",
+                            "description": "Handoff instruction from you to the rebuilt session: what you were doing, what is already done, and the exact next action. It becomes the first user message after compaction and the turn keeps running, so be specific and actionable. If omitted, the compacted session waits for the next event."
+                        }
+                    }
                 }
             }
         },

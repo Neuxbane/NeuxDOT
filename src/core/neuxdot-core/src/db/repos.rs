@@ -1868,10 +1868,13 @@ impl Database {
     ///   * the `compact` tool call is answered **immediately after its
     ///     assistant message**, so the provider never sees a dangling call;
     ///   * the compaction summary is appended afterwards as a `system` row;
+    ///   * when the model supplied a `continuation`, it is appended as a
+    ///     `user` row so the rebuilt session starts working immediately
+    ///     instead of waiting for an external event;
     ///   * the full sequence remains in `agent_transcript` (append-only).
     ///
     /// Row order written by this call:
-    ///   `[system instruction] [assistant(compact...)] [tool replies...] [summary]`
+    ///   `[system instruction] [assistant(compact...)] [tool replies...] [summary] [user(continuation)?]`
     pub async fn compact_agent_history(
         &self,
         agent_id: &str,
@@ -1879,6 +1882,7 @@ impl Database {
         summary: &str,
         assistant_msg: Option<&serde_json::Value>,
         tool_replies: &[(String, String)],
+        continuation: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
@@ -1942,6 +1946,20 @@ impl Database {
         .bind(&summary_row)
         .execute(&mut *tx)
         .await?;
+
+        // 5. The model's handoff instruction becomes the first input of the
+        //    rebuilt session. It is a real `user` row, not a system note, so
+        //    the next completion treats it as the thing to act on.
+        if let Some(continuation) = continuation.map(str::trim).filter(|c| !c.is_empty()) {
+            sqlx::query(
+                "INSERT INTO agent_history (id, agent_id, role, content) VALUES (?, ?, 'user', ?)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(agent_id)
+            .bind(continuation)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         tx.commit().await?;
         Ok(())

@@ -65,7 +65,7 @@ async fn compact_installs_new_instruction_and_keeps_running_history_intact_befor
     assert_eq!(before.len(), 2);
 
     // Compact installs the new instruction.
-    db.compact_agent_history(&agent.id, "NEW INSTRUCTION", "summary", None, &[])
+    db.compact_agent_history(&agent.id, "NEW INSTRUCTION", "summary", None, &[], None)
         .await
         .unwrap();
     let after = db.get_agent_history(&agent.id).await.unwrap();

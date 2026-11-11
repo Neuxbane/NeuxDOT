@@ -313,6 +313,17 @@ Implications for plugin authors:
 
 ---
 
+### 7.4.1 Compaction carries a handoff
+
+`compact` accepts an optional `continuation` string. It is the model's own
+instruction to the rebuilt session: what it was doing, what is done, and the
+exact next action. The host persists it as the first `user` row after the
+compaction summary and immediately continues the turn, so the new context starts
+working without waiting for an external event. Omitting it preserves the old
+behaviour (the compacted session waits for the next message or push).
+
+---
+
 ## 7.5 The Server Control plugin (auto-installed)
 
 The core seeds a `Server Control` plugin per account at boot

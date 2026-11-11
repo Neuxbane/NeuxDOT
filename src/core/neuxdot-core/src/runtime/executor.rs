@@ -2571,21 +2571,45 @@ impl AgentExecutor {
                                     max_history_chars,
                                 );
 
-                                let summary = format!(
+                                // The model writes its own handoff: the concrete
+                                // next action for the rebuilt session. It is
+                                // persisted as the first `user` row after
+                                // compaction and the turn loop keeps running, so
+                                // the next completion starts immediately instead
+                                // of waiting for an external event.
+                                let continuation = fn_args
+                                    .get("continuation")
+                                    .or_else(|| fn_args.get("next"))
+                                    .and_then(|c| c.as_str())
+                                    .map(str::trim)
+                                    .filter(|c| !c.is_empty())
+                                    .map(str::to_string);
+
+                                let mut summary = format!(
                                     "Earlier turns were compacted by the agent.\n\
                                  Memory hash: {}\n\
-                                 Memory:\n{}\n\
-                                 You must continue by calling a tool. If you have\
-                                 nothing to do right now, call `sleep`.",
+                                 Memory:\n{}",
                                     mem.hash, mem.content
                                 );
+                                match &continuation {
+                                    Some(next) => {
+                                        summary.push_str(&format!(
+                                            "\n\nNext action (your handoff to this session):\n{next}"
+                                        ));
+                                    }
+                                    None => summary.push_str(
+                                        "\n\nYou must continue by calling a tool. If you have \
+                                         nothing to do right now, call `sleep`.",
+                                    ),
+                                }
 
                                 let tool_reply = json!({
-                                "success": true,
-                                "message": "Running context compacted into a summary; original system prompt preserved.",
-                                "current_hash": mem.hash
-                            })
-                            .to_string();
+                                    "success": true,
+                                    "message": "Running context compacted into a summary; original system prompt preserved.",
+                                    "current_hash": mem.hash,
+                                    "continuation_queued": continuation.is_some(),
+                                })
+                                .to_string();
 
                                 // Build the entire tool-call group up front: the
                                 // assistant message may carry sibling calls, and
@@ -2638,6 +2662,7 @@ impl AgentExecutor {
                                         &summary,
                                         Some(&assistant_group),
                                         &replies,
+                                        continuation.as_deref(),
                                     )
                                     .await;
 
@@ -2671,6 +2696,15 @@ impl AgentExecutor {
                                     "role": "system",
                                     "content": format!("### [Compaction Summary]\n{}", summary)
                                 }));
+                                if let Some(next) = &continuation {
+                                    // The rebuilt session's first input. It is
+                                    // the next thing the model acts on, so no
+                                    // waiting for a new event is required.
+                                    group_msgs.push(json!({
+                                        "role": "user",
+                                        "content": next
+                                    }));
+                                }
 
                                 messages = group_msgs;
 

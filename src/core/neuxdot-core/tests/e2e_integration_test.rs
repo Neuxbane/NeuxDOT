@@ -401,6 +401,7 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
         &summary,
         Some(&compact_assistant),
         &replies,
+        None,
     )
     .await?;
 

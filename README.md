@@ -256,7 +256,7 @@ The model's entire permanent surface. Everything else is fetched on demand.
 
 | Tool | Does |
 | :--- | :--- |
-| `compact` | rebuild working context, re-render the system instruction, keep the transcript. The only place a changed preset goes live. |
+| `compact` | rebuild working context, re-render the system instruction, keep the transcript. The only place a changed preset goes live. Pass `continuation` — your own handoff note — and it is persisted as the rebuilt session's first `user` message, so the turn keeps running on the next action instead of waiting for an event. |
 
 **Time (1)**
 
@@ -442,7 +442,7 @@ of the README can be trusted.
 | automatic compaction | silent group prune; no model-written summary |
 | agent-to-agent messaging | **absent** — `server_*` can configure an agent, not converse with it |
 
-Test footprint: **188 tests** across core + server (`cargo test --workspace`).
+Test footprint: **192 tests** across core + server (`cargo test --workspace`).
 
 ---
 
@@ -495,7 +495,7 @@ omission rule for ungranted identity.
 ## 🧪 Testing
 
 ```bash
-cargo test --workspace          # 188 tests
+cargo test --workspace          # 192 tests
 pnpm --filter web check         # svelte-check
 pnpm --filter web build         # production bundle
 ```
