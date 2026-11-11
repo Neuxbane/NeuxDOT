@@ -18,7 +18,7 @@
 >
 > NeuxDOT is a single-binary agent runtime: one Rust server, one SQLite file,
 > every external capability behind MCP. The agent talks to the world through a
-> **fixed 18-tool surface** so the cached prompt prefix survives; the world
+> **fixed 19-tool surface** so the cached prompt prefix survives; the world
 > changes underneath it. Plugins are sandboxed by default, permissions are
 > per-plugin and per-agent, and nothing is silently discarded.
 
@@ -26,7 +26,7 @@
 
 **[ Philosophy ](#-the-philosophy)** &nbsp;•&nbsp;
 **[ Architecture ](#-architecture)** &nbsp;•&nbsp;
-**[ The 18 Tools ](#-the-18-tools)** &nbsp;•&nbsp;
+**[ The 19 Tools ](#-the-19-tools)** &nbsp;•&nbsp;
 **[ Plugins ](#-plugins)** &nbsp;•&nbsp;
 **[ Memory ](#-two-memories-deliberately)** &nbsp;•&nbsp;
 **[ Security ](#-security-model)** &nbsp;•&nbsp;
@@ -170,7 +170,7 @@ flowchart TB
     UI["SvelteKit 5 + Tauri<br/>desktop / web"] -->|REST + WebSocket| API
     API["Axum API<br/>JWT, DB-resolved role"] --> EXEC
     EXEC["AgentExecutor<br/>one turn = unbounded<br/>sleep-paced"] --> ROUTER
-    EXEC --> META["18 invariant meta-tools"]
+    EXEC --> META["19 invariant meta-tools"]
     EXEC --> HIST["agent_history<br/>pruned, truncated"]
     EXEC --> TRAN["agent_transcript<br/>append-only"]
     ROUTER["Router<br/>fallback | round-robin | random"] --> LLM["LLM provider"]
@@ -217,7 +217,7 @@ repeat } → persist to working history *and* transcript.
 
 ---
 
-## 🎀 The 18 Tools
+## 🎀 The 19 Tools
 
 The model's entire permanent surface. Everything else is fetched on demand.
 
@@ -257,6 +257,12 @@ The model's entire permanent surface. Everything else is fetched on demand.
 | Tool | Does |
 | :--- | :--- |
 | `compact` | rebuild working context, re-render the system instruction, keep the transcript. The only place a changed preset goes live. Pass `continuation` — your own handoff note — and it is persisted as the rebuilt session's first `user` message, so the turn keeps running on the next action instead of waiting for an event. |
+
+**Vision (1)**
+
+| Tool | Does |
+| :--- | :--- |
+| `imageView` | attach a real image to the context from a URL, `data:` URI, file path, or raw base64. The host decodes it, stores it once under `data/media/`, and injects an `image_url` part — so a tool that returned a truncated base64 blob becomes something the model can actually see. PNG/JPEG/GIF/WebP, ≤ 8 MiB. |
 
 **Time (1)**
 
@@ -429,7 +435,7 @@ of the README can be trusted.
 
 | Area | State |
 | :--- | :--- |
-| 18 meta-tools, dual history, truncation + inspect | **implemented** |
+| 19 meta-tools, dual history, truncation + inspect | **implemented** |
 | Keyed memory graph + wikilink edges + UI view | **implemented** |
 | sandbox + allow-list proxy + per-agent control | **implemented** |
 | stdio / binary / http / custom_tools transports | **implemented** |
@@ -442,7 +448,7 @@ of the README can be trusted.
 | automatic compaction | silent group prune; no model-written summary |
 | agent-to-agent messaging | **absent** — `server_*` can configure an agent, not converse with it |
 
-Test footprint: **192 tests** across core + server (`cargo test --workspace`).
+Test footprint: **197 tests** across core + server (`cargo test --workspace`).
 
 ---
 
@@ -495,7 +501,7 @@ omission rule for ungranted identity.
 ## 🧪 Testing
 
 ```bash
-cargo test --workspace          # 192 tests
+cargo test --workspace          # 197 tests
 pnpm --filter web check         # svelte-check
 pnpm --filter web build         # production bundle
 ```

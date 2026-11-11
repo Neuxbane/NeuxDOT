@@ -153,12 +153,12 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(executor.models.len(), 1);
 
-    // Verify Meta-Tools (18: search, schema, call, servers, the legacy memory
-    // blob trio, the seven node-graph tools, compact, sleep, history_search,
-    // history_inspect)
+    // Verify Meta-Tools (19: search, schema, call, servers, the legacy memory
+    // blob trio, the six node-graph tools, skill tools, compact, imageView,
+    // sleep, history_search, history_inspect)
     let meta_tools = get_meta_tools_definitions();
     let tools_arr = meta_tools.as_array().unwrap();
-    assert_eq!(tools_arr.len(), 18);
+    assert_eq!(tools_arr.len(), 19);
     assert!(tools_arr
         .iter()
         .any(|t| t["function"]["name"] == "history_search"));
@@ -187,6 +187,7 @@ async fn test_full_platform_e2e() -> Result<(), Box<dyn std::error::Error>> {
             "skillWrite",
             "skillList",
             "compact",
+            "imageView",
             "sleep",
             "history_search",
             "history_inspect"

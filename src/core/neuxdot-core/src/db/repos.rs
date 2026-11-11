@@ -1983,7 +1983,13 @@ impl Database {
 
         for msg in messages {
             let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("system");
-            let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            // Content may be a string or an array of multimodal parts. Arrays
+            // are stored as JSON so image references survive a history repair.
+            let content = match msg.get("content") {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+                None => String::new(),
+            };
             let tool_calls_json = msg.get("tool_calls").map(|tc| tc.to_string());
             let tool_call_id = msg.get("tool_call_id").and_then(|t| t.as_str());
 

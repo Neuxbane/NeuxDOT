@@ -313,7 +313,20 @@ Implications for plugin authors:
 
 ---
 
-### 7.4.1 Compaction carries a handoff
+### 7.4.1 Images are attached, not truncated
+
+Tool output is text, so a plugin that returns base64 image bytes is useless to
+the model: the payload is truncated like any other huge string. The core
+`imageView` meta-tool closes that gap. It accepts a URL, a `data:` URI, a file
+path, or raw base64, decodes it, stores the bytes once under `data/media/`, and
+injects a real `image_url` content part into the next completion. History keeps
+only a compact `{"type":"image","path":…}` reference, which is expanded on load.
+
+Plugin authors should therefore return a **URL, file path, or `file_id`** for
+large media instead of inlining base64. Accepted formats are PNG, JPEG, GIF and
+WebP (SVG is rejected); decoded size is capped at 8 MiB.
+
+### 7.4.2 Compaction carries a handoff
 
 `compact` accepts an optional `continuation` string. It is the model's own
 instruction to the rebuilt session: what it was doing, what is done, and the

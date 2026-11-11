@@ -1198,10 +1198,7 @@ impl AgentExecutor {
         messages
             .iter()
             .map(|m| {
-                m["content"]
-                    .as_str()
-                    .map(|s| s.chars().count())
-                    .unwrap_or(0)
+                crate::runtime::media::content_chars(&m["content"])
                     + m.get("tool_calls")
                         .map(|tc| tc.to_string().chars().count())
                         .unwrap_or(0)
@@ -1219,10 +1216,7 @@ impl AgentExecutor {
         let current: usize = messages
             .iter()
             .map(|m| {
-                m["content"]
-                    .as_str()
-                    .map(|s| s.chars().count())
-                    .unwrap_or(0)
+                crate::runtime::media::content_chars(&m["content"])
                     + m.get("tool_calls")
                         .map(|tc| tc.to_string().chars().count())
                         .unwrap_or(0)
@@ -1762,7 +1756,15 @@ impl AgentExecutor {
         // for this turn so the request is still well formed.
         let raw_messages: Vec<Value> = match messages_override {
             Some(overridden) => {
-                let mut out = overridden;
+                let mut out: Vec<Value> = overridden
+                    .into_iter()
+                    .map(|mut msg| {
+                        if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                            msg["content"] = crate::runtime::media::expand_content(content);
+                        }
+                        msg
+                    })
+                    .collect();
                 out.push(json!({ "role": "user", "content": user_input }));
                 out
             }
@@ -1771,7 +1773,7 @@ impl AgentExecutor {
                 .map(|item| {
                     let mut obj = json!({
                         "role": item.role,
-                        "content": item.content,
+                        "content": crate::runtime::media::expand_content(&item.content),
                     });
                     if let Some(ref tc_str) = item.tool_calls_json {
                         if let Ok(tc_val) = serde_json::from_str::<Value>(tc_str) {
@@ -2725,6 +2727,47 @@ impl AgentExecutor {
                                 )
                             }
 
+                            "imageView" | "image_view" | "viewImage" | "view_image" => {
+                                let source = fn_args
+                                    .get("source")
+                                    .or_else(|| fn_args.get("url"))
+                                    .or_else(|| fn_args.get("path"))
+                                    .or_else(|| fn_args.get("base64"))
+                                    .or_else(|| fn_args.get("payload"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+
+                                match crate::runtime::media::resolve(source).await {
+                                    Ok((_declared, bytes)) => {
+                                        match crate::runtime::media::store(&bytes) {
+                                            Ok(image) => {
+                                                let detail = fn_args
+                                                    .get("detail")
+                                                    .and_then(|d| d.as_str())
+                                                    .unwrap_or("auto");
+                                                (
+                                                    json!({
+                                                        "success": true,
+                                                        "attached": true,
+                                                        "mime": image.mime,
+                                                        "bytes": image.bytes,
+                                                        "message": "Image attached to your context; you can see it now.",
+                                                        "_image": {
+                                                            "path": image.path,
+                                                            "mime": image.mime,
+                                                            "detail": detail
+                                                        }
+                                                    }),
+                                                    true,
+                                                )
+                                            }
+                                            Err(e) => (json!({ "error": e }), false),
+                                        }
+                                    }
+                                    Err(e) => (json!({ "error": e }), false),
+                                }
+                            }
+
                             "sleep" => {
                                 let duration_str = fn_args
                                     .get("duration")
@@ -2861,10 +2904,8 @@ impl AgentExecutor {
                         let current_chars: usize = messages
                             .iter()
                             .map(|m| {
-                                let content_len = m["content"]
-                                    .as_str()
-                                    .map(|s| s.chars().count())
-                                    .unwrap_or(0);
+                                let content_len =
+                                    crate::runtime::media::content_chars(&m["content"]);
                                 let tc_len = m
                                     .get("tool_calls")
                                     .map(|tc| tc.to_string().chars().count())
@@ -2936,6 +2977,50 @@ impl AgentExecutor {
                             "content": tool_content_str
                         }));
 
+                        // `imageView` returns a compact reference, not the
+                        // pixels. Attach the actual image as a user content
+                        // part so the model can see it, and persist the same
+                        // reference so the next turn rebuilds it.
+                        if let Some(image) = result_value.get("_image") {
+                            if let (Some(path), Some(mime)) = (
+                                image.get("path").and_then(|p| p.as_str()),
+                                image.get("mime").and_then(|m| m.as_str()),
+                            ) {
+                                let detail = image
+                                    .get("detail")
+                                    .and_then(|d| d.as_str())
+                                    .unwrap_or("auto");
+                                let parts = json!([
+                                    {
+                                        "type": "text",
+                                        "text": format!("Image attached via imageView ({mime}).")
+                                    },
+                                    {
+                                        "type": "image",
+                                        "path": path,
+                                        "mime": mime,
+                                        "detail": detail
+                                    }
+                                ]);
+                                let serialized = parts.to_string();
+                                let _ = self
+                                    .db
+                                    .append_agent_history(
+                                        &self.agent.id,
+                                        "user",
+                                        &serialized,
+                                        None,
+                                        None,
+                                        None,
+                                    )
+                                    .await;
+                                messages.push(json!({
+                                    "role": "user",
+                                    "content": crate::runtime::media::expand_content(&serialized)
+                                }));
+                            }
+                        }
+
                         // Keep the shared gauge accurate right after the
                         // context grew, so a push generated now reports the
                         // true pressure rather than the previous iteration's.
@@ -2948,10 +3033,8 @@ impl AgentExecutor {
                         let mut total_chars: usize = messages
                             .iter()
                             .map(|m| {
-                                let content_len = m["content"]
-                                    .as_str()
-                                    .map(|s| s.chars().count())
-                                    .unwrap_or(0);
+                                let content_len =
+                                    crate::runtime::media::content_chars(&m["content"]);
                                 let tc_len = m
                                     .get("tool_calls")
                                     .map(|tc| tc.to_string().chars().count())

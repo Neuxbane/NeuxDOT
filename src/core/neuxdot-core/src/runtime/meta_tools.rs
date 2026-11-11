@@ -369,6 +369,28 @@ pub fn get_meta_tools_definitions() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "imageView",
+                "description": "Attach an actual image to your context so you can SEE it, instead of reading truncated base64 text from a tool result. Pass a URL, a data: URI, an absolute/relative file path, or a raw base64 payload. The host downloads/decodes it, stores it under data/media, and injects it as a real image content part. Accepted: PNG, JPEG, GIF, WebP (max 8 MiB decoded). Use this whenever a tool returned a photo/file_id/URL or a huge base64 blob you cannot read.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "source": {
+                            "type": "string",
+                            "description": "Image location: https://…, data:image/png;base64,…, /path/to/file.png, or the raw base64 payload itself. Aliases accepted: url, path, base64, payload."
+                        },
+                        "detail": {
+                            "type": "string",
+                            "enum": ["auto", "low", "high"],
+                            "description": "Provider detail hint. 'low' costs fewer tokens and is enough for layout/identification; 'high' for reading text. Default 'auto'."
+                        }
+                    },
+                    "required": ["source"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "sleep",
                 "description": "Pause agent execution for a specified duration (e.g. '1m', '30s', '2h', '1d'). Blocks the current turn until the duration elapses, then continues. By default the sleep is INTERRUPTIBLE: a message arriving meanwhile cuts it short so you can respond. Pass interruptible=false when you must not be disturbed (e.g. waiting on a rate limit).",
                 "parameters": {
@@ -714,11 +736,12 @@ mod tests {
     fn test_meta_tools_schema_count() {
         let tools = get_meta_tools_definitions();
         let arr = tools.as_array().expect("array");
-        assert_eq!(arr.len(), 18);
+        assert_eq!(arr.len(), 19);
         assert_eq!(arr[14]["function"]["name"], "compact");
-        assert_eq!(arr[15]["function"]["name"], "sleep");
-        assert_eq!(arr[16]["function"]["name"], "history_search");
-        assert_eq!(arr[17]["function"]["name"], "history_inspect");
+        assert_eq!(arr[15]["function"]["name"], "imageView");
+        assert_eq!(arr[16]["function"]["name"], "sleep");
+        assert_eq!(arr[17]["function"]["name"], "history_search");
+        assert_eq!(arr[18]["function"]["name"], "history_inspect");
     }
 
     #[test]
