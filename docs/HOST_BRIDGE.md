@@ -79,8 +79,10 @@ Resolution order (`McpServer::get_permissions`):
    `network.hosts` array.
 4. **Transport defaults** — see the table in `PLUGIN_CONTRACT.md`.
 
-`elevated` is special: a stored override may **revoke** it but never invent it.
-It only comes from the manifest.
+`elevated` is special: it is declared by the manifest and shown with an amber
+warning. The operator may explicitly grant or revoke it in the consent editor
+(the stored decision wins); it is never inferred from the transport or from
+another grant.
 
 ### Per-resource UI allow-list
 

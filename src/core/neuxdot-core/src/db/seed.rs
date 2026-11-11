@@ -168,7 +168,11 @@ pub async fn ensure_control_plugin(
             // the operator are deliberately preserved.
             let managed = serde_json::from_str::<serde_json::Value>(&existing_manifest)
                 .ok()
-                .and_then(|v| v.get("managed_by").and_then(|m| m.as_str()).map(str::to_string))
+                .and_then(|v| {
+                    v.get("managed_by")
+                        .and_then(|m| m.as_str())
+                        .map(str::to_string)
+                })
                 .as_deref()
                 == Some(MANAGED_BY);
             if managed {
@@ -217,6 +221,77 @@ pub async fn ensure_control_plugins(
         seeded += 1;
     }
     Ok(seeded)
+}
+
+// ---------------------------------------------------------------------------
+// Built-in host-native plugins
+// ---------------------------------------------------------------------------
+
+/// Marker written into the synthetic manifest of a built-in plugin whose job is
+/// only meaningful on the host.
+pub const BUILTIN_MANAGED_BY: &str = "neuxdot-core";
+
+/// The built-in Computer plugin is a terminal and filesystem tool. Its entire
+/// purpose is to act on the operator's host: a bubblewrap sandbox with no
+/// `/home`, no host network and a disposable `/workspace` turns it into a
+/// different, much less useful program. It therefore runs elevated by design.
+///
+/// This function upgrades legacy installs that were created before the plugin
+/// carried a manifest. The marker in the rewritten manifest makes the migration
+/// one-shot: once the operator revokes host access through the consent editor,
+/// a later boot must not silently grant it again.
+pub async fn ensure_builtin_computer_host(pool: &SqlitePool) -> Result<usize, sqlx::Error> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, permissions_json FROM mcp_servers
+        WHERE transport IN ('binary', 'stdio')
+          AND lower(name) = 'computer'
+          AND lower(COALESCE(alias, '')) = 'computer'
+          AND (manifest_json IS NULL OR trim(manifest_json) IN ('', '{}', 'null'))
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let manifest = json!({
+        "name": "Computer",
+        "version": "2.0.0",
+        "description": "Host-native terminal and filesystem MCP server. Runs on the host because its tools operate on the host filesystem and shell.",
+        "managed_by": BUILTIN_MANAGED_BY,
+        "builtin": "computer",
+        "permissions": {
+            "process": true,
+            "elevated": true
+        }
+    })
+    .to_string();
+
+    let mut updated = 0;
+    for (id, permissions_json) in rows {
+        // Preserve every operator decision that already exists; only raise the
+        // host-execution bit. A `NULL` override stays NULL so the synthetic
+        // manifest below becomes the declaration.
+        let rewritten = permissions_json
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty() && *p != "{}")
+            .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
+            .filter(serde_json::Value::is_object)
+            .map(|mut perms| {
+                perms["elevated"] = serde_json::json!(true);
+                perms.to_string()
+            })
+            .or(permissions_json);
+
+        sqlx::query("UPDATE mcp_servers SET manifest_json = ?, permissions_json = ? WHERE id = ?")
+            .bind(&manifest)
+            .bind(rewritten)
+            .bind(&id)
+            .execute(pool)
+            .await?;
+        updated += 1;
+    }
+    Ok(updated)
 }
 
 #[cfg(test)]
@@ -308,7 +383,10 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert!(url.contains(":8123"), "URL should follow the new port: {url}");
+        assert!(
+            url.contains(":8123"),
+            "URL should follow the new port: {url}"
+        );
         assert!(
             perms.contains("agents_read"),
             "operator permission edit must survive: {perms}"
@@ -331,12 +409,14 @@ mod tests {
             .unwrap();
 
         // The operator then stores a per-agent credential.
-        sqlx::query("UPDATE agent_mcp SET config_override = ? WHERE agent_id = 'ag1' AND mcp_id = ?")
-            .bind(r#"{"Authorization":"Basic abc"}"#)
-            .bind(&id)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE agent_mcp SET config_override = ? WHERE agent_id = 'ag1' AND mcp_id = ?",
+        )
+        .bind(r#"{"Authorization":"Basic abc"}"#)
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // A later boot re-runs the seed.
         ensure_control_plugin(&pool, &acc, "http://127.0.0.1:8000/api/control/mcp")
@@ -356,5 +436,84 @@ mod tests {
             Some(r#"{"Authorization":"Basic abc"}"#),
             "an existing per-agent credential must not be clobbered"
         );
+    }
+
+    async fn legacy_computer(pool: &SqlitePool, acc: &str) -> String {
+        let id = "computer-legacy".to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO mcp_servers
+                (id, account_id, name, alias, transport, url_or_command,
+                 manifest_json, permissions_json, is_active)
+            VALUES (?, ?, 'Computer', 'computer', 'binary', './data/binaries/computer',
+                    '{}', ?, 1)
+            "#,
+        )
+        .bind(&id)
+        .bind(acc)
+        .bind(
+            r#"{"ui":{"enabled":true,"resources":["*"]},"network":{"allow":[]},"elevated":false}"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn upgrades_the_legacy_computer_plugin_to_host_execution() {
+        let pool = pool().await;
+        let acc = account(&pool, "a").await;
+        let id = legacy_computer(&pool, &acc).await;
+
+        assert_eq!(ensure_builtin_computer_host(&pool).await.unwrap(), 1);
+
+        let server = crate::db::repos::Database::new(pool.clone())
+            .get_mcp_server(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        let perms = server.get_permissions();
+        assert!(perms.elevated, "computer must be host-native");
+        assert!(perms.process);
+        assert!(
+            matches!(
+                crate::mcp::sandbox::SandboxSpec::launch_for(&server),
+                crate::mcp::sandbox::Launch::Elevated
+            ),
+            "the launch policy must actually bypass bubblewrap"
+        );
+        assert!(
+            perms.ui.enabled,
+            "the operator's existing UI grant must be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn computer_host_upgrade_is_one_shot() {
+        let pool = pool().await;
+        let acc = account(&pool, "a").await;
+        let id = legacy_computer(&pool, &acc).await;
+        ensure_builtin_computer_host(&pool).await.unwrap();
+
+        // The operator revokes host execution through the consent editor.
+        sqlx::query("UPDATE mcp_servers SET permissions_json = ? WHERE id = ?")
+            .bind(r#"{"elevated":false,"process":true}"#)
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ensure_builtin_computer_host(&pool).await.unwrap(),
+            0,
+            "a managed manifest must not be re-upgraded on every boot"
+        );
+        let server = crate::db::repos::Database::new(pool.clone())
+            .get_mcp_server(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!server.get_permissions().elevated);
     }
 }

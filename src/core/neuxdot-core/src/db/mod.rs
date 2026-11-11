@@ -4,7 +4,9 @@ pub mod seed;
 
 pub use repos::Database;
 pub use schema::*;
-pub use seed::{ensure_control_plugin, ensure_control_plugins, control_plugin_id};
+pub use seed::{
+    control_plugin_id, ensure_builtin_computer_host, ensure_control_plugin, ensure_control_plugins,
+};
 
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use std::path::Path;

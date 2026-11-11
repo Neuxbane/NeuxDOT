@@ -18,8 +18,9 @@
 //! | PIDs and session | Own namespace, dies with the parent |
 //!
 //! A plugin that genuinely needs the host (a terminal tool, a package manager)
-//! has to declare `permissions.elevated = true`, which is surfaced in the
-//! consent UI and skips [`spawn_command`] wrapping entirely.
+//! declares `permissions.elevated = true`, which is surfaced in the consent UI
+//! and skips [`spawn_command`] wrapping entirely. The operator can also grant
+//! or revoke that one bit explicitly in the plugin editor.
 //!
 //! ## Network
 //!
@@ -112,8 +113,9 @@ impl SandboxSpec {
 
     /// Decide how `server` must be launched.
     ///
-    /// `elevated` wins over everything: the plugin asked for the host and its
-    /// manifest says so, so the consent UI showed it.
+    /// `elevated` wins over everything: the plugin declared host access, or the
+    /// operator granted it explicitly, so the consent UI showed the amber
+    /// warning.
     pub fn launch_for(server: &McpServer) -> Launch {
         let perms = server.get_permissions();
         if perms.elevated {

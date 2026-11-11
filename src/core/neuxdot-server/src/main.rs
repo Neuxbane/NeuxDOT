@@ -58,6 +58,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => tracing::warn!("could not seed the control MCP plugin: {e}"),
     }
 
+    // The built-in Computer plugin is a terminal: running it inside the
+    // no-host-filesystem sandbox makes its tool surface inert. Upgrade legacy
+    // installs to a managed, host-native manifest exactly once.
+    match neuxdot_core::db::seed::ensure_builtin_computer_host(db.pool()).await {
+        Ok(0) => {}
+        Ok(n) => info!("upgraded {n} legacy Computer plugin(s) to host-native execution"),
+        Err(e) => tracing::warn!("could not upgrade the built-in Computer plugin: {e}"),
+    }
+
     println!("\n┌────────────────────────────────────────────────────────────────────────┐");
     println!("│                       NeuxDOT Server Setup                             │");
     println!("│                                                                        │");

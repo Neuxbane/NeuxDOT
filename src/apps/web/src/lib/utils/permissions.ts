@@ -235,24 +235,29 @@ try {
 const stored = JSON.parse(server.permissions_json);
 if (!isRecord(stored) || Object.keys(stored).length === 0) return declared;
 
-// The canonical shape always has at least one *grouped section*. An override
-// saved in the removed flat format (`{ui: true, agent_control: true, ...}`) has
-// no grouped sections; normalising it would silently deny every capability and
-// hide the plugin's apps. Treat such a row as "no override" and fall back to
-// the plugin's declared grants instead.
-const isGrouped = ['ui', 'storage', 'agent', 'identity', 'control', 'network'].some((k) =>
+// The canonical shape always has at least one *grouped section*, or an
+// explicit `elevated` flag. An override saved in the removed flat format
+// (`{ui: true, agent_control: true, ...}`) has neither; normalising it would
+// silently deny every capability and hide the plugin's apps. Treat such a row
+// as "no override" and fall back to the plugin's declared grants instead.
+const isGrouped =
+['ui', 'storage', 'agent', 'identity', 'control', 'network'].some((k) =>
 isRecord((stored as any)[k])
-);
+) || typeof (stored as any).elevated === 'boolean';
 if (!isGrouped) return declared;
 
 const norm = normalizePermissions(stored);
 if (server.transport === 'stdio' || server.transport === 'binary') {
 norm.process = true;
 }
-// `elevated` is consent declared by the manifest, never a stored override: an
-// account row must not be able to promote a plugin onto the host. Narrowing
-// only — a manifest grant may be revoked here, never invented.
-norm.elevated = declared.elevated;
+// `elevated` is explicit consent: a manifest may declare it, and the operator
+// may grant or revoke it in this editor. An older stored decision without an
+// `elevated` key must keep the manifest's declaration rather than revoke it
+// silently.
+norm.elevated =
+isRecord(stored) && typeof (stored as any).elevated === 'boolean'
+? (stored as any).elevated === true
+: declared.elevated;
 return norm;
 } catch {
 return declared;

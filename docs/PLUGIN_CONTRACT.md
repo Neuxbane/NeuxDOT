@@ -214,7 +214,7 @@ The full JSON example and the consent-resolution rules are in
 | `identity` | `agent.name` / `agent.profile_picture` / `user.name` / `user.profile_picture` | Read the matching display field (privacy-by-default: all `false`) |
 | `process` | — | May spawn a child process (stdio/binary; auto-true for them) |
 | `network` | `allow` | Outbound destinations; `[]` deny, `["*"]` allow-all, else allow-list |
-| `elevated` | — | Run **on the host**, no sandbox (manifest-only, deny-by-default) |
+| `elevated` | — | Run **on the host**, no sandbox (manifest-declared or operator-granted, deny-by-default) |
 | `control` | 8 flags | Drive the server's own control API, per resource (§5.3) |
 
 ### 5.1 Network allow-list
@@ -307,6 +307,9 @@ Implications for plugin authors:
   processes.
 * If you truly need host filesystem/network with no isolation, ask for
   `permissions.elevated=true` and say why — it is the single most dangerous flag.
+  The built-in **Computer** plugin is host-native by design (a terminal inside a
+  no-host-filesystem sandbox is inert); legacy installs are upgraded to a
+  managed manifest on boot, and the operator can revoke it in the plugin editor.
 
 ---
 

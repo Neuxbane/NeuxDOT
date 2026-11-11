@@ -110,8 +110,10 @@ rejected by every provider.
 ### 3. Deny by default, then make consent legible.
 
 A plugin declares what it needs in its manifest. A stored per-account decision
-can **narrow** it and never widen it. `elevated` (run on the host, no sandbox)
-can only come from the manifest, and is shown with an amber warning at install.
+can **narrow** it and never widen it by default. `elevated` (run on the host, no
+sandbox) is the exception: it is declared by the manifest and shown with an amber
+warning, and the operator may also grant or revoke it explicitly in the plugin
+editor.
 
 ```
 manifest declares  ──►  account consent narrows  ──►  effective grants
@@ -368,7 +370,8 @@ returns edges including dangling targets.
 * **Guardrails:** the last root cannot be demoted or deleted; nobody may delete
   their own account.
 * **Plugin consent** is the grouped `PluginPermissions` object, deny-by-default.
-  A stored override can narrow, never widen; `elevated` is manifest-only.
+  A stored override can narrow, never widen; `elevated` is the one explicit
+  operator-toggleable exception (manifest-declared, amber-warned).
 * **MCP-App UIs** run in `<iframe sandbox="allow-scripts">` — an opaque origin.
   Messages are authenticated by `event.source`, never `event.origin`. Ungranted
   identity fields are **omitted**, not blanked.

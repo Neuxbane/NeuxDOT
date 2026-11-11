@@ -394,10 +394,11 @@ pub struct PluginPermissions {
     pub network: NetworkPermissions,
     /// Run this plugin **on the host**, without the bubblewrap sandbox.
     ///
-    /// Deny-by-default and never inferred from the transport: a plugin that
+    /// Deny-by-default and never inferred from the transport. A plugin that
     /// can reach the host filesystem, the host network stack and the host
-    /// credentials has to say so in its manifest and be shown as such in the
-    /// consent UI. `transport == "stdio"` only grants `process`, not this.
+    /// credentials has to declare it in its manifest, and the consent UI shows
+    /// it with an amber warning. The operator may also grant or revoke it
+    /// explicitly in the consent editor; the stored decision wins.
     #[serde(default)]
     pub elevated: bool,
     /// Server control grants. Deny-by-default; see [`ControlPermissions`].
@@ -973,16 +974,27 @@ impl McpServer {
                 // has no grouped section: treating it as a decision would deny
                 // everything and hide the plugin's apps, so ignore it and fall
                 // back to what the plugin declared.
-                // A grouped section marks a real consent decision. `control`
-                // and `network` are included because a stored decision may
-                // consist *only* of those (e.g. a plugin granted nothing but a
-                // control scope); omitting them would silently fall back to the
-                // manifest and ignore the operator's decision.
+                // A grouped section (or an explicit `elevated` flag) marks a
+                // real consent decision. `control` and `network` are included
+                // because a stored decision may consist *only* of those (e.g. a
+                // plugin granted nothing but a control scope); omitting them
+                // would silently fall back to the manifest and ignore the
+                // operator's decision.
                 let is_grouped = ["ui", "storage", "agent", "identity", "control", "network"]
                     .iter()
-                    .any(|k| val.get(*k).map(|v| v.is_object()).unwrap_or(false));
+                    .any(|k| val.get(*k).map(|v| v.is_object()).unwrap_or(false))
+                    || val.get("elevated").and_then(|v| v.as_bool()).is_some();
                 if is_grouped {
+                    // `elevated` is the one grant an operator may deliberately
+                    // add as well as revoke. An old stored consent written
+                    // before that was possible has no `elevated` key, so keep
+                    // whatever the manifest declared instead of silently
+                    // revoking it.
+                    let stored_elevated = val.get("elevated").and_then(|v| v.as_bool());
                     if let Ok(mut perms) = serde_json::from_value::<PluginPermissions>(val) {
+                        if stored_elevated.is_none() {
+                            perms.elevated = self.declared_permissions().elevated;
+                        }
                         if self.transport == "stdio" || self.transport == "binary" {
                             perms.process = true;
                         }
@@ -1787,6 +1799,24 @@ mod tests {
         assert!(server.get_permissions().allows("identity.agent.name"));
         server.permissions_json = Some("not json".to_string());
         assert!(server.get_permissions().allows("identity.agent.name"));
+    }
+
+    #[test]
+    fn stored_consent_can_grant_and_revoke_host_execution() {
+        let mut server = manifest_server(serde_json::json!({
+            "permissions": { "process": true, "elevated": true }
+        }));
+        assert!(server.get_permissions().elevated);
+
+        // An explicit operator revocation wins.
+        server.permissions_json =
+            Some(serde_json::json!({ "process": true, "elevated": false }).to_string());
+        assert!(!server.get_permissions().elevated);
+
+        // A stored decision written before `elevated` was toggleable has no
+        // key for it: keep the manifest declaration.
+        server.permissions_json = Some(serde_json::json!({ "process": true }).to_string());
+        assert!(server.get_permissions().elevated);
     }
 
     #[test]

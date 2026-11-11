@@ -10,7 +10,6 @@
 	import { navState } from '$lib/stores/nav.svelte';
 	import {
 		denyAll,
-		permissionsForServer,
 		permissionsFromManifest,
 		requiredAccessList,
 		resolvedPermissions
@@ -189,9 +188,9 @@ function parsePermissionsFromManifest(manifest: any, transport: string): PluginP
 return permissionsFromManifest(manifest, transport);
 }
 
-/** Declared grants for a stored plugin row. */
+/** Effective grants for a stored plugin row (stored consent wins). */
 function parsePermissions(srv: McpServer): PluginPermissions {
-return permissionsForServer(srv);
+return resolvedPermissions(srv);
 }
 
 	function parseManifestUiResources(srv: McpServer): { uri: string; name: string }[] {
@@ -1177,19 +1176,55 @@ return permissionsForServer(srv);
 					</div>
 				{/if}
 
-				<!-- Read-only: the sandbox default is a host policy, not a per-plugin toggle. -->
-				<div class="mt-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-950/40 p-3">
-					<div class="flex items-center gap-1.5 text-xs font-medium text-emerald-500 dark:text-emerald-400">
-						<ShieldCheck class="h-3.5 w-3.5" />
-						<span>Sandboxed by Default</span>
+				<!-- Host execution is an explicit operator decision. Built-in
+				     plugins such as Computer declare it; a binary without a
+				     manifest can also be granted it here. -->
+				{#if formTransport === 'binary' || formTransport === 'stdio'}
+					<div class="mt-4 rounded-xl border p-3 {formPermissions.elevated ? 'border-amber-500/40 bg-amber-500/10' : 'border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-950/40'}">
+						<div class="flex items-center justify-between gap-3">
+							<div class="space-y-0.5">
+								<div class="flex items-center gap-1.5 text-xs font-medium {formPermissions.elevated ? 'text-amber-700 dark:text-amber-300' : 'text-zinc-700 dark:text-zinc-300'}">
+									<Shield class="h-3.5 w-3.5" />
+									<span>Run on Host (Elevated)</span>
+								</div>
+								<p class="text-[11px] text-zinc-500 dark:text-zinc-400">
+									Bypasses bubblewrap entirely: the plugin can read your host filesystem, use the host network and see your credentials.
+								</p>
+							</div>
+							<button
+								type="button"
+								role="switch"
+								aria-checked={formPermissions.elevated}
+								aria-label="Run this plugin on the host without the sandbox"
+								onclick={() => (formPermissions = { ...formPermissions, elevated: !formPermissions.elevated })}
+								class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none {formPermissions.elevated ? 'bg-amber-500' : 'bg-zinc-300 dark:bg-zinc-700'}"
+							>
+								<span
+									class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition duration-200 ease-in-out {formPermissions.elevated ? 'translate-x-5' : 'translate-x-0'}"
+								></span>
+							</button>
+						</div>
+						{#if formPermissions.elevated}
+							<p class="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+								Only enable this for plugins you fully trust. The network allow-list above is irrelevant on the host — the plugin gets the host's real network stack.
+							</p>
+						{:else}
+							<p class="mt-2 text-[11px] text-zinc-400 dark:text-zinc-500">
+								Default: isolated bubblewrap sandbox with no host filesystem access and outbound network denied unless granted above.
+							</p>
+						{/if}
 					</div>
-					<p class="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-						Sandboxed: runs in an isolated bubblewrap sandbox with no host filesystem access. Outbound network is denied unless you grant it above.
-					</p>
-					<p class="mt-1 text-[11px] text-zinc-400 dark:text-zinc-500">
-						The allow-list is saved as this plugin's consent decision; it can narrow, but never widen, what the manifest declared.
-					</p>
-				</div>
+				{:else}
+					<div class="mt-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-950/40 p-3">
+						<div class="flex items-center gap-1.5 text-xs font-medium text-emerald-500 dark:text-emerald-400">
+							<ShieldCheck class="h-3.5 w-3.5" />
+							<span>Sandboxed by Default</span>
+						</div>
+						<p class="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+							This transport does not spawn a local process, so host execution does not apply.
+						</p>
+					</div>
+				{/if}
 
 				<div class="mt-6 flex justify-end gap-2 border-t border-zinc-100 dark:border-zinc-800 pt-3">
 					<button
