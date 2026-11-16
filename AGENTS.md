@@ -27,26 +27,26 @@ instinct to "helpfully" refactor, the rule wins.
 ## 1. Architecture map
 
 ```
-crates/neuxdot-core/     runtime, DB, MCP transports, WASM host
+src/core/neuxdot-core/   runtime, DB, MCP transports
   src/db/                schema.rs (types), repos.rs (all SQL), mod.rs (init + migrations)
-  src/runtime/           executor.rs, meta_tools.rs, router.rs, timer_manager.rs
-  src/mcp/               stdio, http (SSE), custom_tools, wasm_stdio
+  src/runtime/           executor.rs, meta_tools.rs, router.rs, timer_manager.rs, media.rs
+  src/mcp/               stdio, http (SSE), custom_tools, sandbox, proxy
   src/auth/              JWT, password hashing
-crates/neuxdot-server/   Axum HTTP API
+src/core/neuxdot-server/ Axum HTTP API
   src/routes/            one module per resource
   src/middleware.rs      AuthUser, require_root, resolve_identity
-src-tauri/               desktop shell (Tauri v2); src/lib.rs::run() is shared with mobile
-apps/web/                SvelteKit 5 (runes) + Tailwind v4
-examples/                WASM plugin examples (own crates, NOT workspace members)
+src/apps/desktop/        desktop shell (Tauri v2)
+src/apps/web/            SvelteKit 5 (runes) + Tailwind v4
+built-in-plugin/         chat, computer, gitlab, telegram, discord (own crates)
 docs/HOST_BRIDGE.md      sandboxed MCP-App ↔ host contract — treat as a spec
 ```
 
 Two facts that trip people up constantly:
 
-- `examples/chat-extension` is a **separate crate** with its own lockfile. It is
-  not a workspace member; build it explicitly (see §7).
-- A WASM plugin's code lives **inside SQLite** (`extensions.wasm_binary`), not on
-  disk. Rebuilding the `.wasm` changes nothing until it is re-uploaded.
+- `built-in-plugin/*` are **separate crates** with their own lockfiles. They are
+  not workspace members; build them with `./compile.sh --plugins`.
+- WASM/Wasmtime is **not implemented**. The `extensions` table and `wasm`
+  transport name are scaffolding only; do not document or rely on a WASM runner.
 
 ---
 
@@ -233,12 +233,10 @@ cargo build --workspace
 cargo test --workspace
 
 # Web — must be 0 errors, 0 warnings
-cd apps/web && npm run check && npm run build
+cd src/apps/web && npm run check && npm run build
 
-# WASM example — separate crate, explicit target
-cd examples/chat-extension
-cargo build --target wasm32-unknown-unknown --release
-# and re-upload: POST /api/extensions/upload -F "file=@target/.../chat_extension.wasm"
+# Built-in plugins — separate crates, not workspace members
+./compile.sh --plugins
 ```
 
 If a check cannot be run, **say so explicitly** and explain why. Do not report
@@ -254,7 +252,126 @@ Known environment quirks:
 
 ---
 
-## 8. Anti-patterns seen in this repo (do not repeat)
+## 8. Deploying a server
+
+The server is one static binary plus `data/` and `plugins/`. It has **no CLI
+flags**: `neuxdot-server --help` does not print help, it starts the server on the
+default port. Configure it with environment variables only.
+
+### 8.1 Build
+
+```bash
+./compile.sh --server     # release/neuxdot-server (musl static when available)
+./compile.sh --plugins    # release/plugins/{computer,chat,gitlab,telegram,discord}
+```
+
+`--server` falls back to a glibc build when neither `musl-gcc` nor Docker is
+available. Check with `file release/neuxdot-server` before copying to a host
+with a different libc.
+
+### 8.2 Host prerequisites
+
+```bash
+apt-get install -y bubblewrap socat
+```
+
+- **`bwrap`** — every stdio/binary plugin runs sandboxed unless its manifest
+  declares `elevated`. Without it those plugins refuse to start.
+- **`socat`** — required only for a network allow-list: the relay inside the
+  sandbox forwards `127.0.0.1:41873` to the host-side CONNECT proxy.
+- Unprivileged user namespaces must be enabled (`bwrap --unshare-all`).
+- `data/` must be writable: SQLite, `data/sandbox/`, `data/media/`.
+
+### 8.3 First deploy
+
+```bash
+rsync -a --info=progress2 \
+  -e "ssh -J <jump-host>" \
+  /path/to/dot/ root@<host>:/opt/neuxdot/
+```
+
+`/path/to/dot` is the runtime directory (binary, `plugins/`, `data/`), not the
+source checkout. Create the target first: `ssh … 'mkdir -p /opt/neuxdot'`.
+
+### 8.4 systemd unit
+
+`/etc/systemd/system/neuxdot.service`:
+
+```ini
+[Unit]
+Description=NeuxDOT server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/neuxdot
+Environment=PORT=35950
+Environment=RUST_LOG=info,neuxdot_core=debug,neuxdot_server=debug
+ExecStart=/opt/neuxdot/neuxdot-server
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable --now neuxdot
+```
+
+`PORT` is the only required setting. The seeded Server Control plugin is pinned
+to `http://127.0.0.1:$PORT/api/control/mcp`, so changing the port is safe — the
+next boot refreshes that URL.
+
+### 8.5 Updating
+
+```bash
+./compile.sh --server
+rsync -a release/neuxdot-server root@<host>:/opt/neuxdot/neuxdot-server
+ssh root@<host> 'systemctl restart neuxdot'
+```
+
+Never rsync a stale local `data/` over a live host: it replaces the database and
+every credential in it. Upload `data/` only on the first deploy or when you
+intend to restore a specific backup.
+
+### 8.6 Verify
+
+```bash
+systemctl is-active neuxdot
+ss -ltnp | grep 35950
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:35950/api/auth/me   # 401
+journalctl -u neuxdot -n 50 --no-pager
+```
+
+In the log, confirm:
+
+- `NeuxDOT server listening on http://0.0.0.0:<PORT>`
+- `spawning plugin on the host (elevated): ./data/binaries/computer`
+- `sandbox proxy listening on … with N destination rule(s)` for allow-listed plugins
+
+Then kill the process once (`systemctl kill -s SIGKILL neuxdot`) and confirm
+systemd brings it back — `Restart=always` is part of the deployment, not a
+nice-to-have.
+
+### 8.7 Deployment rules
+
+- `data/neuxdot.sqlite` contains bot tokens, provider keys and password hashes.
+  It is git-ignored; never commit it, never upload it to a shared host, and
+  treat `/opt/neuxdot/data` as sensitive.
+- Do not run the server as root if you can avoid it. If you do, remember that
+  `elevated` plugins inherit root. `bwrap` needs user namespaces, not root.
+- `data/media/` must stay writable: `imageView` stores decoded attachments there.
+- The server binds `0.0.0.0`. Put it behind a reverse proxy/TLS if it is
+  reachable from the internet; the API is bearer-token authenticated but plain
+  HTTP exposes those tokens on the wire.
+
+---
+
+## 9. Anti-patterns seen in this repo (do not repeat)
 
 | Symptom | Real cause |
 |---|---|
@@ -268,7 +385,7 @@ Known environment quirks:
 
 ---
 
-## 9. Before you open a PR
+## 10. Before you open a PR
 
 - [ ] No new compiler warnings; no `never used` items.
 - [ ] No `unwrap()` on a request path.
