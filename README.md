@@ -40,6 +40,37 @@
 
 ---
 
+## 🖼️ Interface
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/agent_setting_dark.png" alt="Agent plugin configuration with granular tool permissions and push MCP subscriptions" width="100%" />
+      <br />
+      <sub><b>Agent Plugins &amp; Zero-Trust Discovery</b> — per-tool toggles and push MCP subscriptions</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/costom_mcp_dark.png" alt="Add Plugin modal with Custom cURL MCP tool builder and live test runner" width="100%" />
+      <br />
+      <sub><b>Custom (cURL) MCP Builder</b> — auto-exposed arguments and live test runner</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/multi_servers_multi_accounts_bright.png" alt="Platform Settings showing Server Accounts and Connected Server Profiles" width="100%" />
+      <br />
+      <sub><b>Multi-Server &amp; Multi-Account</b> — switch server profiles and manage accounts</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/account_server_profile_bright.png" alt="Platform Settings showing Server Profile customization and live avatar preview" width="100%" />
+      <br />
+      <sub><b>Server Profile</b> — display name, avatar upload, and live preview</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## 🧭 The Philosophy
 
 Most agent frameworks fail in the same place: they put **volatile things in a
